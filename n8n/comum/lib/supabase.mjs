@@ -284,11 +284,24 @@ export function planejarDespacho(s, ids, opcoes) {
   }
   const lista = subfluxosDe(entrada.tipo, entrada.escopo, opcoes?.envioAtivo === true)
   if (!lista) return [base(1, 1, { acao: 'invalido', erro: `Escopo "${entrada.escopo}" não se aplica a integração do tipo "${entrada.tipo}"` })]
-  return lista.map((nome, i) => {
-    const id = ids ? ids[nome] : undefined
-    if (!id) return base(i + 1, lista.length, { acao: 'invalido', subfluxo: nome, erro: `Variável ${VARIAVEIS_SUBFLUXOS[nome]} não configurada no N8N (id do workflow "${NOMES_WORKFLOWS[nome]}")` })
-    return base(i + 1, lista.length, { acao: 'subfluxo', subfluxo: nome, workflow_id: String(id), workflow_nome: NOMES_WORKFLOWS[nome] })
-  })
+  // Falta o id de algum subfluxo → a solicitação inteira vira um único passo inválido (nada roda pela metade).
+  const faltando = lista.find((nome) => !(ids && ids[nome]))
+  if (faltando) {
+    return [base(1, 1, { acao: 'invalido', subfluxo: faltando, workflow_nome: NOMES_WORKFLOWS[faltando], tipo_execucao: TIPO_EXECUCAO_POR_WORKFLOW[NOMES_WORKFLOWS[faltando]],
+      erro: `Variável ${VARIAVEIS_SUBFLUXOS[faltando]} não configurada no N8N (id do workflow "${NOMES_WORKFLOWS[faltando]}")` })]
+  }
+  return lista.map((nome, i) => base(i + 1, lista.length, { acao: 'subfluxo', subfluxo: nome, workflow_id: String(ids[nome]), workflow_nome: NOMES_WORKFLOWS[nome] }))
+}
+
+/** `parametros.envio.ativo` de uma configuração de integração (adendo de envio ao Control iD). */
+export function envioAtivo(config) {
+  return !!(config && config.parametros && config.parametros.envio && config.parametros.envio.ativo === true)
+}
+
+/** Precisa ler a configuração da integração para despachar? (só Control iD com escopo `tudo`, por causa do envio). */
+export function precisaConfigParaDespacho(s) {
+  const tipo = s.integracao_tipo ?? s.tipo
+  return (tipo === 'controlid_acesso' || tipo === 'controlid_rep') && (s.escopo ?? 'tudo') === 'tudo' && !!s.integracao_id
 }
 
 /** Ids dos subfluxos a partir das variáveis. */

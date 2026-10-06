@@ -9,7 +9,8 @@
 #   supabase/testes/executar.sh --sem-testes    # só monta o banco (usado por ferramentas/local/subir.sh)
 #
 # Variáveis: PGHOST (padrão: socket de preparar-postgres.sh), PGPORT (54329), PGUSER (postgres),
-#            MDG_PG_BANCO (padrão: mdg_teste), MDG_SEM_SEED=1 (não aplica seed/).
+#            MDG_PG_BANCO (padrão: mdg_teste_<pid>, apagado no fim; MDG_MANTER_BANCO=1 mantém),
+#            MDG_SEM_SEED=1 (não aplica seed/).
 set -euo pipefail
 
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +20,12 @@ BASE="${MDG_PG_DIR:-${TMPDIR:-/tmp}/mdg-postgres}"
 export PGHOST="${PGHOST:-$BASE/socket}"
 export PGPORT="${PGPORT:-${MDG_PG_PORTA:-54329}}"
 export PGUSER="${PGUSER:-postgres}"
-BANCO="${MDG_PG_BANCO:-mdg_teste}"
+# Sem MDG_PG_BANCO: banco único por execução (execuções em paralelo não colidem), apagado no fim.
+if [ -n "${MDG_PG_BANCO:-}" ]; then
+  BANCO="$MDG_PG_BANCO"; TEMPORARIO=0
+else
+  BANCO="mdg_teste_$$"; TEMPORARIO=1
+fi
 
 SEM_TESTES=0
 FILTROS=()
@@ -36,7 +42,13 @@ if ! psql -X -d postgres -Atqc 'select 1' > /dev/null 2>&1; then
 fi
 
 SAIDA="$(mktemp)"
-trap 'rm -f "$SAIDA"' EXIT
+limpar() {
+  rm -f "$SAIDA"
+  if [ "$TEMPORARIO" = "1" ] && [ -z "${MDG_MANTER_BANCO:-}" ]; then
+    PGOPTIONS="-c client_min_messages=warning" psql -X -q -d postgres -c "drop database if exists $BANCO with (force)" > /dev/null 2>&1 || true
+  fi
+}
+trap limpar EXIT
 
 # Aplica um arquivo SQL; em erro mostra a saída e para.
 aplicar() {

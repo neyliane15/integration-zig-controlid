@@ -71,7 +71,7 @@ describe('AFD corrompido', () => {
       '11:registro 1510 incompleto',
       '12:NSR zerado',
     ])
-    assert.equal(r.outros_registros.u, 1) // "lixo qualquer"
+    assert.equal(r.outros_registros.q, 1) // "lixo qualquer"
   })
   it('resumo para detalhes limita a 20 exemplos', () => {
     const muitas = Array.from({ length: 30 }, (_, i) => `${String(i + 1).padStart(9, '0')}3xx`).join('\n')

@@ -160,7 +160,7 @@ create or replace function public.pode_ler(e uuid) returns boolean
 language sql stable security definer
 set search_path = public, extensions, pg_temp
 as $$
-  select e is not null and (public.eh_master() or public.eh_sistema() or e = public.empresa_leitura())
+  select coalesce(e is not null and (public.eh_master() or public.eh_sistema() or e = public.empresa_leitura()), false)
 $$;
 comment on function public.pode_ler(uuid) is '[politica] Master, sistema ou L G A da empresa.';
 
@@ -168,7 +168,7 @@ create or replace function public.pode_operar(e uuid) returns boolean
 language sql stable security definer
 set search_path = public, extensions, pg_temp
 as $$
-  select e is not null and (public.eh_master() or public.eh_sistema() or e = public.empresa_operacao())
+  select coalesce(e is not null and (public.eh_master() or public.eh_sistema() or e = public.empresa_operacao()), false)
 $$;
 comment on function public.pode_operar(uuid) is '[politica] Master, sistema ou G A da empresa.';
 
@@ -176,7 +176,7 @@ create or replace function public.pode_administrar(e uuid) returns boolean
 language sql stable security definer
 set search_path = public, extensions, pg_temp
 as $$
-  select e is not null and (public.eh_master() or public.eh_sistema() or e = public.empresa_administracao())
+  select coalesce(e is not null and (public.eh_master() or public.eh_sistema() or e = public.empresa_administracao()), false)
 $$;
 comment on function public.pode_administrar(uuid) is '[politica] Master, sistema ou A da empresa.';
 

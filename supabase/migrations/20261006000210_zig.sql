@@ -155,7 +155,7 @@ returns table (faturamento bigint, vendas bigint, servico bigint, descontos bigi
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid;
 begin
-  v_empresa := public.resolver_empresa(p_empresa, 'ler');
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
   perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
   return query
   select
@@ -181,7 +181,7 @@ returns table (data date, valor bigint)
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid;
 begin
-  v_empresa := public.resolver_empresa(p_empresa, 'ler');
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
   perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
   return query
   select g::date,
@@ -199,7 +199,7 @@ returns table (payment_id int, payment_name text, valor bigint)
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid;
 begin
-  v_empresa := public.resolver_empresa(p_empresa, 'ler');
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
   perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
   return query
   select z.payment_id, mode() within group (order by z.payment_name), sum(z.valor)::bigint
@@ -218,7 +218,7 @@ returns table (employee_name text, funcionario_id uuid, funcionario_nome text, q
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid;
 begin
-  v_empresa := public.resolver_empresa(p_empresa, 'ler');
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
   perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
   return query
   with g as (

@@ -20,7 +20,7 @@ declare
   v_presentes int := 0;
   v_escalados int := 0;
 begin
-  v_empresa := public.resolver_empresa(p_empresa, 'ler');
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
   select e.fuso, e.virada_dia into v_fuso, v_virada from public.empresas e where e.id = v_empresa;
   v_hoje := public.dia_de_trabalho(public.agora(), v_empresa);
   v_ontem := v_hoje - 1;

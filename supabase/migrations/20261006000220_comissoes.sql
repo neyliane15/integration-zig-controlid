@@ -241,7 +241,7 @@ declare fc public.comissao_fechamentos;
 begin
   select * into fc from public.comissao_fechamentos where id = p_fechamento;
   if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_operar(fc.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_operar(fc.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   if fc.status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
   return fc;
 end $$;
@@ -254,7 +254,7 @@ create or replace function public.comissao_criar_fechamento(p_data_inicio date, 
 returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid; v_id uuid; v_pct numeric;
 begin
-  v_empresa := public.resolver_empresa(p_empresa, 'operar');
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
   perform public.ponto_validar_periodo(p_data_inicio, p_data_fim, 93);
   p_loja := nullif(btrim(p_loja), '');
   if p_loja is not null and not exists (select 1 from public.zig_lojas l
@@ -352,8 +352,8 @@ declare fc public.comissao_fechamentos;
 begin
   select * into fc from public.comissao_fechamentos where id = p_fechamento;
   if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_operar(fc.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  if not public.pode_administrar(fc.empresa_id) then
+  if public.pode_operar(fc.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_administrar(fc.empresa_id) is not true then
     raise exception 'Somente o administrador fecha a comissão' using errcode = '42501';
   end if;
   if fc.status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;

@@ -185,6 +185,20 @@ returns text language sql stable security definer set search_path = public, exte
 $$;
 comment on function public.ponto_nome_autor() is '[interno] Nome do perfil logado ou ''Sistema''.';
 
+-- resolver_empresa (b1) + checagem nula-segura do nível (defesa em profundidade).
+create or replace function public.ponto_resolver_empresa(p_empresa uuid, p_nivel text)
+returns uuid language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v uuid;
+begin
+  v := public.resolver_empresa(p_empresa, p_nivel);
+  if (case p_nivel when 'ler' then public.pode_ler(v) when 'operar' then public.pode_operar(v)
+                   when 'administrar' then public.pode_administrar(v) end) is not true then
+    raise exception 'Sem permissão' using errcode = '42501';
+  end if;
+  return v;
+end $$;
+comment on function public.ponto_resolver_empresa(uuid, text) is '[interno] resolver_empresa com checagem nula-segura do nível.';
+
 -- Instante do horário de escala t no dia de trabalho D (§2.4).
 create or replace function public.ponto_instante_escala(p_data date, p_hora time, p_fuso text, p_virada time)
 returns timestamptz language sql stable set search_path = public, extensions, pg_temp as $$
@@ -853,7 +867,7 @@ declare v_empresa uuid;
 begin
   select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
   if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_ler(v_empresa) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_ler(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   perform public.ponto_validar_periodo(p_inicio, p_fim, 62);
 
   return query
@@ -863,14 +877,15 @@ begin
                                                        'status', a.status, 'detalhe', a.detalhe, 'justificativa', a.justificativa)
                                     order by a.horario_previsto nulls last, a.tipo, a.batida_esperada)
                      from public.ponto_alarmes a
-                    where a.funcionario_id = p_funcionario and a.data = c.data), '[]'::jsonb),
+                    where a.funcionario_id = p_funcionario and a.data = c.data
+                      and a.status <> 'resolvido'), '[]'::jsonb),
          c.esperadas
     from generate_series(p_inicio, p_fim, interval '1 day') g
     cross join lateral public.ponto_calcular_dia(p_funcionario, g::date) c
    where not c.fora_do_vinculo
    order by c.data;
 end $$;
-comment on function public.ponto_espelho(uuid, date, date) is '[api] Espelho de ponto calculado ao vivo (máx. 62 dias).';
+comment on function public.ponto_espelho(uuid, date, date) is '[api] Espelho de ponto calculado ao vivo (máx. 62 dias). alarmes: abertos e justificados.';
 
 create or replace function public.ponto_dia_empresa(p_data date default null, p_empresa uuid default null)
 returns table (funcionario_id uuid, funcionario_nome text, cargo text, situacao text, encerrado boolean,
@@ -879,7 +894,7 @@ returns table (funcionario_id uuid, funcionario_nome text, cargo text, situacao 
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid; v_data date;
 begin
-  v_empresa := public.resolver_empresa(p_empresa, 'ler');
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
   v_data := coalesce(p_data, public.dia_de_trabalho(public.agora(), v_empresa));
   return query
   select f.id, f.nome, f.cargo, c.situacao, c.encerrado, c.previsto_minutos, c.trabalhado_minutos, c.saldo_minutos,
@@ -904,12 +919,12 @@ begin
   if p_funcionario is not null then
     select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
     if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-    if not public.pode_operar(v_empresa) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+    if public.pode_operar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
     if p_empresa is not null and p_empresa <> v_empresa then
       raise exception 'Funcionário de outra empresa' using errcode = '22023';
     end if;
   else
-    v_empresa := public.resolver_empresa(p_empresa, 'operar');
+    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
   end if;
   perform public.ponto_validar_periodo(p_inicio, p_fim, 93);
   if p_funcionario is not null then
@@ -925,7 +940,7 @@ declare v_empresa uuid; v_id uuid; v_dia date;
 begin
   select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
   if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_operar(v_empresa) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_operar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   if p_motivo is null or btrim(p_motivo) = '' then raise exception 'Informe o motivo' using errcode = '22023'; end if;
   if p_instante is null then raise exception 'Horário inválido' using errcode = '22023'; end if;
   if p_instante > public.agora() then raise exception 'Horário no futuro' using errcode = '22023'; end if;
@@ -948,7 +963,7 @@ declare b record;
 begin
   select * into b from public.ponto_batidas where id = p_batida;
   if not found then raise exception 'Batida não encontrada' using errcode = 'P0002'; end if;
-  if not public.pode_operar(b.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_operar(b.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   if p_motivo is null or btrim(p_motivo) = '' then raise exception 'Informe o motivo' using errcode = '22023'; end if;
   if b.funcionario_id is null then
     raise exception 'Batida sem funcionário vinculado' using errcode = '22023';
@@ -987,7 +1002,7 @@ declare a record;
 begin
   select * into a from public.ponto_alarmes where id = p_alarme;
   if not found then raise exception 'Alarme não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_operar(a.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   if p_justificativa is null or btrim(p_justificativa) = '' then
     raise exception 'Informe a justificativa' using errcode = '22023';
   end if;
@@ -1006,7 +1021,7 @@ declare a record;
 begin
   select * into a from public.ponto_alarmes where id = p_alarme;
   if not found then raise exception 'Alarme não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_operar(a.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   update public.ponto_alarmes
      set status = 'aberto', justificativa = null, justificado_por = null, justificado_em = null,
          resolvido_em = null, resolvido_automaticamente = false
@@ -1025,12 +1040,12 @@ begin
   if p_funcionario is not null then
     select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
     if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-    if not public.pode_operar(v_empresa) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+    if public.pode_operar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
     if p_empresa is not null and p_empresa <> v_empresa then
       raise exception 'Funcionário de outra empresa' using errcode = '22023';
     end if;
   else
-    v_empresa := public.resolver_empresa(p_empresa, 'operar');
+    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
   end if;
   perform public.ponto_validar_periodo(p_inicio, p_fim, 62);
   if p_tipo is null or p_tipo not in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro') then
@@ -1059,7 +1074,7 @@ declare a record;
 begin
   select * into a from public.ponto_abonos where id = p_abono;
   if not found then raise exception 'Abono não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_operar(a.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   delete from public.ponto_abonos where id = p_abono;
   if a.funcionario_id is not null then
     perform public.ponto_apurar(a.funcionario_id, a.data, a.data);
@@ -1094,7 +1109,7 @@ declare v_empresa uuid;
 begin
   select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
   if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_ler(v_empresa) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_ler(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   return public.banco_horas_calcular_saldo(p_funcionario,
            coalesce(p_ate, public.dia_de_trabalho(public.agora(), v_empresa) - 1));
 end $$;
@@ -1106,7 +1121,7 @@ returns table (funcionario_id uuid, funcionario_nome text, cargo text, saldo_min
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid; v_ate date; v_mes date;
 begin
-  v_empresa := public.resolver_empresa(p_empresa, 'ler');
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
   v_ate := coalesce(p_ate, public.dia_de_trabalho(public.agora(), v_empresa) - 1);
   v_mes := date_trunc('month', v_ate)::date;
   return query
@@ -1139,7 +1154,7 @@ declare
 begin
   select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
   if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_ler(v_empresa) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_ler(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
 
   v_saldo := public.banco_horas_calcular_saldo(p_funcionario, p_inicio - 1);
@@ -1181,7 +1196,7 @@ declare v_empresa uuid; v_id uuid;
 begin
   select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
   if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_operar(v_empresa) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_operar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   if p_tipo is null or p_tipo not in ('saldo_inicial', 'ajuste', 'compensacao', 'pagamento') then
     raise exception 'Tipo de lançamento inválido' using errcode = '22023';
   end if;
@@ -1210,7 +1225,7 @@ declare v_empresa uuid;
 begin
   select l.empresa_id into v_empresa from public.banco_horas_lancamentos l where l.id = p_lancamento;
   if v_empresa is null then raise exception 'Lançamento não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_administrar(v_empresa) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.pode_administrar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   delete from public.banco_horas_lancamentos where id = p_lancamento;
 end $$;
 comment on function public.banco_horas_excluir_lancamento(uuid) is '[api] Exclui lançamento do banco de horas (administrador).';

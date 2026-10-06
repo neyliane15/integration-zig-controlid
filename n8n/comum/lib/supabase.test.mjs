@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import {
   lerVariavel, configSupabase, montarChamadaRpc, deveRetentar, lerRetryAfter, esperaAntesDaProxima, requisitarComRetentativa,
-  chamarRpc, criarHttpFetch, subfluxosDe, planejarDespacho, normalizarSaida, consolidarSolicitacoes, comExecucao, urlSegura, selecionar,
+  chamarRpc, criarHttpFetch, subfluxosDe, planejarDespacho, normalizarSaida, consolidarSolicitacoes, comExecucao, urlSegura, selecionar, envioAtivo, precisaConfigParaDespacho,
 } from './supabase.mjs'
 import { iniciarSupabaseFalso } from '../../mocks/supabase-falso.mjs'
 
@@ -126,7 +126,17 @@ test('planejarDespacho: passos com entrada do subfluxo, datas repassadas', () =>
   assert.match(planejarDespacho(sol({ escopo: 'batidas' }), IDS)[0]._despacho.erro, /não se aplica/)
   const semId = planejarDespacho(sol(), {})[0]._despacho
   assert.equal(semId.acao, 'invalido')
+  assert.equal(semId.tipo_execucao, 'zig_importar')
   assert.match(semId.erro, /MDG_WF_ZIG_IMPORTAR/)
+  // um subfluxo sem id → solicitação inteira inválida, um passo só
+  const parcial = planejarDespacho(sol({ integracao_tipo: 'controlid_rep' }), { ...IDS, CONTROLID_BATIDAS: '' })
+  assert.equal(parcial.length, 1)
+  assert.match(parcial[0]._despacho.erro, /MDG_WF_CONTROLID_BATIDAS/)
+  assert.equal(envioAtivo({ parametros: { envio: { ativo: true } } }), true)
+  assert.equal(envioAtivo({ parametros: {} }), false)
+  assert.equal(precisaConfigParaDespacho(sol({ integracao_tipo: 'controlid_acesso' })), true)
+  assert.equal(precisaConfigParaDespacho(sol({ integracao_tipo: 'controlid_acesso', escopo: 'batidas' })), false)
+  assert.equal(precisaConfigParaDespacho(sol()), false)
 })
 
 test('normalizarSaida e consolidarSolicitacoes', () => {
