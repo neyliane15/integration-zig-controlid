@@ -255,7 +255,7 @@ export function FormularioIntegracao({
                 {ehAcesso && (
                   <Caixa rotulo="Horários de acesso" marcado={envio.horarios !== false} aoMudar={(v) => definirEnvio('horarios', v)} desabilitado={ro} />
                 )}
-                <div className="sm:col-span-2">
+                <div className="mt-2 sm:col-span-2">
                   <Campo rotulo="Ao desligar ou inativar o funcionário" htmlFor={`${id}-desl`}>
                     <Selecao
                       id={`${id}-desl`}
