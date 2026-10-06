@@ -22,7 +22,8 @@
 // Control iD acesso aceita: login, logout, session_is_valid, load_objects, count_objects, create_objects, modify_objects,
 //   destroy_objects (users, cards, qrcodes, groups, user_groups, time_zones, time_spans, access_rules, user_access_rules,
 //   group_access_rules, portal_access_rules, access_rule_time_zones; access_logs só leitura), user_set_image (corpo
-//   application/octet-stream, JPEG/PNG), user_set_image_list (base64), user_destroy_image. Cascata ao apagar usuário.
+//   application/octet-stream, JPEG/PNG), user_set_image_list (base64), user_destroy_image, user_hash_password
+//   ({password} → {password: sha256(salt+senha) hex, salt} determinístico). Cascata ao apagar usuário.
 // Control iD REP aceita: login, logout, load_users, add_users, update_users, remove_users (por CPF/PIS), get_afd.
 // Erro simulável: qualquer texto contendo "#ERRO" em create/modify (acesso) ou add/update_users (REP) → 400 do equipamento;
 //   chaves duplicadas (cards.value, user_access_rules…) e FKs inexistentes também → 400, como no equipamento real.
@@ -30,6 +31,7 @@
 // Casos fixos de erro da Zig: rede "rede-erro" lista "loja-500" (sempre 500) e "loja-429" (sempre 429, Retry-After: 1).
 
 import { createServer } from 'node:http'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -439,6 +441,13 @@ async function tratarAcesso(req, url, corpo) {
       apagarDependentes(objeto, alvos)
       estado.historico.push({ servidor: 'acesso', acao: 'destroy_objects', objeto, quantidade: alvos.length })
       return [200, { changes: alvos.length }]
+    }
+    if (rota === '/user_hash_password.fcgi') {
+      const senha = corpo?.password
+      if (senha === undefined || senha === null || String(senha) === '') throw new ErroEquip('Field password is required')
+      const salt = createHash('sha256').update(`salt|${senha}`).digest('hex').slice(0, 32)
+      const hashHex = createHash('sha256').update(salt + String(senha)).digest('hex')
+      return [200, { password: hashHex, salt }]
     }
     if (rota === '/user_set_image.fcgi') {
       const id = Number(url.searchParams.get('user_id'))
