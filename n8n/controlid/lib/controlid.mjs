@@ -805,3 +805,492 @@ export function adaptadorHttpN8n(helpers, opcoes) {
     return { status: r.statusCode, corpo: r.body };
   };
 }
+
+// ================================================================================================
+// ENVIO sistema → equipamento (docs/CONTRATO-ADENDO-envio-controlid.md, A.5). Nunca envia batidas.
+// Entrada: retorno de ingestao_controlid_envios_pendentes; saída: um resultado por item para
+// ingestao_controlid_envio_resultado. Cada item é tratado isoladamente (erro de um não para os outros)
+// e calcula a diferença contra o que já está no equipamento, então reenviar o mesmo item não causa dano.
+// ================================================================================================
+
+const CONTROLID_DIAS_SEMANA = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']; // 0 = domingo (igual ao banco)
+const CONTROLID_PREFIXO_HORARIO = 'MDG ';
+const CONTROLID_FOTO_MAX_BYTES = 2 * 1024 * 1024;
+const CONTROLID_NOME_REP_MAX = 52;
+
+export function segundosDoDia(hora) {
+  const m = /^([0-9]{1,2}):([0-9]{2})(?::([0-9]{2}))?/.exec(String(hora ?? ''));
+  if (!m) return null;
+  const s = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3] || 0);
+  return Math.min(86399, Math.max(0, s));
+}
+
+// Faixas semanais → time_spans (segundos do dia + flags sun..sat). Faixas com o mesmo início/fim viram um span só.
+// Feriados (hol1..hol3) ficam 0: nos feriados cadastrados no equipamento a faixa não libera.
+export function faixasParaTimeSpans(faixas, timeZoneId) {
+  const grupos = new Map();
+  for (const f of faixas || []) {
+    const ini = Number.isFinite(f.inicio_segundos) ? f.inicio_segundos : segundosDoDia(f.inicio);
+    const fim = Number.isFinite(f.fim_segundos) ? f.fim_segundos : segundosDoDia(f.fim);
+    const dia = Number(f.dia_semana);
+    if (!Number.isInteger(dia) || dia < 0 || dia > 6 || ini === null || fim === null || fim <= ini) {
+      throw new Error(`Faixa de horário inválida (dia ${f.dia_semana}, ${f.inicio}–${f.fim})`);
+    }
+    const chave = ini + '-' + fim;
+    if (!grupos.has(chave)) {
+      const span = { time_zone_id: timeZoneId, start: ini, end: fim };
+      for (const d of CONTROLID_DIAS_SEMANA) span[d] = 0;
+      span.hol1 = 0;
+      span.hol2 = 0;
+      span.hol3 = 0;
+      grupos.set(chave, span);
+    }
+    grupos.get(chave)[CONTROLID_DIAS_SEMANA[dia]] = 1;
+  }
+  return [...grupos.values()].sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+export function corpoCriar(objeto, valores) {
+  return { object: objeto, values: valores };
+}
+export function corpoModificar(objeto, valores, onde) {
+  return { object: objeto, values: valores, where: { [objeto]: onde } };
+}
+export function corpoApagar(objeto, onde) {
+  return { object: objeto, where: { [objeto]: onde } };
+}
+export function corpoCarregar(objeto, onde) {
+  return onde ? { object: objeto, where: { [objeto]: onde } } : { object: objeto };
+}
+
+export function numeroCartao(valor) {
+  const d = somenteDigitos(valor);
+  if (!d || d.length > 20) throw new Error('Número de cartão inválido');
+  const n = Number(d);
+  if (!Number.isSafeInteger(n)) throw new Error(`Número de cartão ${d} grande demais para o equipamento`);
+  return n;
+}
+
+// Campos de `users` (acesso) que precisam mudar; null se nada mudou. `end_time` 0 desfaz um bloqueio anterior.
+export function diffUsuarioAcesso(atual, usuario) {
+  const desejado = { name: String(usuario.nome || '').trim(), registration: vazioParaNulo(usuario.matricula) || '' };
+  if (!atual) return desejado;
+  const mudou = {};
+  if (String(atual.name ?? '') !== desejado.name) mudou.name = desejado.name;
+  if (String(atual.registration ?? '') !== desejado.registration) mudou.registration = desejado.registration;
+  if (Number(atual.end_time || 0) !== 0) mudou.end_time = 0;
+  return Object.keys(mudou).length ? mudou : null;
+}
+
+// Cartões: atuaisDoUsuario = cards com user_id = U; outrosComValor = cards de OUTROS usuários com algum valor desejado
+// (o cadastro do sistema manda: o cartão passa para U). Retorna ids a apagar e valores a criar.
+export function diffCartoes(atuaisDoUsuario, outrosComValor, desejados, userId) {
+  const quero = new Set((desejados || []).map((c) => numeroCartao(c)));
+  const tenho = new Map((atuaisDoUsuario || []).map((c) => [Number(c.value), c]));
+  const apagar = [];
+  for (const [valor, c] of tenho) if (!quero.has(valor)) apagar.push(c.id);
+  for (const c of outrosComValor || []) if (Number(c.user_id) !== Number(userId) && quero.has(Number(c.value))) apagar.push(c.id);
+  const criar = [...quero].filter((v) => !tenho.has(v)).map((v) => ({ value: v, user_id: Number(userId) }));
+  return { apagar: deduplicarPor(apagar.map((id) => ({ id })), 'id').map((x) => x.id), criar };
+}
+
+export function diffRegras(atuais, desejadas) {
+  const tenho = new Set((atuais || []).map((r) => Number(r.access_rule_id)));
+  const quero = new Set((desejadas || []).map((r) => Number(r.access_rule_id)).filter((n) => Number.isFinite(n)));
+  return { apagar: [...tenho].filter((r) => !quero.has(r)), criar: [...quero].filter((r) => !tenho.has(r)) };
+}
+
+export function chaveRep(usuario, identificador) {
+  return normalizarDocumento(usuario && usuario[identificador === 'pis' ? 'pis' : 'cpf']);
+}
+
+// Corpo de um usuário do REP (add_users/update_users). Campos de senha/cartão só quando o recurso está ligado.
+export function corpoUsuarioRep(item, identificador, envio) {
+  const u = item.usuario || {};
+  const chave = chaveRep(u, identificador);
+  const obj = { name: String(u.nome || '').trim().slice(0, CONTROLID_NOME_REP_MAX) };
+  obj[identificador === 'pis' ? 'pis' : 'cpf'] = Number(chave);
+  const mat = vazioParaNulo(u.matricula);
+  if (mat && /^[0-9]{1,15}$/.test(mat)) obj.registration = Number(mat);
+  if (envio && envio.senha) obj.password = item.senha ? String(item.senha) : '';
+  if (envio && envio.cartao) obj.rfid = item.cartoes && item.cartoes.length ? numeroCartao(item.cartoes[0]) : 0;
+  return obj;
+}
+
+export function base64DeBytes(bytes) {
+  if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+  let s = '';
+  const arr = new Uint8Array(bytes);
+  for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);
+  return btoa(s);
+}
+
+export function urlFotoStorage(supabaseUrl, foto) {
+  const caminho = String(foto.caminho || '').split('/').map(encodeURIComponent).join('/');
+  return `${String(supabaseUrl).replace(/\/+$/, '')}/storage/v1/object/${encodeURIComponent(foto.bucket || 'funcionarios-fotos')}/${caminho}`;
+}
+
+// ------------------------------------------------------------------------------------- acesso: horários
+
+async function carregarObjetos(cliente, objeto, onde) {
+  const r = await cliente.chamar('load_objects.fcgi', corpoCarregar(objeto, onde));
+  return Array.isArray(r[objeto]) ? r[objeto] : [];
+}
+
+async function apagarObjetos(cliente, objeto, onde) {
+  await cliente.chamar('destroy_objects.fcgi', corpoApagar(objeto, onde));
+}
+
+async function criarObjetos(cliente, objeto, valores) {
+  if (!valores.length) return [];
+  const r = await cliente.chamar('create_objects.fcgi', corpoCriar(objeto, valores));
+  return Array.isArray(r.ids) ? r.ids : [];
+}
+
+// Recriação completa (A.5): apaga o que é nosso (mapa_anterior + nomes "MDG …", o que também limpa sobras de uma
+// tentativa interrompida) e cria time_zone + time_spans + access_rule + vínculos por horário. Devolve o mapa novo.
+export async function enviarHorariosAcesso(cliente, item) {
+  const anteriores = item.mapa_anterior || {};
+  const tzApagar = new Set(Object.values(anteriores).map((m) => Number(m && m.time_zone_id)).filter(Number.isFinite));
+  const arApagar = new Set(Object.values(anteriores).map((m) => Number(m && m.access_rule_id)).filter(Number.isFinite));
+  for (const tz of await carregarObjetos(cliente, 'time_zones')) {
+    if (String(tz.name || '').startsWith(CONTROLID_PREFIXO_HORARIO)) tzApagar.add(Number(tz.id));
+  }
+  for (const ar of await carregarObjetos(cliente, 'access_rules')) {
+    if (String(ar.name || '').startsWith(CONTROLID_PREFIXO_HORARIO)) arApagar.add(Number(ar.id));
+  }
+  for (const id of arApagar) {
+    await apagarObjetos(cliente, 'access_rule_time_zones', { access_rule_id: id });
+    await apagarObjetos(cliente, 'portal_access_rules', { access_rule_id: id });
+    await apagarObjetos(cliente, 'user_access_rules', { access_rule_id: id });
+    await apagarObjetos(cliente, 'access_rules', { id });
+  }
+  for (const id of tzApagar) {
+    await apagarObjetos(cliente, 'time_spans', { time_zone_id: id });
+    await apagarObjetos(cliente, 'time_zones', { id });
+  }
+  const mapa = {};
+  for (const h of item.horarios || []) {
+    const nome = (CONTROLID_PREFIXO_HORARIO + String(h.nome || h.horario_id)).slice(0, 60);
+    const [tzId] = await criarObjetos(cliente, 'time_zones', [{ name: nome }]);
+    if (tzId === undefined) throw new Error(`Equipamento não devolveu o id do time_zone de "${h.nome}"`);
+    await criarObjetos(cliente, 'time_spans', faixasParaTimeSpans(h.faixas, tzId));
+    const [arId] = await criarObjetos(cliente, 'access_rules', [{ name: nome, type: 1, priority: 0 }]);
+    if (arId === undefined) throw new Error(`Equipamento não devolveu o id da access_rule de "${h.nome}"`);
+    await criarObjetos(cliente, 'access_rule_time_zones', [{ access_rule_id: arId, time_zone_id: tzId }]);
+    await criarObjetos(cliente, 'portal_access_rules', [{ portal_id: 1, access_rule_id: arId }]);
+    mapa[h.horario_id] = { time_zone_id: tzId, access_rule_id: arId };
+  }
+  return mapa;
+}
+
+// ----------------------------------------------------------------------------------- acesso: funcionário
+
+async function definirSenhaAcesso(cliente, userId, senha) {
+  if (!senha) {
+    await cliente.chamar('modify_objects.fcgi', corpoModificar('users', { password: '', salt: '' }, { id: userId }));
+    return;
+  }
+  const h = await cliente.chamar('user_hash_password.fcgi', { password: String(senha) });
+  if (!h || !h.password) throw new Error('Equipamento não devolveu o hash da senha (user_hash_password)');
+  await cliente.chamar('modify_objects.fcgi', corpoModificar('users', { password: h.password, salt: h.salt || '' }, { id: userId }));
+}
+
+async function sincronizarCartoesAcesso(cliente, userId, cartoes) {
+  const meus = await carregarObjetos(cliente, 'cards', { user_id: userId });
+  const outros = [];
+  for (const c of cartoes || []) outros.push(...(await carregarObjetos(cliente, 'cards', { value: numeroCartao(c) })));
+  const d = diffCartoes(meus, outros, cartoes, userId);
+  for (const id of d.apagar) await apagarObjetos(cliente, 'cards', { id });
+  await criarObjetos(cliente, 'cards', d.criar);
+  return d;
+}
+
+async function sincronizarRegrasAcesso(cliente, userId, regras) {
+  const atuais = await carregarObjetos(cliente, 'user_access_rules', { user_id: userId });
+  const d = diffRegras(atuais, regras);
+  for (const r of d.apagar) await apagarObjetos(cliente, 'user_access_rules', { user_id: userId, access_rule_id: r });
+  await criarObjetos(cliente, 'user_access_rules', d.criar.map((r) => ({ user_id: userId, access_rule_id: r })));
+  return d;
+}
+
+async function enviarFotoAcesso(cliente, userId, atual, foto, baixarFoto) {
+  if (!foto) {
+    if (Number(atual && atual.image_timestamp) > 0) await cliente.chamar('user_destroy_image.fcgi', { user_ids: [userId] });
+    return 'removida';
+  }
+  const ts = Math.floor(Date.parse(foto.atualizado_em) / 1000) || 0;
+  if (ts && atual && Number(atual.image_timestamp) === ts) return 'igual';
+  if (!baixarFoto) throw new Error('Download de foto não configurado');
+  const bytes = await baixarFoto(foto);
+  const tamanho = bytes ? bytes.byteLength ?? bytes.length : 0;
+  if (!tamanho) throw new Error('Foto vazia no Storage');
+  if (tamanho > CONTROLID_FOTO_MAX_BYTES) throw new Error('Foto maior que 2 MB');
+  try {
+    const r = await cliente.chamar('user_set_image_list.fcgi', {
+      match: true, user_images: [{ user_id: userId, timestamp: ts, image: base64DeBytes(bytes) }],
+    });
+    const res = Array.isArray(r.results) ? r.results.find((x) => Number(x.user_id) === Number(userId)) || r.results[0] : null;
+    if (res && res.success === false) {
+      const msg = Array.isArray(res.errors) && res.errors.length ? res.errors.map((e) => e.message).join('; ') : 'recusada';
+      throw new Error('Foto recusada pelo equipamento: ' + msg);
+    }
+  } catch (e) {
+    if (!e || e.status !== 404) throw e;
+    // modelos sem user_set_image_list: envio binário
+    await cliente.chamar('user_set_image.fcgi', null, {
+      binario: bytes, tipoConteudo: 'application/octet-stream', consulta: { user_id: userId, match: 1, timestamp: ts },
+    });
+  }
+  return 'enviada';
+}
+
+export async function enviarFuncionarioAcesso(cliente, item, envio, baixarFoto, agoraMs) {
+  const idAntigo = vazioParaNulo(item.id_remoto);
+  let atual = idAntigo ? (await carregarObjetos(cliente, 'users', { id: Number(idAntigo) }))[0] || null : null;
+
+  if (item.operacao === 'remover') {
+    if (atual) await apagarObjetos(cliente, 'users', { id: Number(atual.id) });
+    return { id_remoto: null, acoes: atual ? ['usuario_removido'] : ['ja_ausente'] };
+  }
+  if (item.operacao === 'bloquear') {
+    if (!atual) return { id_remoto: null, acoes: ['ja_ausente'] };
+    const uid = Number(atual.id);
+    for (const c of await carregarObjetos(cliente, 'cards', { user_id: uid })) await apagarObjetos(cliente, 'cards', { id: c.id });
+    await apagarObjetos(cliente, 'user_access_rules', { user_id: uid });
+    const passado = Math.floor((agoraMs === undefined ? Date.now() : agoraMs) / 1000) - CONTROLID_DIA_MS / 1000;
+    await cliente.chamar('modify_objects.fcgi', corpoModificar('users', { password: '', salt: '', end_time: passado }, { id: uid }));
+    return { id_remoto: String(uid), acoes: ['bloqueado'] };
+  }
+
+  const u = item.usuario || {};
+  if (!String(u.nome || '').trim()) throw new Error('Funcionário sem nome');
+  const acoes = [];
+  if (!atual && vazioParaNulo(u.matricula)) {
+    // Evita duplicar: usuário com a mesma matrícula já existe no equipamento (não importado ainda).
+    atual = (await carregarObjetos(cliente, 'users', { registration: vazioParaNulo(u.matricula) }))[0] || null;
+    if (atual) acoes.push('reaproveitado_pela_matricula');
+  }
+  let uid;
+  if (!atual) {
+    const [novo] = await criarObjetos(cliente, 'users', [diffUsuarioAcesso(null, u)]);
+    if (novo === undefined) throw new Error('Equipamento não devolveu o id do usuário criado');
+    uid = Number(novo);
+    acoes.push('usuario_criado');
+  } else {
+    uid = Number(atual.id);
+    const mudou = diffUsuarioAcesso(atual, u);
+    if (mudou) {
+      await cliente.chamar('modify_objects.fcgi', corpoModificar('users', mudou, { id: uid }));
+      acoes.push('usuario_alterado');
+    }
+  }
+  if (envio.senha) {
+    await definirSenhaAcesso(cliente, uid, item.senha);
+    acoes.push(item.senha ? 'senha_definida' : 'senha_removida');
+  }
+  if (envio.cartao && item.cartoes !== null && item.cartoes !== undefined) {
+    const d = await sincronizarCartoesAcesso(cliente, uid, item.cartoes);
+    if (d.apagar.length || d.criar.length) acoes.push(`cartoes(-${d.apagar.length}/+${d.criar.length})`);
+  }
+  if (envio.horarios && item.regras_acesso !== null && item.regras_acesso !== undefined) {
+    const d = await sincronizarRegrasAcesso(cliente, uid, item.regras_acesso);
+    if (d.apagar.length || d.criar.length) acoes.push(`regras(-${d.apagar.length}/+${d.criar.length})`);
+  }
+  if (envio.foto && item.foto !== undefined) {
+    acoes.push('foto_' + (await enviarFotoAcesso(cliente, uid, atual, item.foto, baixarFoto)));
+  }
+  return { id_remoto: String(uid), acoes };
+}
+
+// ---------------------------------------------------------------------------------------------- REP
+
+export async function enviarFuncionarioRep(cliente, item, envio, identificador, cadastrados) {
+  // cadastrados: Map chave(CPF/PIS) → usuário, carregado uma vez por execução e mantido atualizado aqui.
+  const antigo = normalizarDocumento(item.id_remoto);
+  const campo = identificador === 'pis' ? 'pis' : 'cpf';
+  const remover = async (chave) => {
+    await cliente.chamar('remove_users.fcgi', { users: [Number(chave)] });
+    cadastrados.delete(chave);
+  };
+  if (item.operacao === 'remover' || item.operacao === 'bloquear') {
+    if (antigo && cadastrados.has(antigo)) {
+      await remover(antigo);
+      return { id_remoto: null, acoes: ['usuario_removido'] };
+    }
+    return { id_remoto: null, acoes: ['ja_ausente'] };
+  }
+  const chave = chaveRep(item.usuario, identificador);
+  if (!chave) throw new Error(campo === 'pis' ? 'PIS obrigatório no REP' : 'CPF obrigatório no REP');
+  if (!String((item.usuario && item.usuario.nome) || '').trim()) throw new Error('Funcionário sem nome');
+  const acoes = [];
+  if (antigo && antigo !== chave && cadastrados.has(antigo)) {
+    await remover(antigo);
+    acoes.push('chave_antiga_removida');
+  }
+  const corpo = corpoUsuarioRep(item, identificador, envio);
+  if (cadastrados.has(chave)) {
+    await cliente.chamar('update_users.fcgi', { users: [corpo] });
+    acoes.push('usuario_alterado');
+  } else {
+    await cliente.chamar('add_users.fcgi', { users: [corpo] });
+    acoes.push('usuario_criado');
+  }
+  cadastrados.set(chave, Object.assign({}, cadastrados.get(chave) || {}, corpo));
+  return { id_remoto: chave, acoes };
+}
+
+// --------------------------------------------------------------------------------------- orquestrador
+
+// pendencias = retorno de ingestao_controlid_envios_pendentes. Devolve um resultado por item:
+//   { envio_id, versao, status: 'enviado'|'erro', id_remoto, erro, mapa_remoto, alvo, operacao, acoes }
+export async function enviarPendencias({ http, config, pendencias, baixarFoto, esperar, agoraMs }) {
+  const res = { etapa: 'equipamento', ok: false, erro: null, tentativas: 1, lidos: 0, resultados: [], detalhes: {} };
+  let cliente = null;
+  try {
+    if (pendencias && pendencias.error) throw new Error('Falha ao ler as pendências de envio: ' + mensagemDeErro(pendencias.error));
+    const itens = pendencias && Array.isArray(pendencias.itens) ? pendencias.itens : [];
+    res.lidos = itens.length;
+    const cfg = lerConfig(config, agoraMs);
+    const tipo = pendencias && pendencias.tipo ? pendencias.tipo : cfg.tipo;
+    const envioCfg = Object.assign({ foto: false, cartao: false, senha: false, horarios: false }, (pendencias && pendencias.envio) || {});
+    if (tipo === 'controlid_rep') {
+      envioCfg.foto = false;
+      envioCfg.horarios = false;
+    }
+    const identificador = (pendencias && pendencias.identificador) === 'pis' ? 'pis' : cfg.identificador;
+    res.detalhes = { tipo, envio: envioCfg, itens: itens.length };
+    if (itens.length === 0) {
+      res.ok = true;
+      return res;
+    }
+    cliente = clienteDaConfig(http, cfg, esperar);
+    let cadastradosRep = null;
+    const falhaGeral = async () => {
+      // Sem login/conexão não adianta tentar item a item: todos recebem o mesmo erro.
+      await cliente.entrar();
+    };
+    try {
+      await falhaGeral();
+      if (tipo === 'controlid_rep') {
+        const r = await carregarUsuariosRep(cliente, cfg);
+        cadastradosRep = new Map();
+        for (const u of r.itens) {
+          const k = normalizarDocumento(u[identificador === 'pis' ? 'pis' : 'cpf']);
+          if (k) cadastradosRep.set(k, u);
+        }
+      }
+    } catch (e) {
+      const msg = cortar(mensagemDeErro(e), 1000);
+      res.erro = msg;
+      res.resultados = itens.map((it) => resultadoEnvio(it, 'erro', null, msg, null, []));
+      return res;
+    }
+    for (const it of itens) {
+      try {
+        if (it.alvo === 'horarios') {
+          if (tipo !== 'controlid_acesso') throw new Error('Horários de acesso só existem em equipamentos de acesso');
+          const mapa = await enviarHorariosAcesso(cliente, it);
+          res.resultados.push(resultadoEnvio(it, 'enviado', null, null, mapa, ['horarios:' + Object.keys(mapa).length]));
+        } else if (tipo === 'controlid_acesso') {
+          const r = await enviarFuncionarioAcesso(cliente, it, envioCfg, baixarFoto, agoraMs);
+          res.resultados.push(resultadoEnvio(it, 'enviado', r.id_remoto, null, null, r.acoes));
+        } else {
+          const r = await enviarFuncionarioRep(cliente, it, envioCfg, identificador, cadastradosRep);
+          res.resultados.push(resultadoEnvio(it, 'enviado', r.id_remoto, null, null, r.acoes));
+        }
+      } catch (e) {
+        res.resultados.push(resultadoEnvio(it, 'erro', null, cortar(mensagemDeErro(e), 1000), null, []));
+      }
+    }
+    res.ok = true;
+  } catch (e) {
+    res.erro = cortar(mensagemDeErro(e), 1000);
+    const itens = pendencias && Array.isArray(pendencias.itens) ? pendencias.itens : [];
+    if (!res.resultados.length) res.resultados = itens.map((it) => resultadoEnvio(it, 'erro', null, res.erro, null, []));
+  } finally {
+    if (cliente) {
+      res.detalhes.logout = await cliente.sair();
+      res.tentativas = cliente.tentativas;
+    }
+  }
+  return res;
+}
+
+function resultadoEnvio(item, status, idRemoto, erro, mapa, acoes) {
+  return {
+    envio_id: item.envio_id,
+    versao: item.versao,
+    alvo: item.alvo,
+    operacao: item.operacao,
+    funcionario_nome: (item.usuario && item.usuario.nome) || null,
+    status,
+    id_remoto: idRemoto,
+    erro,
+    mapa_remoto: mapa,
+    acoes,
+  };
+}
+
+// Corpo de ingestao_controlid_envio_resultado para um resultado.
+export function corpoResultadoEnvio(r) {
+  return {
+    p_envio: r.envio_id,
+    p_versao: r.versao,
+    p_status: r.status,
+    p_id_remoto: r.id_remoto === undefined ? null : r.id_remoto,
+    p_erro: r.erro || null,
+    p_mapa_remoto: r.mapa_remoto || null,
+  };
+}
+
+// Itens do nó seguinte: um por resultado, ou [{sem_item: true}] quando não há nada a registrar.
+export function itensDeResultado(envio) {
+  const rs = (envio && envio.resultados) || [];
+  if (!rs.length) return [{ sem_item: true }];
+  return rs.map((r) => ({ resultado: r, corpo: corpoResultadoEnvio(r) }));
+}
+
+// envio = saída de enviarPendencias (+ execucao_id); itens = itensDeResultado; respostas = retornos do registro.
+export function resumirEnvio({ envio, itens, respostas, execucaoId }) {
+  const exec = execucaoId || (envio && envio.execucao_id);
+  const det = Object.assign({}, (envio && envio.detalhes) || {});
+  const rs = (itens || []).filter((i) => i && i.resultado).map((i) => i.resultado);
+  if (!envio || (!envio.ok && rs.length === 0)) {
+    return comSaida([finalizacao(exec, 'erro', envio ? envio.lidos : 0, 0, 0, (envio && envio.erro) || 'Falha no envio', det, envio && envio.tentativas)]);
+  }
+  let enviados = 0;
+  const falhas = [];
+  rs.forEach((r, i) => {
+    const resp = (respostas || [])[i];
+    const erroRegistro = resp && resp.error ? mensagemDeErro(resp.error) : null;
+    if (r.status === 'enviado' && !erroRegistro) enviados += 1;
+    else falhas.push({ envio_id: r.envio_id, nome: r.funcionario_nome || r.alvo, erro: cortar(erroRegistro ? 'registro do resultado: ' + erroRegistro : r.erro, 300) });
+  });
+  det.enviados = enviados;
+  det.com_erro = falhas.length;
+  if (falhas.length) det.erros = falhas.slice(0, 20);
+  det.acoes = rs.slice(0, 50).map((r) => ({ nome: r.funcionario_nome || r.alvo, operacao: r.operacao, status: r.status, acoes: r.acoes }));
+  const status = rs.length === 0 ? (envio.ok ? 'sucesso' : 'erro')
+    : falhas.length === 0 ? 'sucesso' : enviados === 0 ? 'erro' : 'parcial';
+  const erro = falhas.length ? `${falhas.length} de ${rs.length} envio(s) com erro: ${falhas[0].nome}: ${falhas[0].erro}` : envio.erro;
+  return comSaida([finalizacao(exec, status, rs.length, enviados, 0, erro, det, envio.tentativas)]);
+}
+
+// Download da foto no Supabase Storage pelo nó Code (service_role vem de $env, nunca do JSON do workflow).
+export function baixadorFotoN8n(helpers, supabaseUrl, chaveServico) {
+  return async function (foto) {
+    const r = await helpers.httpRequest({
+      method: 'GET',
+      url: urlFotoStorage(supabaseUrl, foto),
+      headers: { apikey: chaveServico, Authorization: 'Bearer ' + chaveServico },
+      encoding: 'arraybuffer',
+      json: false,
+      returnFullResponse: true,
+      ignoreHttpStatusErrors: true,
+      timeout: 30000,
+    });
+    if (r.statusCode >= 400) throw new Error(`Foto não encontrada no Storage (HTTP ${r.statusCode})`);
+    return r.body;
+  };
+}
