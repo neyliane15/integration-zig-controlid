@@ -53,6 +53,8 @@ export interface ResultadoComissao {
   semParticipantes: boolean
 }
 
+import { centavosCsv, dataCsv, gerarCsv, nomeArquivoCsv } from './csv'
+
 const ESCALA = 1_000_000n
 
 /** Divisão inteira com arredondamento "meio para longe do zero" (round() do Postgres em numeric). */
@@ -200,4 +202,82 @@ export function validarPeriodoFechamento(inicio: string | null, fim: string | nu
   if (dias < 1) return 'Período inválido'
   if (dias - 1 > 92) return 'Período máximo de 93 dias'
   return null
+}
+
+// ------------------------------------------------------------------- CSV
+/** Número decimal com vírgula e sem zeros à direita (10 → "10"; 2.5 → "2,5"; 7.333333 → "7,333333"). Igual a numeroCsv do N8N. */
+export function numeroCsv(v: number | string | null | undefined, casas = 6): string {
+  if (v === null || v === undefined || v === '') return ''
+  const n = Number(v)
+  if (!Number.isFinite(n)) return ''
+  return n
+    .toFixed(casas)
+    .replace(/\.?0+$/, '')
+    .replace('.', ',')
+    .replace(/^-0$/, '0')
+}
+
+export interface FechamentoCsv {
+  data_inicio: string
+  data_fim: string
+  status: 'rascunho' | 'fechado'
+  servico_zig_centavos: number
+  servico_ajuste_centavos: number
+  servico_bruto_centavos: number
+  percentual_retencao: number
+  retencao_centavos: number
+  base_distribuivel_centavos: number
+  valor_ponto_centavos: number | null
+}
+
+export interface ItemCsv {
+  funcionario_nome: string
+  cargo: string | null
+  incluido: boolean
+  pontos: number
+  dias_trabalhados: number
+  pontos_efetivos: number
+  valor_centavos: number
+}
+
+export const COLUNAS_CSV_COMISSAO = ['Funcionário', 'Cargo', 'Incluído', 'Pontos', 'Dias trabalhados', 'Pontos efetivos', 'Valor (R$)']
+
+/**
+ * CSV do fechamento (§13) — mesma saída, byte a byte, de `csvComissao` em n8n/comum/lib/csv.mjs.
+ * Itens na ordem recebida (o banco ordena por nome).
+ */
+export function csvComissao(f: FechamentoCsv, itens: ItemCsv[], empresaNome: string): { nome: string; conteudo: string } {
+  const valorPonto = f.valor_ponto_centavos == null ? null : Math.round(Number(f.valor_ponto_centavos))
+  const preambulo = [
+    ['Período', `${dataCsv(f.data_inicio)} a ${dataCsv(f.data_fim)}`],
+    ['Serviço Zig (R$)', centavosCsv(f.servico_zig_centavos ?? 0)],
+    ['Ajuste (R$)', centavosCsv(f.servico_ajuste_centavos ?? 0)],
+    ['Serviço bruto (R$)', centavosCsv(f.servico_bruto_centavos ?? 0)],
+    ['Retenção (%)', numeroCsv(f.percentual_retencao ?? 0, 2)],
+    ['Retenção (R$)', centavosCsv(f.retencao_centavos ?? 0)],
+    ['Base distribuível (R$)', centavosCsv(f.base_distribuivel_centavos ?? 0)],
+    ['Valor do ponto (R$)', centavosCsv(valorPonto)],
+    ['Status', f.status === 'fechado' ? 'Fechado' : 'Rascunho'],
+  ]
+  let somaPontos = 0
+  let somaPe = 0
+  const linhas: unknown[][] = itens.map((i) => {
+    const incluido = i.incluido !== false
+    if (incluido) somaPontos += Number(i.pontos) || 0
+    somaPe += Number(i.pontos_efetivos) || 0
+    return [
+      i.funcionario_nome ?? '',
+      i.cargo ?? '',
+      incluido,
+      numeroCsv(i.pontos, 2),
+      i.dias_trabalhados ?? 0,
+      numeroCsv(i.pontos_efetivos, 6),
+      centavosCsv(i.valor_centavos ?? 0),
+    ]
+  })
+  linhas.push(['Total', '', '', numeroCsv(somaPontos, 2), '', numeroCsv(somaPe, 6), centavosCsv(f.base_distribuivel_centavos ?? 0)])
+  return {
+    nome: nomeArquivoCsv('comissao', empresaNome || 'empresa', f.data_inicio, f.data_fim),
+    conteudo: gerarCsv(COLUNAS_CSV_COMISSAO, linhas, preambulo),
+  }
 }
