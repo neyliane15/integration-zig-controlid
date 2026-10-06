@@ -128,6 +128,23 @@ as $$
 $$;
 comment on function public.integracao_parametros_padrao(text) is '[api] Parâmetros padrão de cada tipo de integração.';
 
+-- Padrões do envio ao equipamento (adendo envio Control iD, A.1).
+create or replace function public.integracao_envio_padrao(p_tipo text, p_modelo text) returns jsonb
+language sql immutable
+set search_path = public, extensions, pg_temp
+as $$
+  select case when p_tipo in ('controlid_acesso', 'controlid_rep') then
+    jsonb_build_object(
+      'ativo', false,
+      'foto', p_tipo = 'controlid_acesso' and coalesce(p_modelo, '') ilike '%idface%',
+      'cartao', true,
+      'senha', true,
+      'horarios', p_tipo = 'controlid_acesso',
+      'ao_desligar', 'remover')
+  else null end
+$$;
+comment on function public.integracao_envio_padrao(text, text) is '[api] Padrões de parametros.envio por tipo/modelo.';
+
 create or replace function public.integracoes_antes_gravar() returns trigger
 language plpgsql security definer
 set search_path = public, extensions, pg_temp
@@ -138,6 +155,11 @@ begin
     new.parametros := '{}'::jsonb;
   end if;
   new.parametros := public.integracao_parametros_padrao(new.tipo) || new.parametros;
+  if new.tipo in ('controlid_acesso', 'controlid_rep') then
+    new.parametros := jsonb_set(new.parametros, '{envio}',
+      public.integracao_envio_padrao(new.tipo, new.parametros ->> 'modelo')
+      || case when jsonb_typeof(new.parametros -> 'envio') = 'object' then new.parametros -> 'envio' else '{}'::jsonb end);
+  end if;
   if tg_op = 'INSERT' then
     if not public.eh_sistema() then
       new.cursor := '{}'::jsonb;
