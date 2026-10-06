@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calcularComissao, diasDoPeriodo, tituloPadraoFechamento, validarPeriodoFechamento, type ParticipanteComissao } from './comissao'
+import { calcularComissao, csvComissao, diasDoPeriodo, numeroCsv, tituloPadraoFechamento, validarPeriodoFechamento, type ParticipanteComissao } from './comissao'
 
 const P = (nome: string, cargo: string, pontos: number, id: string, dias = 30, incluido = true): ParticipanteComissao => ({
   funcionarioId: id,
@@ -208,5 +208,74 @@ describe('auxiliares', () => {
     expect(validarPeriodoFechamento('2026-01-01', '2026-04-03')).toBeNull() // 92 dias de diferença
     expect(validarPeriodoFechamento('2026-01-01', '2026-04-04')).toBe('Período máximo de 93 dias')
     expect(validarPeriodoFechamento(null, '2026-01-01')).toBe('Informe o período')
+  })
+})
+
+describe('CSV do fechamento — idêntico ao do N8N', () => {
+  const r = calcularComissao({ ...BASE, proporcionalDias: false, participantes: EQUIPE })
+  const fechamento = {
+    data_inicio: '2026-09-01',
+    data_fim: '2026-09-30',
+    status: 'fechado' as const,
+    servico_zig_centavos: r.servicoZigCentavos,
+    servico_ajuste_centavos: r.servicoAjusteCentavos,
+    servico_bruto_centavos: r.servicoBrutoCentavos,
+    percentual_retencao: 20,
+    retencao_centavos: r.retencaoCentavos,
+    base_distribuivel_centavos: r.baseCentavos,
+    valor_ponto_centavos: r.valorPontoCentavos,
+  }
+  const itens = [
+    ...r.itens.map((i) => ({
+      funcionario_nome: i.nome,
+      cargo: i.cargo ?? null,
+      incluido: i.incluido,
+      pontos: i.pontos,
+      dias_trabalhados: i.diasTrabalhados,
+      pontos_efetivos: i.pontosEfetivos,
+      valor_centavos: i.valorCentavos,
+    })),
+    { funcionario_nome: 'Zé; "Fora"', cargo: null, incluido: false, pontos: 2.5, dias_trabalhados: 0, pontos_efetivos: 0, valor_centavos: 0 },
+  ]
+
+  it('bate byte a byte com csvComissao (n8n/comum/lib/csv.mjs)', async () => {
+    const caminho = new URL('../../../n8n/comum/lib/csv.mjs', import.meta.url).href
+    const n8n = (await import(/* @vite-ignore */ caminho)) as {
+      csvComissao(d: unknown): { nome: string; conteudo: string }
+    }
+    const esperado = n8n.csvComissao({ fechamento: { ...fechamento, empresa_nome: 'Bar Bossa Nova' }, itens })
+    const nosso = csvComissao(fechamento, itens, 'Bar Bossa Nova')
+    expect(nosso.nome).toBe(esperado.nome)
+    expect(nosso.conteudo).toBe(esperado.conteudo)
+  })
+
+  it('conteúdo esperado', () => {
+    const { nome, conteudo } = csvComissao(fechamento, itens, 'Bar Bossa Nova')
+    expect(nome).toBe('comissao_bar-bossa-nova_2026-09-01_2026-09-30.csv')
+    const linhas = conteudo.replace(/^﻿/, '').split('\r\n')
+    expect(linhas.slice(0, 10)).toEqual([
+      'Período;01/09/2026 a 30/09/2026',
+      'Serviço Zig (R$);10000,00',
+      'Ajuste (R$);-50,00',
+      'Serviço bruto (R$);9950,00',
+      'Retenção (%);20',
+      'Retenção (R$);1990,00',
+      'Base distribuível (R$);7960,00',
+      'Valor do ponto (R$);209,47',
+      'Status;Fechado',
+      '',
+    ])
+    expect(linhas[10]).toBe('Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos efetivos;Valor (R$)')
+    expect(linhas[11]).toBe('Ana Souza;Garçom;Sim;10;30;10;2094,74')
+    expect(linhas[16]).toBe('"Zé; ""Fora""";;Não;2,5;0;0;0,00')
+    expect(linhas[17]).toBe('Total;;;38;;38;7960,00')
+  })
+
+  it('numeroCsv', () => {
+    expect(numeroCsv(10)).toBe('10')
+    expect(numeroCsv(2.5, 2)).toBe('2,5')
+    expect(numeroCsv(7.333333)).toBe('7,333333')
+    expect(numeroCsv(null)).toBe('')
+    expect(numeroCsv(-0.0000001)).toBe('0')
   })
 })

@@ -2,6 +2,7 @@
  * Prévia de comissão — réplica exata do contrato §9 (o banco é a fonte oficial; esta prévia tem de bater centavo a centavo).
  * Dono: frontend-2. Aritmética inteira com BigInt (pontos em escala 10⁶, como numeric(18,6)), sem ponto flutuante.
  */
+import { centavosCsv, dataCsv, gerarCsv, nomeArquivoCsv } from './csv'
 
 export interface ParticipanteComissao {
   /** id do funcionário (desempate final); null para snapshot de funcionário excluído */
@@ -52,8 +53,6 @@ export interface ResultadoComissao {
   /** soma = 0 → o banco recusa fechar ('Fechamento sem participantes') */
   semParticipantes: boolean
 }
-
-import { centavosCsv, dataCsv, gerarCsv, nomeArquivoCsv } from './csv'
 
 const ESCALA = 1_000_000n
 
