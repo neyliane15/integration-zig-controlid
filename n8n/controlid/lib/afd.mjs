@@ -50,9 +50,9 @@ export function lerLinhaAfd(linhaBruta, tipos) {
     if (tipo === '3' || tipo === '7') return { ignorada: 'NSR não numérico' };
     return { outro: tipo || '?' };
   }
+  if (nsrTexto === '999999999' || tipo === '9') return { outro: '9' }; // trailer
   if (!tiposAceitos.includes(tipo)) return { outro: tipo };
   const nsr = Number(nsrTexto);
-  if (nsrTexto === '999999999' || tipo === '9') return { outro: '9' };
   if (nsr <= 0) return { ignorada: 'NSR zerado' };
 
   if (linha.charAt(20) === 'T') {

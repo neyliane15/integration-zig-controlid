@@ -1166,12 +1166,9 @@ export async function enviarPendencias({ http, config, pendencias, baixarFoto, e
     }
     cliente = clienteDaConfig(http, cfg, esperar);
     let cadastradosRep = null;
-    const falhaGeral = async () => {
+    try {
       // Sem login/conexão não adianta tentar item a item: todos recebem o mesmo erro.
       await cliente.entrar();
-    };
-    try {
-      await falhaGeral();
       if (tipo === 'controlid_rep') {
         const r = await carregarUsuariosRep(cliente, cfg);
         cadastradosRep = new Map();
