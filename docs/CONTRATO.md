@@ -1354,7 +1354,7 @@ Tema **escuro único** (`color-scheme: dark`). Os nomes abaixo são a API: o Tai
 
 Classes utilitárias (em `estilos.css`, camada `components`): `.sobrancelha` (caixa alta, `letter-spacing: .24em`, 11px, `text-ouro`, peso 700),
 `.titulo-display` (Fraunces 400, 32–44px, `text-creme`), `.titulo-italico` (Fraunces itálico, `text-ouro-claro`), `.numero` (mono, `tabular-nums`).
-Tela de login: cartão centralizado de 420px; sobrancelha "MEU DIA DE GERENTE"; título em duas linhas ("Bom te ver" / *"de volta."* em itálico dourado-claro);
+Tela de login: cartão centralizado de 420px; sobrancelha "MEU DIA DE GERENTE"; título em duas linhas ("Organize seu dia." / *"Não esqueça nada."* em itálico dourado-claro, subtítulo lavanda "Seu assistente diário de rotina na loja.", fiel à referência do cliente);
 campos E-mail e Senha; caixa "Manter-me conectado"; botão **Entrar** (dourado, texto `tinta-ouro`); divisor "ou"; botão secundário
 **Entrar com Google** (contorno `borda`, ícone G); links "Recuperar senha" e "Criar conta".
 Responsivo: 390 px (celular: barra lateral vira menu inferior/gaveta, tabelas viram cartões) e 1440 px (barra lateral fixa 260 px).

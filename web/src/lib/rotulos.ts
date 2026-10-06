@@ -7,12 +7,14 @@ import type {
   BatidaEsperada,
   EscopoSync,
   GatilhoExecucao,
+  OperacaoEnvio,
   OrigemBatida,
   Papel,
   Prioridade,
   Recorrencia,
   SituacaoDia,
   StatusAlarme,
+  StatusEnvioControlId,
   StatusExecucao,
   StatusFechamento,
   StatusSolicitacao,
@@ -190,3 +192,22 @@ export const rotuloTipoZig: Record<TipoZig, string> = {
 /** 0 = domingo … 6 = sábado. */
 export const rotuloDiaSemana = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'] as const
 export const rotuloDiaSemanaCurto = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'] as const
+
+export const rotuloStatusEnvio: Record<StatusEnvioControlId, string> = {
+  pendente: 'Pendente',
+  enviando: 'Enviando',
+  enviado: 'Enviado',
+  erro: 'Erro',
+  aguardando: 'Aguardando',
+}
+
+export const rotuloOperacaoEnvio: Record<OperacaoEnvio, string> = {
+  salvar: 'Cadastrar/atualizar',
+  remover: 'Remover',
+  bloquear: 'Bloquear',
+}
+
+export const rotuloAoDesligar: Record<'remover' | 'bloquear', string> = {
+  remover: 'Remover do equipamento',
+  bloquear: 'Bloquear (manter cadastro)',
+}

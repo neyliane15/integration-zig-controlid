@@ -40,6 +40,9 @@ const PaginaFuncionarios = lazy(() =>
   import('./paginas/funcionarios/PaginaFuncionarios').then((m) => ({ default: m.PaginaFuncionarios })),
 )
 const PaginaFuncionario = lazy(() => import('./paginas/funcionarios/PaginaFuncionario').then((m) => ({ default: m.PaginaFuncionario })))
+const PaginaHorariosAcesso = lazy(() =>
+  import('./paginas/funcionarios/PaginaHorariosAcesso').then((m) => ({ default: m.PaginaHorariosAcesso })),
+)
 const PaginaJornadas = lazy(() => import('./paginas/funcionarios/PaginaJornadas').then((m) => ({ default: m.PaginaJornadas })))
 const PaginaPontoDia = lazy(() => import('./paginas/ponto/PaginaPontoDia').then((m) => ({ default: m.PaginaPontoDia })))
 const PaginaEspelho = lazy(() => import('./paginas/ponto/PaginaEspelho').then((m) => ({ default: m.PaginaEspelho })))
@@ -81,6 +84,7 @@ export function App() {
 
           <Route path="/funcionarios" element={<PaginaFuncionarios />} />
           <Route path="/funcionarios/jornadas" element={<PaginaJornadas />} />
+          <Route path="/funcionarios/horarios-acesso" element={<PaginaHorariosAcesso />} />
           <Route path="/funcionarios/novo" element={<PaginaFuncionario />} />
           <Route path="/funcionarios/:id" element={<PaginaFuncionario />} />
 

@@ -829,8 +829,9 @@ create trigger ponto_reapurar after update of fuso, virada_dia, ponto_janela_dup
 create or replace function public.ponto_gatilho_empresa_datas()
 returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 begin
+  -- o gatilho a_antes de ponto_batidas recalcula data_trabalho a partir da empresa já atualizada
   update public.ponto_batidas b
-     set data_trabalho = ((b.instante at time zone new.fuso) - new.virada_dia)::date
+     set data_trabalho = b.data_trabalho
    where b.empresa_id = new.id
      and b.data_trabalho is distinct from ((b.instante at time zone new.fuso) - new.virada_dia)::date;
   return null;
