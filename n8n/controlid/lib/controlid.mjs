@@ -370,7 +370,8 @@ export function sessaoExpirou(resposta) {
 
 function descreverFalhaRede(e) {
   const codigo = e && (e.code || (e.cause && e.cause.code));
-  const msg = mensagemDeErro(e);
+  let msg = mensagemDeErro(e);
+  if (e && e.cause && e.cause.message && !msg.includes(e.cause.message)) msg += ' (' + e.cause.message + ')';
   if (/timeout|timed out|ETIMEDOUT|ECONNABORTED|aborted/i.test(String(codigo) + ' ' + msg)) return 'tempo esgotado';
   if (/ECONNREFUSED/.test(String(codigo) + msg)) return 'conexão recusada (equipamento desligado ou porta errada?)';
   if (/EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN/.test(String(codigo) + msg)) return 'endereço inalcançável (rede/VPN?)';

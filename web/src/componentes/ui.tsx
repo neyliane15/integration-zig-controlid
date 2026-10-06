@@ -614,7 +614,7 @@ export function Abas<T extends string>({
   ativa,
   aoMudar,
 }: {
-  abas: { id: T; rotulo: ReactNode; contador?: number }[]
+  abas: { id: NoInfer<T>; rotulo: ReactNode; contador?: number }[]
   ativa: T
   aoMudar(id: T): void
 }) {

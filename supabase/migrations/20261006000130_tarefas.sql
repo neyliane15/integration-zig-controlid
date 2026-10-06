@@ -324,11 +324,11 @@ create or replace function public.tarefa_pode_mexer(p_tarefa public.tarefas) ret
 language sql stable security definer
 set search_path = public, extensions, pg_temp
 as $$
-  select public.pode_operar(p_tarefa.empresa_id)
+  select coalesce(public.pode_operar(p_tarefa.empresa_id)
       or (public.pode_ler(p_tarefa.empresa_id)
-          and (p_tarefa.responsavel_perfil_id = auth.uid()
+          and (p_tarefa.responsavel_perfil_id is not distinct from auth.uid() and auth.uid() is not null
                or (p_tarefa.responsavel_funcionario_id is not null
-                   and p_tarefa.responsavel_funcionario_id = public.meu_funcionario())))
+                   and p_tarefa.responsavel_funcionario_id is not distinct from public.meu_funcionario()))), false)
 $$;
 comment on function public.tarefa_pode_mexer(public.tarefas) is '[interno] G A M ou responsável (leitura).';
 

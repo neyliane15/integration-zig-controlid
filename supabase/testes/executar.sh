@@ -96,7 +96,7 @@ for t in "$AQUI"/[0-9][0-9]_*.sql; do
     for f in "${FILTROS[@]}"; do [[ "$nome" == "$f"* ]] && casou=1; done
     [ "$casou" = "1" ] || continue
   fi
-  if ! psql -X -q -v ON_ERROR_STOP=1 -d "$BANCO" -f "$t" > "$SAIDA" 2>&1; then
+  if ! psql -X -q -v ON_ERROR_STOP=1 -d "$BANCO" -f "$t" 2> "$SAIDA" > /dev/null; then
     echo "FALHOU: $nome" >&2
     grep -v '^NOTICE:  ok' "$SAIDA" | tail -n 40 >&2
     exit 1

@@ -198,7 +198,7 @@ begin
             when 'administrar' then public.pode_administrar(v)
             else false
           end;
-  if not v_ok then
+  if v_ok is not true then
     raise exception 'Sem permissão' using errcode = '42501';
   end if;
   if not exists (select 1 from public.empresas where id = v) then

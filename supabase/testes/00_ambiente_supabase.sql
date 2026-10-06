@@ -234,6 +234,17 @@ begin
   return v;
 end $$;
 
+-- Executa um comando (insert/update/delete) e devolve quantas linhas ele afetou.
+create or replace function teste.afetadas(p_sql text) returns bigint
+language plpgsql as $$
+declare
+  v bigint;
+begin
+  execute p_sql;
+  get diagnostics v = row_count;
+  return v;
+end $$;
+
 -- "Veste" um usuário pelo e-mail (null = anon), como o PostgREST faz: set local role + claims.
 create or replace function teste.como(p_email text) returns uuid
 language plpgsql as $$
@@ -282,3 +293,53 @@ begin
 end $$;
 
 grant execute on all functions in schema teste to public;
+
+-- ---------------------------------------------------------------------------------------------
+-- Cenário padrão dos testes do backend-1 (resolvido em tempo de execução; chamar como dono).
+-- Empresas E1 'c1…e1' e E2 'c1…e2'; usuários b1.<papel><n>@teste.local (senha 'segredo1');
+-- funcionários F1a, F1b (E1) e F2a (E2); jornada J1 (E1) e J2 (E2); integrações I1 (acesso, E1), I1r (REP, E1), I2 (acesso, E2).
+-- ---------------------------------------------------------------------------------------------
+create or replace function teste.cenario_b1() returns void
+language plpgsql as $$
+declare
+  u record;
+begin
+  perform teste.como_dono();
+  insert into public.empresas (id, nome) values
+    ('c1000000-0000-4000-8000-0000000000e1', 'Empresa Um'),
+    ('c1000000-0000-4000-8000-0000000000e2', 'Empresa Dois');
+  insert into public.funcionarios (id, empresa_id, nome, cpf, pontos_comissao, data_admissao) values
+    ('c1000000-0000-4000-8000-0000000001a1', 'c1000000-0000-4000-8000-0000000000e1', 'Fulano Um', '52998224725', 10, '2026-01-01'),
+    ('c1000000-0000-4000-8000-0000000001b1', 'c1000000-0000-4000-8000-0000000000e1', 'Beltrano Um', null, 5, '2026-01-01'),
+    ('c1000000-0000-4000-8000-0000000001a2', 'c1000000-0000-4000-8000-0000000000e2', 'Fulano Dois', '11144477735', 7, '2026-01-01');
+  insert into public.jornadas (id, empresa_id, nome) values
+    ('c1000000-0000-4000-8000-000000000201', 'c1000000-0000-4000-8000-0000000000e1', 'Noite'),
+    ('c1000000-0000-4000-8000-000000000202', 'c1000000-0000-4000-8000-0000000000e2', 'Noite');
+  insert into public.integracoes (id, empresa_id, tipo, nome) values
+    ('c1000000-0000-4000-8000-000000000101', 'c1000000-0000-4000-8000-0000000000e1', 'controlid_acesso', 'Porta 1'),
+    ('c1000000-0000-4000-8000-000000000103', 'c1000000-0000-4000-8000-0000000000e1', 'controlid_rep', 'REP 1'),
+    ('c1000000-0000-4000-8000-000000000102', 'c1000000-0000-4000-8000-0000000000e2', 'controlid_acesso', 'Porta 2');
+  insert into public.integracoes_segredos (integracao_id, empresa_id, segredos) values
+    ('c1000000-0000-4000-8000-000000000101', 'c1000000-0000-4000-8000-0000000000e1', '{"url":"http://10.0.0.1","login":"admin","senha":"s3cr3t-1"}'),
+    ('c1000000-0000-4000-8000-000000000102', 'c1000000-0000-4000-8000-0000000000e2', '{"url":"http://10.0.0.2","login":"admin","senha":"s3cr3t-2"}');
+  for u in
+    select * from (values
+      ('b1.master@teste.local',   'master',        null::uuid),
+      ('b1.admin1@teste.local',   'administrador', 'c1000000-0000-4000-8000-0000000000e1'::uuid),
+      ('b1.gerente1@teste.local', 'gerente',       'c1000000-0000-4000-8000-0000000000e1'::uuid),
+      ('b1.leitura1@teste.local', 'leitura',       'c1000000-0000-4000-8000-0000000000e1'::uuid),
+      ('b1.inativo1@teste.local', 'gerente',       'c1000000-0000-4000-8000-0000000000e1'::uuid),
+      ('b1.admin2@teste.local',   'administrador', 'c1000000-0000-4000-8000-0000000000e2'::uuid),
+      ('b1.gerente2@teste.local', 'gerente',       'c1000000-0000-4000-8000-0000000000e2'::uuid),
+      ('b1.leitura2@teste.local', 'leitura',       'c1000000-0000-4000-8000-0000000000e2'::uuid)
+    ) t(email, papel, empresa)
+  loop
+    perform public.admin_criar_usuario(u.email, 'segredo1', split_part(u.email, '@', 1), u.papel, u.empresa, null);
+  end loop;
+  update public.perfis set ativo = false where email = 'b1.inativo1@teste.local';
+  update public.perfis set funcionario_id = 'c1000000-0000-4000-8000-0000000001a1' where email = 'b1.leitura1@teste.local';
+  -- cadastro aberto (GoTrue): perfil sem empresa
+  insert into auth.users (id, email, raw_user_meta_data, created_at)
+  values ('c1000000-0000-4000-8000-00000000f0f0', 'b1.semempresa@teste.local', '{"nome":"Sem Empresa"}', now());
+end $$;
+grant execute on function teste.cenario_b1() to public;
