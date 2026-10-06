@@ -234,6 +234,12 @@ begin
   return v;
 end $$;
 
+-- Id do usuário pelo e-mail (enxerga auth.users mesmo vestindo outro papel).
+create or replace function teste.uid(p_email text) returns uuid
+language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+  select id from auth.users where lower(email) = lower(p_email)
+$$;
+
 -- Executa um comando (insert/update/delete) e devolve quantas linhas ele afetou.
 create or replace function teste.afetadas(p_sql text) returns bigint
 language plpgsql as $$

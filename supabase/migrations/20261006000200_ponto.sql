@@ -972,7 +972,9 @@ begin
   update public.ponto_batidas
      set desconsiderada = p_desconsiderar,
          motivo = case when p_desconsiderar then btrim(p_motivo)
-                       when origem = 'manual' then motivo
+                       when origem = 'manual' then coalesce(
+                         (select aj.motivo from public.ponto_ajustes aj
+                           where aj.batida_id = p_batida and aj.acao = 'incluir' order by aj.feito_em limit 1), motivo)
                        else null end
    where id = p_batida;
 

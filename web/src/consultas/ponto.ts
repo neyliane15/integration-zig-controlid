@@ -3,10 +3,11 @@
  * Toda mutação invalida painel, ponto-dia, espelho, alarmes, banco-horas (§14.8).
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { PontoAbono, PontoAjuste, PontoAlarme, StatusAlarme, TipoAbono, TipoAlarme } from '@/tipos/banco'
+import type { EsperadaEspelho, PontoAbono, PontoAjuste, PontoAlarme, StatusAlarme, TipoAbono, TipoAlarme } from '@/tipos/banco'
 import { chamarRpc, exigir, supabase } from '@/lib/supabase'
 import { chaves, invalidarPonto } from '@/lib/consultas'
 import { useEmpresaAtual } from '@/lib/sessao'
+import { instantesEsperados, type HorariosDia } from '@/lib/ponto'
 
 export function usePontoDia(data: string) {
   const { empresaId } = useEmpresaAtual()
@@ -164,4 +165,41 @@ export function useReapurar() {
   return useMutacaoPonto((a: { inicio: string; fim: string; funcionarioId?: string | null }) =>
     chamarRpc('ponto_reapurar', { p_inicio: a.inicio, p_fim: a.fim, p_funcionario: a.funcionarioId ?? null, p_empresa: empresaId }),
   )
+}
+
+/**
+ * Batidas esperadas de cada funcionário no dia de trabalho `data`, a partir da jornada vigente
+ * (o `ponto_dia_empresa` não traz as esperadas). Abono/folga/sem escala são tratados na tela pela situação.
+ */
+export function useEsperadasDoDia(data: string, fuso: string, virada: string) {
+  const { empresaId } = useEmpresaAtual()
+  return useQuery({
+    queryKey: ['jornadas', empresaId ?? null, 'esperadas', data, fuso, virada],
+    enabled: !!empresaId && !!data,
+    queryFn: async () => {
+      const [vigencias, jornadas] = await Promise.all([
+        supabase
+          .from('funcionario_jornadas')
+          .select('funcionario_id, jornada_id, vigente_desde')
+          .eq('empresa_id', empresaId as string)
+          .lte('vigente_desde', data)
+          .order('vigente_desde', { ascending: false }),
+        supabase
+          .from('jornada_dias')
+          .select('jornada_id, dia_semana, entrada, saida_intervalo, volta_intervalo, saida')
+          .eq('empresa_id', empresaId as string),
+      ])
+      const vs = exigir(vigencias) as { funcionario_id: string; jornada_id: string }[]
+      const dias = exigir(jornadas) as (HorariosDia & { jornada_id: string; dia_semana: number })[]
+      const [a, m, d] = data.split('-').map(Number)
+      const dow = new Date(Date.UTC(a ?? 1970, (m ?? 1) - 1, d ?? 1)).getUTCDay()
+      const mapa = new Map<string, EsperadaEspelho[]>()
+      for (const v of vs) {
+        if (mapa.has(v.funcionario_id)) continue
+        const jd = dias.find((x) => x.jornada_id === v.jornada_id && x.dia_semana === dow)
+        mapa.set(v.funcionario_id, jd ? instantesEsperados(data, jd, fuso, virada) : [])
+      }
+      return mapa
+    },
+  })
 }
