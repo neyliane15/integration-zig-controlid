@@ -3,7 +3,13 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
+  ControlIdEnvio,
+  ControlIdHorario,
+  ControlIdHorarioFaixa,
   ControlIdUsuario,
+  FuncionarioHorario,
+  ParametrosControlIdAcesso,
+  ParametrosControlIdRep,
   Funcionario,
   FuncionarioJornada,
   FuncionarioPontos,
@@ -309,7 +315,7 @@ export function useRemoverJornadaFuncionario() {
 }
 
 // ------------------------------------------------------------ Control iD
-export type EquipamentoControlId = Pick<Integracao, 'id' | 'nome' | 'tipo' | 'ativa'>
+export type EquipamentoControlId = Pick<Integracao, 'id' | 'nome' | 'tipo' | 'ativa' | 'parametros'>
 
 /** Equipamentos Control iD da empresa (G A M). */
 export function useEquipamentosControlId() {
@@ -321,7 +327,7 @@ export function useEquipamentosControlId() {
       exigir(
         await supabase
           .from('integracoes')
-          .select('id, nome, tipo, ativa')
+          .select('id, nome, tipo, ativa, parametros')
           .eq('empresa_id', empresaId as string)
           .in('tipo', ['controlid_acesso', 'controlid_rep'])
           .order('nome'),
@@ -392,5 +398,245 @@ export function usePerfisEmpresa() {
           .eq('empresa_id', empresaId as string)
           .order('nome'),
       ) as PerfilResumo[],
+  })
+}
+
+// ------------------------------------------- envio ao Control iD (adendo)
+/** Envio ligado no equipamento? (opt-in; padrão desligado — adendo A.1). */
+export function envioAtivo(e: Pick<Integracao, 'parametros' | 'ativa'>): boolean {
+  return !!e.ativa && !!(e.parametros as ParametrosControlIdAcesso | ParametrosControlIdRep | null)?.envio?.ativo
+}
+
+const ENVIO_EM_CURSO = (l: { status: string }[] | undefined) => !!l?.some((x) => x.status === 'pendente' || x.status === 'enviando')
+
+/** Estado do envio do funcionário em cada equipamento (G A M). Atualiza a cada 5 s enquanto houver pendência. */
+export function useEnviosFuncionario(funcionarioId: string | null | undefined) {
+  return useQuery({
+    queryKey: [...chaves.funcionario(funcionarioId), 'envios'],
+    enabled: !!funcionarioId,
+    refetchInterval: (q) => (ENVIO_EM_CURSO(q.state.data) ? 5000 : false),
+    queryFn: async () =>
+      exigir(
+        await supabase
+          .from('controlid_envios')
+          .select('*')
+          .eq('funcionario_id', funcionarioId as string)
+          .eq('alvo', 'funcionario'),
+      ) as ControlIdEnvio[],
+  })
+}
+
+/** Todos os envios da empresa (lista de funcionários e página de horários). */
+export function useEnviosEmpresa() {
+  const { empresaId } = useEmpresaAtual()
+  return useQuery({
+    queryKey: [...chaves.funcionarios(empresaId), 'envios'],
+    enabled: !!empresaId,
+    refetchInterval: (q) => (ENVIO_EM_CURSO(q.state.data) ? 10_000 : false),
+    queryFn: async () =>
+      exigir(
+        await supabase
+          .from('controlid_envios')
+          .select('*')
+          .eq('empresa_id', empresaId as string),
+      ) as ControlIdEnvio[],
+  })
+}
+
+export function useCredenciais(funcionarioId: string | null | undefined) {
+  return useQuery({
+    queryKey: [...chaves.funcionario(funcionarioId), 'credenciais'],
+    enabled: !!funcionarioId,
+    queryFn: () => chamarRpc('funcionario_credenciais', { p_funcionario: funcionarioId as string }),
+  })
+}
+
+function useMutacaoFuncionario<A, R>(fn: (a: A) => Promise<R>) {
+  const qc = useQueryClient()
+  return useMutation({ mutationFn: fn, onSuccess: () => invalidar(qc, 'funcionario', 'funcionarios') })
+}
+
+export function useDefinirSenhaAcesso() {
+  return useMutacaoFuncionario((a: { funcionarioId: string; senha: string | null }) =>
+    chamarRpc('funcionario_definir_senha', { p_funcionario: a.funcionarioId, p_senha: a.senha }),
+  )
+}
+
+export function useAdicionarCartao() {
+  return useMutacaoFuncionario((a: { funcionarioId: string; numero: string }) =>
+    chamarRpc('funcionario_adicionar_cartao', { p_funcionario: a.funcionarioId, p_numero: a.numero }),
+  )
+}
+
+export function useRemoverCartao() {
+  return useMutacaoFuncionario((cartaoId: string) => chamarRpc('funcionario_remover_cartao', { p_cartao: cartaoId }))
+}
+
+export const BUCKET_FOTOS = 'funcionarios-fotos'
+
+/** Envia a foto (já recortada/comprimida) ao Storage e registra; apaga o arquivo anterior. */
+export function useDefinirFoto() {
+  const { empresaId } = useEmpresaAtual()
+  return useMutacaoFuncionario(async (a: { funcionarioId: string; arquivo: Blob; anterior: string | null }) => {
+    const nome = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : String(Date.now())
+    const caminho = `${empresaId}/${a.funcionarioId}/${nome}.jpg`
+    exigir(await supabase.storage.from(BUCKET_FOTOS).upload(caminho, a.arquivo, { upsert: true, contentType: 'image/jpeg' }))
+    try {
+      await chamarRpc('funcionario_definir_foto', { p_funcionario: a.funcionarioId, p_caminho: caminho })
+    } catch (e) {
+      await supabase.storage.from(BUCKET_FOTOS).remove([caminho])
+      throw e
+    }
+    if (a.anterior && a.anterior !== caminho) await supabase.storage.from(BUCKET_FOTOS).remove([a.anterior])
+    return caminho
+  })
+}
+
+export function useRemoverFoto() {
+  return useMutacaoFuncionario(async (a: { funcionarioId: string; caminho: string | null }) => {
+    await chamarRpc('funcionario_definir_foto', { p_funcionario: a.funcionarioId, p_caminho: null })
+    if (a.caminho) await supabase.storage.from(BUCKET_FOTOS).remove([a.caminho])
+  })
+}
+
+/** URL assinada (5 min) para exibir a foto. */
+export function useUrlFoto(caminho: string | null | undefined) {
+  return useQuery({
+    queryKey: ['funcionario', 'foto-url', caminho ?? null],
+    enabled: !!caminho,
+    staleTime: 4 * 60_000,
+    queryFn: async () => {
+      const r = exigir(await supabase.storage.from(BUCKET_FOTOS).createSignedUrl(caminho as string, 300)) as { signedUrl: string }
+      return r.signedUrl
+    },
+  })
+}
+
+/**
+ * "Enviar para o Control iD agora": volta erros (e, com funcionário, força o reenvio) a pendente e coloca
+ * os equipamentos com envio ligado na fila de sincronização (escopo exportar_funcionarios).
+ */
+export function useEnviarControlIdAgora() {
+  const qc = useQueryClient()
+  const { empresaId } = useEmpresaAtual()
+  return useMutation({
+    mutationFn: async (a: { funcionarioId?: string | null; integracaoIds: string[] }) => {
+      const reenviados = await chamarRpc('controlid_envio_reenviar', {
+        p_funcionario: a.funcionarioId ?? null,
+        p_integracao: a.integracaoIds.length === 1 ? a.integracaoIds[0] : null,
+        p_empresa: empresaId,
+      })
+      let solicitacoes = 0
+      for (const id of a.integracaoIds) {
+        solicitacoes += Number(await chamarRpc('sync_solicitar', { p_integracao: id, p_escopo: 'exportar_funcionarios', p_empresa: empresaId })) || 0
+      }
+      return { reenviados: Number(reenviados) || 0, solicitacoes }
+    },
+    onSuccess: () => invalidar(qc, 'funcionario', 'funcionarios', 'sync', 'integracoes', 'painel'),
+  })
+}
+
+// ---------------------------------------------------- horários de acesso
+export type HorarioComFaixas = ControlIdHorario & { controlid_horario_faixas: ControlIdHorarioFaixa[] }
+
+export function useHorariosAcesso() {
+  const { empresaId } = useEmpresaAtual()
+  return useQuery({
+    queryKey: [...chaves.funcionarios(empresaId), 'horarios-acesso'],
+    enabled: !!empresaId,
+    queryFn: async () => {
+      const lista = exigir(
+        await supabase
+          .from('controlid_horarios')
+          .select('*, controlid_horario_faixas(*)')
+          .eq('empresa_id', empresaId as string)
+          .order('nome'),
+      ) as HorarioComFaixas[]
+      for (const h of lista) h.controlid_horario_faixas.sort((a, b) => a.dia_semana - b.dia_semana || a.inicio.localeCompare(b.inicio))
+      return lista
+    },
+  })
+}
+
+export interface DadosHorarioAcesso {
+  id?: string | null
+  nome: string
+  ativo: boolean
+  faixas: { dia_semana: number; inicio: string; fim: string }[]
+}
+
+export function useSalvarHorarioAcesso() {
+  const qc = useQueryClient()
+  const { empresaId } = useEmpresaAtual()
+  return useMutation({
+    mutationFn: async (d: DadosHorarioAcesso) => {
+      let id = d.id ?? null
+      if (id) {
+        exigir(await supabase.from('controlid_horarios').update({ nome: d.nome.trim(), ativo: d.ativo }).eq('id', id).select('id').single())
+        exigir(await supabase.from('controlid_horario_faixas').delete().eq('horario_id', id))
+      } else {
+        const r = exigir(
+          await supabase
+            .from('controlid_horarios')
+            .insert({ nome: d.nome.trim(), ativo: d.ativo, empresa_id: empresaId })
+            .select('id')
+            .single(),
+        ) as { id: string }
+        id = r.id
+      }
+      if (d.faixas.length) {
+        exigir(
+          await supabase
+            .from('controlid_horario_faixas')
+            .insert(d.faixas.map((f) => ({ ...f, horario_id: id, empresa_id: empresaId }))),
+        )
+      }
+      return id as string
+    },
+    onSuccess: () => invalidar(qc, 'funcionarios', 'funcionario'),
+  })
+}
+
+export function useExcluirHorarioAcesso() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (id: string) => {
+      exigir(await supabase.from('controlid_horarios').delete().eq('id', id))
+    },
+    onSuccess: () => invalidar(qc, 'funcionarios', 'funcionario'),
+  })
+}
+
+/** Vínculos funcionário × horário de acesso da empresa. */
+export function useFuncionarioHorarios() {
+  const { empresaId } = useEmpresaAtual()
+  return useQuery({
+    queryKey: [...chaves.funcionarios(empresaId), 'funcionario-horarios'],
+    enabled: !!empresaId,
+    queryFn: async () =>
+      exigir(
+        await supabase
+          .from('funcionario_horarios')
+          .select('*')
+          .eq('empresa_id', empresaId as string),
+      ) as FuncionarioHorario[],
+  })
+}
+
+export function useVincularHorario() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (a: { funcionarioId: string; horarioId: string; vincular: boolean }) => {
+      if (a.vincular) {
+        exigir(
+          await supabase
+            .from('funcionario_horarios')
+            .upsert({ funcionario_id: a.funcionarioId, horario_id: a.horarioId }, { onConflict: 'funcionario_id,horario_id', ignoreDuplicates: true }),
+        )
+      } else {
+        exigir(await supabase.from('funcionario_horarios').delete().eq('funcionario_id', a.funcionarioId).eq('horario_id', a.horarioId))
+      }
+    },
+    onSuccess: () => invalidar(qc, 'funcionarios', 'funcionario'),
   })
 }
