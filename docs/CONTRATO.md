@@ -1260,7 +1260,8 @@ Despacho (n8n-2) por `tipo`/`escopo`:
    `ingestao_controlid_usuarios` com `[{id: String(id), registration, name}]`.
 3. Batidas: `POST {url}/load_objects.fcgi?session=S` `{"object":"access_logs","where":{"access_logs":{"time":{">=":T}}}}` com
    `T = max(cursor.ultimo_instante − 1 dia, hoje − dias_retroativos)` em unix (no mesmo referencial do relógio — ver `relogio_em_hora_local`);
-   sem cursor: `hoje − dias_retroativos`. Paginar com `"limit": 1000, "offset": n` se o equipamento aceitar. Cada log →
+   sem cursor: `hoje − dias_retroativos`. Se a integração ficar parada mais que `dias_retroativos`, a recuperação é pela sincronização
+   manual com `data_inicio` (tela Integrações → Sincronizar agora → período), que ignora o limite. Paginar com `"limit": 1000, "offset": n` se o equipamento aceitar. Cada log →
    `{id_externo: String(id), user_id: String(user_id), evento: event, instante_local|instante}`; envia em lotes de ≤ 1000.
 4. Exportar: `ingestao_funcionarios_para_exportar` → `POST {url}/create_objects.fcgi?session=S`
    `{"object":"users","values":[{"name": nome, "registration": matricula}]}` → em seguida reimporta usuários (vínculo automático pela matrícula).
@@ -1271,12 +1272,13 @@ Despacho (n8n-2) por `tipo`/`escopo`:
 2. Usuários: `POST {url}/load_users.fcgi?session=S` `{}` → `{"users":[{name, pis|cpf, registration,…}]}` → ingestão com `id` = cpf/pis (dígitos).
 3. AFD: `POST {url}/get_afd.fcgi?session=S` com `{"initial_nsr": cursor.ultimo_nsr + 1}`; sem cursor
    `{"initial_date": {"day": d, "month": m, "year": a}}` (hoje − dias_retroativos). Resposta: texto AFD.
-4. Parser AFD (`n8n/controlid/lib/afd.mjs`, função `lerAfd(texto) → {marcacoes, ignoradas}`), só registros tipo **3**:
+4. Parser AFD (`n8n/controlid/lib/afd.mjs`, função `lerAfd(texto) → {marcacoes, ignoradas}`), registros de marcação tipo **3** e tipo **7**
+   (tipo 7 = marcação de REP-P/REP-A na Portaria 671; mesmo mapeamento de NSR, data-hora e CPF do tipo 3):
    - **Portaria 671** (50 colunas): `1–9` NSR · `10` tipo `3` · `11–34` data-hora `AAAA-MM-DDThh:mm:00-0300` · `35–46` CPF (12, zero à esquerda) · `47–50` CRC-16.
      → `{id_externo: String(nsr), nsr, instante: "AAAA-MM-DDThh:mm:00-03:00", cpf: <11 dígitos>}`.
    - **Portaria 1510 (legado)** (34 colunas): `1–9` NSR · `10` tipo `3` · `11–18` data `DDMMAAAA` · `19–22` hora `hhmm` · `23–34` PIS (12).
      → `{id_externo: String(nsr), nsr, instante_local: "AAAA-MM-DDThh:mm:00", pis: <11 dígitos>}`.
-   - Detecção por linha: caractere 10 = `3` e (caractere 21 = `T` → 671; senão comprimento ≥ 34 → 1510). Demais tipos (1, 2, 4, 5, 6, 7, 9…) ignorados.
+   - Detecção por linha: caractere 10 = `3` e (caractere 21 = `T` → 671; senão comprimento ≥ 34 → 1510). Demais tipos (1, 2, 4, 5, 6, 9…) ignorados.
      Linhas com `\r\n` aceitas. CRC não validado (documentado).
 
 ### 12.5 Zig (n8n-2)
