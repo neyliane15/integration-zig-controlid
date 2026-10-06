@@ -1,4 +1,4 @@
-// Roda com `node --test n8n` e com `npm test` (vitest). Inclui teste ponta a ponta contra o mock da Zig (n8n/mocks).
+// Roda com `node --test "n8n/**/*.test.mjs"` e com `npm test` (vitest). Inclui teste ponta a ponta contra o mock da Zig (n8n/mocks).
 import assert from 'node:assert/strict'
 import {
   dataValida, somarDias, diasDoPeriodo, periodoZig, urlZig, requisicaoZig, lojasParaSincronizar, planejarChamadas, itensDaResposta,

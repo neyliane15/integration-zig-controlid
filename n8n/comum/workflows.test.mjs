@@ -1,5 +1,5 @@
 // Executa os workflows do n8n-2 (JSON de verdade, código de verdade dos nós Code) num simulador mínimo de N8N,
-// contra os mocks da Zig e um Supabase falso. Roda com `node --test n8n` e com `npm test` (vitest).
+// contra os mocks da Zig e um Supabase falso. Roda com `node --test "n8n/**/*.test.mjs"` e com `npm test` (vitest).
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

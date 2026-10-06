@@ -1,4 +1,4 @@
-// Roda com `node --test n8n` e com `npm test` (vitest).
+// Roda com `node --test "n8n/**/*.test.mjs"` e com `npm test` (vitest).
 import assert from 'node:assert/strict'
 import {
   lerVariavel, configSupabase, montarChamadaRpc, deveRetentar, lerRetryAfter, esperaAntesDaProxima, requisitarComRetentativa,

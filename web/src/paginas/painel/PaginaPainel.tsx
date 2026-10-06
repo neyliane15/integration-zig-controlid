@@ -284,19 +284,23 @@ function CartaoSincronizacao({ empresaId, p, podeSincronizar }: { empresaId: str
       ) : (
         <ul className="flex flex-col divide-y divide-borda">
           {p.sincronizacao.map((s) => (
-            <li key={s.integracao_id} className="flex flex-wrap items-center gap-3 py-3 first:pt-0 last:pb-0">
+            <li key={s.integracao_id} className="flex items-start gap-3 py-3.5 first:pt-0 last:pb-0">
               <IconeIntegracao tipo={s.tipo} />
               <div className="min-w-0 flex-1">
-                <p className="truncate font-semibold text-creme">{s.nome}</p>
-                <p className="text-xs text-lavanda" title={s.ultimo_erro ?? undefined}>
-                  {s.ultimo_sucesso_em ? `Último sucesso ${formatarRelativo(s.ultimo_sucesso_em)}` : 'Ainda sem sucesso'}
-                  {s.ultimo_status === 'erro' && s.ultimo_erro ? ` · ${s.ultimo_erro}` : ''}
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="min-w-0 truncate font-semibold text-creme">{s.nome}</p>
+                  <SeloStatusIntegracao ativa={s.ativa} status={s.ultimo_status} executando={s.executando} />
+                </div>
+                <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <p className="min-w-0 text-xs text-lavanda">
+                    {s.ultimo_sucesso_em ? `Último sucesso ${formatarRelativo(s.ultimo_sucesso_em)}` : 'Ainda sem sucesso'}
+                  </p>
+                  {podeSincronizar && s.ativa && (
+                    <BotaoSincronizar empresaId={empresaId} integracaoId={s.integracao_id} rotulo="Sincronizar" variante="fantasma" desabilitado={s.executando} />
+                  )}
+                </div>
+                {s.ultimo_status === 'erro' && s.ultimo_erro && <p className="mt-1 line-clamp-2 text-xs text-perigo">{s.ultimo_erro}</p>}
               </div>
-              <SeloStatusIntegracao ativa={s.ativa} status={s.ultimo_status} executando={s.executando} />
-              {podeSincronizar && s.ativa && (
-                <BotaoSincronizar empresaId={empresaId} integracaoId={s.integracao_id} rotulo="Sincronizar" variante="fantasma" desabilitado={s.executando} />
-              )}
             </li>
           ))}
         </ul>

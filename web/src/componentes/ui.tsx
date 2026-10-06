@@ -453,7 +453,7 @@ export function Selo({ tom = 'neutro', children }: { tom?: Tom; children: ReactN
   return (
     <span
       className={clsx(
-        'inline-flex max-w-full items-center gap-1 truncate rounded-pilula border px-2.5 py-0.5 text-xs font-semibold leading-5 [&_svg]:size-3',
+        'inline-flex max-w-full items-center gap-1 truncate rounded-pilula border px-2.5 py-0.5 font-sans text-xs font-semibold tracking-normal not-italic leading-5 [&_svg]:size-3',
         TONS_SELO[tom],
       )}
     >
@@ -464,9 +464,16 @@ export function Selo({ tom = 'neutro', children }: { tom?: Tom; children: ReactN
 
 export function Indicador({ rotulo, valor, detalhe, tom }: { rotulo: string; valor: ReactNode; detalhe?: ReactNode; tom?: Tom }) {
   return (
-    <div className="relative min-w-0 overflow-hidden rounded-cartao border border-borda bg-cartao p-5 shadow-cartao">
-      <p className="text-xs font-bold tracking-[0.14em] text-lavanda uppercase">{rotulo}</p>
-      <p className={clsx('numero mt-3 truncate text-[26px] leading-none font-medium tracking-tight', TONS_TEXTO[tom ?? 'neutro'])}>{valor}</p>
+    <div className="relative min-w-0 overflow-hidden rounded-cartao border border-borda bg-cartao p-4 shadow-cartao sm:p-5">
+      <p className="text-[11px] font-bold tracking-[0.14em] text-lavanda uppercase sm:text-xs">{rotulo}</p>
+      <p
+        className={clsx(
+          'numero mt-3 text-[17px] leading-tight font-medium tracking-tight break-words min-[420px]:text-xl sm:text-[22px] xl:text-[26px]',
+          TONS_TEXTO[tom ?? 'neutro'],
+        )}
+      >
+        {valor}
+      </p>
       {detalhe && <p className="mt-2 text-xs text-lavanda">{detalhe}</p>}
     </div>
   )

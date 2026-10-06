@@ -134,7 +134,7 @@ begin
     return new;
   end if;
   -- UPDATE vindo do front (papel authenticated): só `sincronizar` muda.
-  if current_user = 'authenticated' then
+  if coalesce(nullif(current_setting('role', true), ''), 'none') = 'authenticated' or auth.uid() is not null then
     new.id := old.id; new.empresa_id := old.empresa_id; new.integracao_id := old.integracao_id;
     new.loja_id_externo := old.loja_id_externo; new.nome := old.nome; new.visto_em := old.visto_em;
     new.criado_em := old.criado_em;
