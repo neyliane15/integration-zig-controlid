@@ -1,0 +1,86 @@
+/* ===========================================================================
+   Meu Dia de Gerente · folha de estilos (tokens do contrato §14.1)
+   Dono: frontend-1. Os NOMES dos tokens são API — não renomear sem mudar o contrato.
+   =========================================================================== */
+@import 'tailwindcss';
+
+@theme {
+  --font-display: 'Fraunces Variable', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Manrope Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  --color-noite: #060a17;
+  --color-noite-2: #0a1022;
+  --color-cartao: #121a30;
+  --color-cartao-2: #18223d;
+  --color-entrada: #0c1326;
+  --color-borda: #232c47;
+  --color-borda-forte: #34406a;
+  --color-ouro: #c9a23d;
+  --color-ouro-claro: #e8c878;
+  --color-ouro-escuro: #9e7c27;
+  --color-tinta-ouro: #1a1405;
+  --color-creme: #f4eedc;
+  --color-lavanda: #8d93b8;
+  --color-lavanda-escuro: #5e6488;
+  --color-sucesso: #4fb286;
+  --color-alerta: #e8873a;
+  --color-perigo: #e5604f;
+  --color-info: #6fa8dc;
+
+  --radius-cartao: 20px;
+  --radius-entrada: 12px;
+  --radius-pilula: 999px;
+
+  --shadow-cartao: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 24px 48px -24px rgb(0 0 0 / 0.6);
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body {
+    background-color: var(--color-noite);
+    color: var(--color-creme);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--color-ouro) 35%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-ouro);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .sobrancelha {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: var(--color-ouro);
+  }
+  .titulo-display {
+    font-family: var(--font-display);
+    font-weight: 400;
+    line-height: 1.1;
+    color: var(--color-creme);
+    font-size: clamp(32px, 5vw, 44px);
+  }
+  .titulo-italico {
+    font-family: var(--font-display);
+    font-style: italic;
+    color: var(--color-ouro-claro);
+  }
+  .numero {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}

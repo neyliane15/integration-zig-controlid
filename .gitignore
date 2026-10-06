@@ -1,0 +1,26 @@
+# dependências e saídas
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# ambiente (nunca versionar chaves)
+.env
+.env.local
+.env.*.local
+n8n/.env
+
+# testes
+test-results/
+playwright-report/
+blob-report/
+
+# sistema / editor
+.DS_Store
+*.log
+.vscode/
+.idea/
+
+# supabase cli
+supabase/.temp/
+supabase/.branches/
