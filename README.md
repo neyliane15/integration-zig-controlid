@@ -59,7 +59,10 @@ loja, ou com VPN até ela), o **token da API da Zig** e acesso de administrador 
 
 ### 3.1 Supabase (banco de dados e login)
 1. Crie um projeto em <https://supabase.com> (região **São Paulo**). Guarde a senha do banco.
-2. Abra **SQL Editor**, cole **todo** o conteúdo de [`supabase/instalar.sql`](supabase/instalar.sql) e clique **Run**.
+2. Abra **SQL Editor** e rode, **na ordem**, cada arquivo de [`supabase/instalar-em-partes/`](supabase/instalar-em-partes/)
+   (`parte-01-de-11.sql`, `parte-02-de-11.sql`…): cole uma parte numa query, clique **Run**, espere "parte NN instalada" e passe para a próxima.
+   O SQL Editor recusa o `supabase/instalar.sql` inteiro ("request entity too large"); as partes instalam exatamente o mesmo banco.
+   Quem usa a Supabase CLI ou `psql` pode rodar o `supabase/instalar.sql` inteiro.
    - Para atualizar uma versão nova no futuro, rode o arquivo novo do mesmo jeito (não apaga dados).
 3. Crie o seu usuário **master**: abra [`supabase/instalacao/criar_master.sql`](supabase/instalacao/criar_master.sql), escolha
    **uma** das opções (a mais simples é a A: troque e-mail, senha e nome), cole no SQL Editor e rode.
