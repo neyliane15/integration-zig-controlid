@@ -8,7 +8,7 @@ import { BatidasDia } from '@/componentes/dominio/BatidasDia'
 import { BotaoLink } from '@/componentes/dominio/BotaoLink'
 import { ContagemBatidas, SeloSituacaoDia, TextoSaldo } from '@/componentes/dominio/Selos'
 import { useContextoEmpresa } from '@/consultas/funcionarios'
-import { useEsperadasDoDia, usePontoDia, useReapurar } from '@/consultas/ponto'
+import { usePontoDia, useReapurar } from '@/consultas/ponto'
 import { usePerfil } from '@/lib/sessao'
 import { podeOperar } from '@/lib/permissoes'
 import { formatarData, formatarMinutos, normalizar, somarDias } from '@/lib/formato'
@@ -42,7 +42,6 @@ export function PaginaPontoDia() {
   const [incluir, setIncluir] = useState<{ linha: LinhaTela; hora: string | null } | null>(null)
 
   const dia = usePontoDia(data)
-  const esperadas = useEsperadasDoDia(data, fuso, virada)
   const reapurar = useReapurar()
 
   const irPara = (d: string | null) => {
@@ -54,8 +53,8 @@ export function PaginaPontoDia() {
 
   const linhas = useMemo<LinhaTela[]>(() => {
     return (dia.data ?? []).map((l) => {
-      const semPrevisao = l.situacao === 'abonado' || l.situacao === 'folga' || l.situacao === 'sem_escala'
-      const lista = semPrevisao ? [] : (esperadas.data?.get(l.funcionario_id) ?? [])
+      // as esperadas vêm do banco (ponto_dia_empresa): abono, folga e sem escala já chegam vazias
+      const lista = l.esperadas ?? []
       const validas = batidasValidas(l.batidas)
       const agora = Date.now()
       // dia em andamento: só aponta como faltante o que já deveria ter sido batido
@@ -65,7 +64,7 @@ export function PaginaPontoDia() {
       const problema = l.alarmes_abertos > 0 || l.situacao === 'ausente' || l.situacao === 'incompleto' || (l.encerrado && validas.length % 2 === 1)
       return { ...l, esperadasLista: lista, validas: validas.length, faltantes, problema }
     })
-  }, [dia.data, esperadas.data])
+  }, [dia.data])
 
   const filtradas = useMemo(() => {
     const termo = normalizar(busca)

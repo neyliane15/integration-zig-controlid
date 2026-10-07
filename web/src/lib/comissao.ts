@@ -150,9 +150,14 @@ export function calcularComissao(e: EntradaComissao): ResultadoComissao {
     .sort((a, b) => {
       if (a.resto !== b.resto) return a.resto > b.resto ? -1 : 1
       if (a.pe !== b.pe) return a.pe > b.pe ? -1 : 1
+      // nome em ordem de código de caractere = `collate "C"` do banco (comissao_calcular)
       const nome = compararTexto(a.p.nome, b.p.nome)
       if (nome !== 0) return nome
-      return compararTexto(a.p.funcionarioId ?? '', b.p.funcionarioId ?? '')
+      // funcionario_id asc nulls last (snapshot de funcionário excluído vai para o fim, como no banco)
+      if (a.p.funcionarioId == null || b.p.funcionarioId == null) {
+        return a.p.funcionarioId == null ? (b.p.funcionarioId == null ? 0 : 1) : -1
+      }
+      return compararTexto(a.p.funcionarioId.toLowerCase(), b.p.funcionarioId.toLowerCase())
     })
   const extra = new Set<number>()
   for (const x of ordem) {

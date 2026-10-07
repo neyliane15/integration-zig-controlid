@@ -94,7 +94,7 @@ export function Casca() {
   const masterSemEmpresa = ehMaster(perfil.papel) && !empresaId && !local.pathname.startsWith('/master')
 
   return (
-    <div className="min-h-dvh bg-noite">
+    <div className="min-h-dvh bg-noite lg:flex">
       <a
         href="#conteudo"
         className="sr-only z-[70] rounded-entrada bg-ouro px-4 py-2 font-bold text-tinta-ouro focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
@@ -102,13 +102,16 @@ export function Casca() {
         Pular para o conteúdo
       </a>
 
-      {/* barra lateral — desktop */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col gap-7 border-r border-borda bg-noite-2 px-4 pt-6 pb-4 lg:flex">
-        <Link to="/" className={clsx('self-start rounded-lg px-1', FOCO)} aria-label="Ir para o painel">
-          <Marca />
-        </Link>
-        <div className="min-h-0 flex-1">
-          <ConteudoLateral />
+      {/* barra lateral — desktop. A coluna (fundo + borda) estica até o fim do conteúdo, por mais longo que seja;
+          o miolo fica "grudado" no topo da janela com a altura da tela (sticky), então o menu continua sempre visível. */}
+      <aside data-teste="barra-lateral" className="relative z-30 hidden w-[260px] shrink-0 self-stretch border-r border-borda bg-noite-2 lg:block">
+        <div className="sticky top-0 flex h-dvh flex-col gap-7 px-4 pt-6 pb-4">
+          <Link to="/" className={clsx('self-start rounded-lg px-1', FOCO)} aria-label="Ir para o painel">
+            <Marca />
+          </Link>
+          <div className="min-h-0 flex-1">
+            <ConteudoLateral />
+          </div>
         </div>
       </aside>
 
@@ -162,7 +165,7 @@ export function Casca() {
         </div>
       )}
 
-      <main id="conteudo" tabIndex={-1} className="min-w-0 focus:outline-none lg:pl-[260px]">
+      <main id="conteudo" tabIndex={-1} className="min-w-0 focus:outline-none lg:flex-1">
         <div className="mx-auto w-full max-w-[1180px] px-4 pt-6 pb-[calc(env(safe-area-inset-bottom)+96px)] sm:px-6 lg:px-10 lg:pt-10 lg:pb-16">
           {masterSemEmpresa ? (
             <div className="mx-auto max-w-lg pt-8">

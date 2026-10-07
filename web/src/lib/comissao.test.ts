@@ -279,3 +279,34 @@ describe('CSV do fechamento — idêntico ao do N8N', () => {
     expect(numeroCsv(-0.0000001)).toBe('0')
   })
 })
+
+// Revisão 1: mesmo vetor de supabase/testes/56_comissao_desempate.sql (o banco usa collate "C" no desempate por nome).
+describe('calcularComissao — desempate igual ao banco', () => {
+  const base = { servicoZigCentavos: 0, servicoAjusteCentavos: 100, percentualRetencao: 0, proporcionalDias: false, dataInicio: '2026-09-01', dataFim: '2026-09-30' }
+  it('desempate por nome em ordem de código de caractere (B < a < Á), não alfabética', () => {
+    const r = calcularComissao({
+      ...base,
+      participantes: [
+        P('ana', '', 1, 'e5600000-0000-4000-8000-000000000302'),
+        P('Ágata', '', 1, 'e5600000-0000-4000-8000-000000000303'),
+        P('Bruno', '', 1, 'e5600000-0000-4000-8000-000000000301'),
+      ],
+    })
+    expect(valores(r)).toEqual({ Bruno: 34, ana: 33, 'Ágata': 33 })
+  })
+  it('nomes iguais: menor funcionario_id leva o centavo; snapshot sem id (null) fica por último', () => {
+    const r = calcularComissao({
+      ...base,
+      participantes: [
+        { ...P('Mesmo Nome', '', 1, 'x'), funcionarioId: null },
+        P('Mesmo Nome', '', 1, 'e5600000-0000-4000-8000-000000000303'),
+        P('Mesmo Nome', '', 1, 'e5600000-0000-4000-8000-000000000302'),
+      ],
+    })
+    expect(r.itens.map((i) => [i.funcionarioId, i.valorCentavos])).toEqual([
+      [null, 33],
+      ['e5600000-0000-4000-8000-000000000303', 33],
+      ['e5600000-0000-4000-8000-000000000302', 34],
+    ])
+  })
+})

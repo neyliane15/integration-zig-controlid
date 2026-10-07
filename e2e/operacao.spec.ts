@@ -58,6 +58,8 @@ test('ponto: dia, espelho com alarmes e alarmes', async ({ page }) => {
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Ponto')
   await expect(page.getByText('Ana Souza').filter({ visible: true }).first()).toBeVisible()
   await semRolagemHorizontal(page)
+  // (revisão 1) as batidas esperadas vêm do banco: quem tem escala hoje mostra "n de 2|4 batidas" (nunca todos "de 0")
+  await expect(page.getByLabel(/^\d+ de [24] batidas$/).filter({ visible: true }).first()).toBeVisible()
 
   await page.goto(`/ponto/funcionario/${ANA}`)
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Ana Souza')

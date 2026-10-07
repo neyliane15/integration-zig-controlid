@@ -482,8 +482,29 @@ begin
     v_saldo := v_trab;
   end if;
 
-  -- 6. Atraso
-  if v_k > 0 and v_n > 0 then
+  -- Quais slots foram batidos (0 < n < k): menor Σ|batida − slot|; empate → combinação lexicograficamente menor (§7.3).
+  -- Calculado também no dia em andamento, para o atraso abaixo.
+  v_melhor := null;
+  if v_n > 0 and v_n < v_k then
+    for v_mask in 0 .. (1 << v_k) - 1 loop
+      v_idx := '{}';
+      for i in 1 .. v_k loop
+        if (v_mask >> (i - 1)) & 1 = 1 then v_idx := v_idx || i; end if;
+      end loop;
+      continue when coalesce(array_length(v_idx, 1), 0) <> v_n;
+      v_custo := 0;
+      for i in 1 .. v_n loop
+        v_custo := v_custo + abs(extract(epoch from (v_validas[i] - v_slots[v_idx[i]])));
+      end loop;
+      if v_melhor is null or v_custo < v_melhor_c or (v_custo = v_melhor_c and v_idx < v_melhor) then
+        v_melhor := v_idx;
+        v_melhor_c := v_custo;
+      end if;
+    end loop;
+  end if;
+
+  -- 6. Atraso: só se a 1ª batida corresponde à entrada (se a entrada faltou, o alarme é "batida faltando", não atraso).
+  if v_k > 0 and v_n > 0 and (v_melhor is null or 1 = any (v_melhor)) then
     v_atraso := greatest(0, floor(extract(epoch from (v_validas[1] - v_slots[1])) / 60)::int);
     if v_atraso <= v_tol_bat then v_atraso := 0; end if;
   end if;
@@ -507,23 +528,7 @@ begin
                             to_char(v_slots[1] at time zone e.fuso, 'HH24:MI'),
                             to_char(v_slots[v_k] at time zone e.fuso, 'HH24:MI')));
       elsif v_n > 0 and v_n < v_k then
-        -- escolhe quais slots foram batidos: menor Σ|batida − slot|; empate → combinação lexicograficamente menor
-        v_melhor := null;
-        for v_mask in 0 .. (1 << v_k) - 1 loop
-          v_idx := '{}';
-          for i in 1 .. v_k loop
-            if (v_mask >> (i - 1)) & 1 = 1 then v_idx := v_idx || i; end if;
-          end loop;
-          continue when coalesce(array_length(v_idx, 1), 0) <> v_n;
-          v_custo := 0;
-          for i in 1 .. v_n loop
-            v_custo := v_custo + abs(extract(epoch from (v_validas[i] - v_slots[v_idx[i]])));
-          end loop;
-          if v_melhor is null or v_custo < v_melhor_c or (v_custo = v_melhor_c and v_idx < v_melhor) then
-            v_melhor := v_idx;
-            v_melhor_c := v_custo;
-          end if;
-        end loop;
+        -- slots não batidos (v_melhor calculado acima): um alarme por batida faltante
         for i in 1 .. v_k loop
           if not (i = any (v_melhor)) then
             v_alarmes := v_alarmes || jsonb_build_object(
@@ -887,10 +892,20 @@ begin
 end $$;
 comment on function public.ponto_espelho(uuid, date, date) is '[api] Espelho de ponto calculado ao vivo (máx. 62 dias). alarmes: abertos e justificados.';
 
+-- Revisão 1: passou a devolver `esperadas` (antes o front recalculava a partir da jornada e errava em dia abonado).
+-- Mudança de tipo de retorno exige drop (idempotente; os privilégios voltam na …0900_permissoes.sql).
+do $$
+begin
+  if exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+              where n.nspname = 'public' and p.proname = 'ponto_dia_empresa'
+                and pg_get_function_result(p.oid) not like '%esperadas jsonb%') then
+    drop function public.ponto_dia_empresa(date, uuid);
+  end if;
+end $$;
 create or replace function public.ponto_dia_empresa(p_data date default null, p_empresa uuid default null)
 returns table (funcionario_id uuid, funcionario_nome text, cargo text, situacao text, encerrado boolean,
                previsto_minutos int, trabalhado_minutos int, saldo_minutos int, atraso_minutos int,
-               batidas jsonb, alarmes_abertos int)
+               batidas jsonb, alarmes_abertos int, esperadas jsonb)
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid; v_data date;
 begin
@@ -900,7 +915,8 @@ begin
   select f.id, f.nome, f.cargo, c.situacao, c.encerrado, c.previsto_minutos, c.trabalhado_minutos, c.saldo_minutos,
          c.atraso_minutos, c.batidas,
          (select count(*)::int from public.ponto_alarmes a
-           where a.funcionario_id = f.id and a.data = v_data and a.status = 'aberto')
+           where a.funcionario_id = f.id and a.data = v_data and a.status = 'aberto'),
+         c.esperadas
     from public.funcionarios f
     cross join lateral public.ponto_calcular_dia(f.id, v_data) c
    where f.empresa_id = v_empresa

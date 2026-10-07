@@ -147,6 +147,10 @@ npm run n8n:mocks                 # sobe os mocks para testar com um N8N de verd
   (`mocks/simulador-n8n.mjs`): fila com 5 pedidos de tipos diferentes, agendador, rotina diária, exportação (com falha de SMTP) e
   tratador de erros. O simulador não substitui importar no N8N — ele pega erro de código e de fiação.
 - `mocks/servidor.test.mjs`: comportamento dos mocks.
+- `integracao-real.test.mjs` *(revisão 1, opt-in)*: com `npm run local` no ar, `npm run test:integracao` executa os JSON de
+  **todos** os workflows (fila → Zig, Control iD acesso/REP com envio, exportação do fechamento, rotina diária, agendador) no simulador
+  — que agora também executa nós **HTTP Request** — contra os mocks e o **Supabase local de verdade** (PostgREST + migrações). É o teste
+  que garante que os nomes/formatos dos parâmetros enviados pelo N8N batem com as assinaturas reais das RPCs.
 
 ### Mocks (`node n8n/mocks/servidor.mjs`)
 

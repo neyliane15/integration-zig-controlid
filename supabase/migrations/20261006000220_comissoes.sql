@@ -199,13 +199,16 @@ begin
   if v_soma = 0 then
     update public.comissao_itens set valor_centavos = 0 where fechamento_id = p_fechamento;
   else
-    -- 9. maior resto
+    -- 9. maior resto — aritmética EXATA: piso = div(base × pe, soma) e resto = mod(base × pe, soma)
+    -- (mesmo denominador para todos, então comparar o resto inteiro = comparar a parte fracionária; a divisão
+    -- numérica com escala finita podia arredondar o piso para cima em valores extremos).
+    -- Desempate por nome com collate "C" (ordem de código de caractere, igual à prévia do front em
+    -- web/src/lib/comissao.ts), independente da collation do banco do Supabase.
     with c as (
-      select it.id, it.pontos_efetivos, it.funcionario_nome, it.funcionario_id,
-             v_base * it.pontos_efetivos / v_soma as exato
+      select it.id, div(v_base * it.pontos_efetivos, v_soma) as piso
         from public.comissao_itens it where it.fechamento_id = p_fechamento
     )
-    update public.comissao_itens it set valor_centavos = floor(c.exato)::bigint
+    update public.comissao_itens it set valor_centavos = c.piso::bigint
       from c where it.id = c.id;
     select v_base - coalesce(sum(valor_centavos), 0) into v_resto
       from public.comissao_itens where fechamento_id = p_fechamento;
@@ -213,8 +216,8 @@ begin
       select it.id
         from public.comissao_itens it
        where it.fechamento_id = p_fechamento and it.pontos_efetivos > 0
-       order by (v_base * it.pontos_efetivos / v_soma) - floor(v_base * it.pontos_efetivos / v_soma) desc,
-                it.pontos_efetivos desc, it.funcionario_nome asc, it.funcionario_id asc nulls last, it.id
+       order by mod(v_base * it.pontos_efetivos, v_soma) desc,
+                it.pontos_efetivos desc, it.funcionario_nome collate "C" asc, it.funcionario_id asc nulls last, it.id
        limit v_resto
     )
     update public.comissao_itens it set valor_centavos = it.valor_centavos + 1

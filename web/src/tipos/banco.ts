@@ -633,6 +633,8 @@ export interface LinhaPontoDiaEmpresa {
   atraso_minutos: Minutos
   batidas: BatidaEspelho[]
   alarmes_abertos: number
+  /** horários previstos do dia (vazio em folga, abono ou sem escala) — revisão 1 */
+  esperadas: EsperadaEspelho[]
 }
 
 export interface LinhaBancoHorasResumo {

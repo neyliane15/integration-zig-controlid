@@ -2,10 +2,16 @@
 # Gera supabase/instalar.sql = todas as migrações de supabase/migrations/ em ordem, numa transação.
 # Uso: ferramentas/gerar-instalar.sh   (ou npm run sql:instalar)
 # Verificar num banco limpo: ferramentas/gerar-instalar.sh --verificar  (usa o Postgres de supabase/testes)
+# Só conferir se o instalar.sql versionado está em dia (não grava nada; sai com erro se divergir):
+#   ferramentas/gerar-instalar.sh --conferir
 set -euo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SAIDA="$RAIZ/supabase/instalar.sql"
+if [ "${1:-}" = "--conferir" ]; then
+  SAIDA="$(mktemp)"
+  trap 'rm -f "$SAIDA"' EXIT
+fi
 
 shopt -s nullglob
 MIGRACOES=("$RAIZ"/supabase/migrations/*.sql)
@@ -38,6 +44,14 @@ CAB
   echo "commit;"
 } > "$SAIDA"
 
+if [ "${1:-}" = "--conferir" ]; then
+  if cmp -s "$SAIDA" "$RAIZ/supabase/instalar.sql"; then
+    echo "conferido: supabase/instalar.sql idêntico ao gerado das ${#MIGRACOES[@]} migrações"
+    exit 0
+  fi
+  echo "DIVERGE: supabase/instalar.sql não corresponde às migrações — rode: npm run sql:instalar" >&2
+  exit 1
+fi
 echo "gerado: ${SAIDA#$RAIZ/} (${#MIGRACOES[@]} migrações)"
 
 if [ "${1:-}" = "--verificar" ]; then

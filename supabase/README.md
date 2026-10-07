@@ -66,6 +66,9 @@ supabase/testes/executar.sh 14 19     # só os arquivos que começam com 14 ou 1
 
   Cada arquivo roda em `begin; … rollback;`, não depende de outro e fixa o relógio com `set local app.agora = '…'`.
   Atenção: numa mesma instrução, uma subconsulta não enxerga o que uma função chamada ali alterou — separe em duas instruções.
+- `testes/92_isolamento.sql` *(revisão 1)* varre o catálogo e, para **toda** tabela com `empresa_id`, veste usuários de uma
+  empresa e confere que não leem, alteram, apagam nem inserem dados da outra (tabela nova entra sozinha no teste).
+- `ferramentas/gerar-instalar.sh --conferir` (`npm run sql:conferir`) falha se o `instalar.sql` versionado divergir das migrações.
 - `testes/90_auditoria.sql` varre o catálogo inteiro: tabela sem etiqueta ou sem RLS, `security definer` sem `search_path`,
   FK sem índice, `empresa_id` sem índice inicial, privilégios divergentes da etiqueta, qualquer privilégio para `anon`.
 

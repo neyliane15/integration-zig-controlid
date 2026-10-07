@@ -150,6 +150,11 @@ function UsuariosDoEquipamento({ integracaoId }: { integracaoId: string }) {
         <div className="flex flex-wrap gap-1">
           {u.funcionario_id ? (
             <Selo tom="sucesso">{u.vinculo ? rotuloVinculoControlId[u.vinculo] : 'Vinculado'}</Selo>
+          ) : u.vinculo === 'manual' ? (
+            // desvínculo manual (funcionario_vincular_controlid com null): a importação não religa sozinha
+            <span title="Desvinculado à mão: a importação não religa automaticamente. Escolha um funcionário para ligar de novo.">
+              <Selo tom="neutro">Desvinculado manualmente</Selo>
+            </span>
           ) : (
             <Selo tom="alerta">Sem vínculo</Selo>
           )}

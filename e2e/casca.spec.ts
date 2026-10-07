@@ -49,8 +49,26 @@ test('master: seletor de empresa troca o contexto', async ({ page }) => {
   await expect(seletor).toBeVisible()
   await seletor.selectOption({ label: 'Cantina Roma' })
   await page.goto('/master/empresas')
-  await expect(page.getByText('Bar Bossa Nova')).toBeVisible()
-  await expect(page.getByText('(selecionada)')).toBeVisible()
+  // (revisão 1) o nome aparece no seletor e na lista: confere só o que está visível
+  await expect(page.getByText('Bar Bossa Nova').filter({ visible: true }).first()).toBeVisible()
+  await expect(page.getByText('(selecionada)').filter({ visible: true }).first()).toBeVisible()
+})
+
+test('desktop: barra lateral ocupa a altura toda mesmo com conteúdo mais longo que a tela', async ({ page }) => {
+  test.skip((page.viewportSize()?.width ?? 0) < 1024, 'só no desktop')
+  await page.setViewportSize({ width: 1440, height: 600 })
+  await entrar(page, USUARIOS_DEMO.gerente)
+  await page.goto('/ponto')
+  await expect(page.getByText('Ana Souza').filter({ visible: true }).first()).toBeVisible()
+  const medidas = await page.evaluate(() => {
+    const a = document.querySelector('[data-teste="barra-lateral"]')!.getBoundingClientRect()
+    return { lateral: a.height, documento: document.documentElement.scrollHeight, janela: window.innerHeight }
+  })
+  expect(medidas.documento, 'a página de teste precisa ser mais longa que a janela').toBeGreaterThan(medidas.janela)
+  expect(medidas.lateral).toBeGreaterThanOrEqual(medidas.documento - 1)
+  // o menu continua visível depois de rolar até o fim
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+  await expect(page.getByRole('navigation', { name: 'Menu principal' }).first().getByRole('link', { name: 'Painel', exact: true })).toBeInViewport()
 })
 
 test('página inexistente mostra 404 dentro da casca', async ({ page }) => {
