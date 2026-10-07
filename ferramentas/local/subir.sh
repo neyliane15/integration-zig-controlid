@@ -18,7 +18,9 @@ PORTA_POSTGREST="${MDG_PORTA_POSTGREST:-54323}"
 VERSAO_POSTGREST="v12.2.3"
 export MDG_JWT_SEGREDO="${MDG_JWT_SEGREDO:-segredo-local-do-meu-dia-de-gerente-nao-use-em-producao}"
 export MDG_PORTA_PORTAO="$PORTA_PORTAO" MDG_POSTGREST_URL="http://127.0.0.1:$PORTA_POSTGREST"
-RUN="$BASE/run"
+# Um diretório de execução por porta do portão: dois ambientes (portas diferentes) podem ficar no ar ao mesmo tempo
+# e o --parar de um não derruba o outro. A porta padrão mantém o caminho antigo ($BASE/run).
+if [ "$PORTA_PORTAO" = "54321" ]; then RUN="$BASE/run"; LOGS="$BASE"; else RUN="$BASE/run-$PORTA_PORTAO"; LOGS="$RUN"; fi
 mkdir -p "$RUN"
 
 parar() {
@@ -83,11 +85,11 @@ server-host = "127.0.0.1"
 server-port = $PORTA_POSTGREST
 log-level = "warn"
 CONF
-nohup "$POSTGREST_BIN" "$RUN/postgrest.conf" > "$BASE/postgrest.log" 2>&1 &
+nohup "$POSTGREST_BIN" "$RUN/postgrest.conf" > "$LOGS/postgrest.log" 2>&1 &
 echo $! > "$RUN/postgrest.pid"
 
 # ------------------------------------------------------------------------------------- portão
-nohup node "$AQUI/portao.mjs" > "$BASE/portao.log" 2>&1 &
+nohup node "$AQUI/portao.mjs" > "$LOGS/portao.log" 2>&1 &
 echo $! > "$RUN/portao.pid"
 
 for _ in $(seq 1 60); do
@@ -100,7 +102,7 @@ for _ in $(seq 1 60); do
 done
 if [ "${pronto:-0}" != "1" ]; then
   echo "Falha ao subir PostgREST/portão. Logs:" >&2
-  tail -n 20 "$BASE/postgrest.log" "$BASE/portao.log" >&2
+  tail -n 20 "$LOGS/postgrest.log" "$LOGS/portao.log" >&2
   exit 1
 fi
 
@@ -129,5 +131,5 @@ Ambiente local no ar.
   service_role key:  $SERVICO
   (N8N local: SUPABASE_URL=http://127.0.0.1:$PORTA_PORTAO  SUPABASE_SERVICE_ROLE_KEY=<service_role key>)
 
-Parar: ferramentas/local/subir.sh --parar   ·   Logs: $BASE/postgrest.log, $BASE/portao.log
+Parar: MDG_PORTA_PORTAO=$PORTA_PORTAO ferramentas/local/subir.sh --parar   ·   Logs: $LOGS/postgrest.log, $LOGS/portao.log
 FIM

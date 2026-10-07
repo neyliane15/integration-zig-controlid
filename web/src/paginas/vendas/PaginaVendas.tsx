@@ -162,7 +162,7 @@ export function PaginaVendas() {
       />
 
       <div className="mb-5 flex flex-wrap items-start gap-4">
-        <FiltroPeriodo inicio={inicio} fim={fim} aoMudar={(de, ate) => definir({ de, ate })} />
+        <FiltroPeriodo hoje={hoje} inicio={inicio} fim={fim} aoMudar={(de, ate) => definir({ de, ate })} />
         {(lojas.data ?? []).length > 1 && (
           <div className="w-full sm:w-60">
             <Campo rotulo="Loja" htmlFor="f-loja">

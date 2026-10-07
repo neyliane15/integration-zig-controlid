@@ -279,6 +279,9 @@ begin
   p_itens := public.ingestao_lista(p_itens);
   select e.fuso into v_fuso from public.empresas e where e.id = ig.empresa_id;
 
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_vendas_itens:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
   delete from public.zig_vendas_itens where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
   get diagnostics v_rem = row_count;
 
@@ -334,6 +337,9 @@ begin
   if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
   perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
   p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_faturamento:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
   delete from public.zig_faturamento where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
   get diagnostics v_rem = row_count;
   for x in select value from jsonb_array_elements(p_itens) loop
@@ -369,6 +375,9 @@ begin
   if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
   perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
   p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_faturamento_bandeiras:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
   delete from public.zig_faturamento_bandeiras
    where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
   get diagnostics v_rem = row_count;
@@ -407,6 +416,9 @@ begin
   if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
   perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
   p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_compradores:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
   delete from public.zig_compradores where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
   get diagnostics v_rem = row_count;
   for x in select value from jsonb_array_elements(p_itens) loop

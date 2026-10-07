@@ -83,12 +83,17 @@ test('csvComissao: sem participantes → valor do ponto vazio', () => {
   assert.throws(() => csvComissao({ fechamento: {} }), /período/)
 })
 
+test('(revisão 2) injeção de fórmula neutralizada; números nossos intactos', () => {
+  assert.equal(gerarCsv(['x'], [['=HYPERLINK("u")'], ['@A'], ['-1'], ['-03:26'], ['+5+5']]),
+    '\ufeffx\r\n"\'=HYPERLINK(""u"")"\r\n\'@A\r\n-1\r\n-03:26\r\n\'+5+5\r\n')
+})
+
 // Só no vitest (que entende TypeScript): a saída tem de ser idêntica à de web/src/lib/csv.ts.
 if (process.env.VITEST) {
   test('idêntico ao web/src/lib/csv.ts', async () => {
     const web = await import('../../../web/src/lib/csv.ts')
     const pre = [['Período', '01/09/2026 a 30/09/2026'], ['Obs', 'tem; ponto e "aspas"']]
-    const linhas = [['Ana', true, null, 10, 'a\nb'], ['Bruno', false, undefined, 2.5, '']]
+    const linhas = [['Ana', true, null, 10, 'a\nb'], ['Bruno', false, undefined, 2.5, ''], ['=1+1', '@x', '-50,00', '-2+3', '\tx']]
     assert.equal(gerarCsv(['A', 'B', 'C', 'D', 'E'], linhas, pre), web.gerarCsv(['A', 'B', 'C', 'D', 'E'], linhas, pre))
     for (const c of [0, 5, 209474, -5000, -1, 123456789]) assert.equal(centavosCsv(c), web.centavosCsv(c))
     for (const m of [0, 450, -206, 1439, -1]) assert.equal(minutosCsv(m), web.minutosCsv(m))

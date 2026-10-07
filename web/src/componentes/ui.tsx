@@ -326,14 +326,17 @@ export function FiltroPeriodo({
   fim,
   aoMudar,
   atalhos = true,
+  hoje,
 }: {
   inicio: string
   fim: string
   aoMudar(inicio: string, fim: string): void
   atalhos?: boolean
+  /** dia de trabalho atual DA EMPRESA (fuso + virada); sem ele, os atalhos usam São Paulo/05:00 */
+  hoje?: string
 }) {
   const id = useId()
-  const lista = atalhos ? atalhosPeriodo() : []
+  const lista = atalhos ? atalhosPeriodo(hoje) : []
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 sm:flex sm:flex-wrap">

@@ -6,15 +6,22 @@
  * - `null`/`undefined` → vazio; `true`/`false` → `Sim`/`Não`; números como `String(n)` (dinheiro e minutos:
  *   converta antes com `centavosCsv` / `minutosCsv`).
  * - `preambulo` (opcional): linhas escritas antes do cabeçalho, seguidas AUTOMATICAMENTE de uma linha em branco.
+ * - (revisão 2) Injeção de fórmula: texto que começa com `=`, `+`, `-`, `@`, TAB ou CR (nome de garçom vindo da Zig, nome de
+ *   funcionário…) ganha um apóstrofo na frente (`'=HYPERLINK(…)`) para a planilha não executar como fórmula. Números que
+ *   nós geramos (`-50,00`, `-03:26`, `-1`) continuam como estão.
  */
 import { centavosParaTexto, formatarData, minutosHHMM } from './formato'
 
 const BOM = '﻿'
 const FIM = '\r\n'
 
+const FORMULA = /^[=+\-@\t\r]/
+const NUMERO = /^[-+]?\d+(?:[.,:]\d+)*$/
+
 function campo(v: unknown): string {
   if (v == null) return ''
-  const texto = typeof v === 'boolean' ? (v ? 'Sim' : 'Não') : String(v)
+  let texto = typeof v === 'boolean' ? (v ? 'Sim' : 'Não') : String(v)
+  if (FORMULA.test(texto) && !NUMERO.test(texto)) texto = `'${texto}`
   return /[;"\r\n]/.test(texto) ? `"${texto.replace(/"/g, '""')}"` : texto
 }
 

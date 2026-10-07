@@ -85,7 +85,7 @@ export function App() {
           <Route path="/funcionarios" element={<PaginaFuncionarios />} />
           <Route path="/funcionarios/jornadas" element={<PaginaJornadas />} />
           <Route path="/funcionarios/horarios-acesso" element={<PaginaHorariosAcesso />} />
-          <Route path="/funcionarios/novo" element={<PaginaFuncionario />} />
+          <Route path="/funcionarios/novo" element={<So permitir={podeOperar}><PaginaFuncionario /></So>} />
           <Route path="/funcionarios/:id" element={<PaginaFuncionario />} />
 
           <Route path="/ponto" element={<PaginaPontoDia />} />

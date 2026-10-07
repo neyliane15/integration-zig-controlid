@@ -73,7 +73,7 @@ export function FormularioIntegracao({
   const base = parametrosPadrao(tipo)
   const [nome, setNome] = useState(integracao?.nome ?? nomePadrao(tipo))
   const [ativa, setAtiva] = useState(integracao?.ativa ?? true)
-  const [intervalo, setIntervalo] = useState(integracao?.intervalo_minutos ?? 60)
+  const [intervalo, setIntervalo] = useState(integracao?.intervalo_minutos ?? (tipo === 'controlid_acesso' ? 15 : 60)) // README §2: acesso a cada 15 min, demais 60
   const [parametros, setParametros] = useState<Record<string, unknown>>(() => {
     const atual = (integracao?.parametros ?? {}) as Record<string, unknown>
     const envioBase = (base as { envio?: ParametrosEnvioControlId }).envio

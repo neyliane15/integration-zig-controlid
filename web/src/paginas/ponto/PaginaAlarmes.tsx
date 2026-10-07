@@ -80,7 +80,7 @@ export function PaginaAlarmes() {
         <div className="flex min-w-0 items-center gap-3">
           {operar && a.status === 'aberto' && (
             <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-              <Caixa rotulo={<span className="sr-only">Selecionar</span>} marcado={selecionados.has(a.id)} aoMudar={(v) => alternar(a.id, v)} />
+              <Caixa rotulo={<span className="sr-only">Selecionar alarme de {a.funcionarios?.nome ?? 'funcionário'} em {formatarData(a.data)}</span>} marcado={selecionados.has(a.id)} aoMudar={(v) => alternar(a.id, v)} />
             </div>
           )}
           <div className="min-w-0">
@@ -194,7 +194,7 @@ export function PaginaAlarmes() {
         </Campo>
       </div>
       <div className="mb-5">
-        <FiltroPeriodo inicio={inicio} fim={fim} aoMudar={(de, ate) => definir({ de, ate })} />
+        <FiltroPeriodo hoje={hoje} inicio={inicio} fim={fim} aoMudar={(de, ate) => definir({ de, ate })} />
       </div>
 
       {operar && abertosVisiveis.length > 1 && (

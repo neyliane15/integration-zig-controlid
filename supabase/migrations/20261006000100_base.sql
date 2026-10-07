@@ -225,7 +225,7 @@ begin
   return ((p_instante at time zone v_fuso) - v_virada)::date;
 end $$;
 comment on function public.dia_de_trabalho(timestamptz, uuid) is
-  '[api] Dia de trabalho de um instante na empresa (fuso e virada_dia).';
+  '[interno] Dia de trabalho de um instante na empresa (fuso e virada_dia). Revisão 2: não exposta à API (revelava fuso/virada de outra empresa pelo id); o front usa dia_de_trabalho_atual.';
 
 create or replace function public.dia_de_trabalho_atual(p_empresa uuid default null) returns date
 language sql stable security definer
@@ -251,7 +251,7 @@ begin
   return ((p_data + p_hora) + case when p_hora < v_virada then interval '1 day' else interval '0' end) at time zone v_fuso;
 end $$;
 comment on function public.dia_de_trabalho_instante(date, time, uuid) is
-  '[api] Instante de um horário de escala no dia de trabalho (horário antes da virada = dia seguinte).';
+  '[interno] Instante de um horário de escala no dia de trabalho (horário antes da virada = dia seguinte). Revisão 2: não exposta à API.';
 
 -- ================================================================= gatilhos de empresas
 create or replace function public.empresas_antes_gravar() returns trigger

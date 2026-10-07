@@ -17,6 +17,22 @@ describe('gerarCsv (§13)', () => {
     const csv = gerarCsv(['Funcionário'], [['Ana']], [['Período', '01/10/2026 a 31/10/2026'], ['Status', 'Fechado']])
     expect(csv).toBe('﻿Período;01/10/2026 a 31/10/2026\r\nStatus;Fechado\r\n\r\nFuncionário\r\nAna\r\n')
   })
+  it('(revisão 2) neutraliza fórmula no começo do texto (= + - @ TAB CR), mas não números nossos', () => {
+    const csv = gerarCsv(['x'], [['=HYPERLINK("http://x";"Clique")'], ['+1+1'], ['-2+3'], ['@SUM(A1)'], ['\tTAB'], ['-50,00'], ['-03:26'], ['-1'], ['+55'], ['Ana = Bia'], [-5]])
+    expect(csv.split('\r\n').slice(1, -1)).toEqual([
+      `"'=HYPERLINK(""http://x"";""Clique"")"`,
+      "'+1+1",
+      "'-2+3",
+      "'@SUM(A1)",
+      "'\tTAB",
+      '-50,00',
+      '-03:26',
+      '-1',
+      '+55',
+      'Ana = Bia',
+      '-5',
+    ])
+  })
   it('sem preâmbulo vazio não gera linha em branco', () => {
     expect(gerarCsv(['x'], [], [])).toBe('﻿x\r\n')
   })

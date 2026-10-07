@@ -5,13 +5,20 @@
 // - Aspas duplas quando o campo tem `;`, `"`, `\r` ou `\n` (aspas internas dobradas).
 // - `null`/`undefined` → vazio; `true`/`false` → `Sim`/`Não`; números como `String(n)`.
 // - `preambulo` (opcional): linhas antes do cabeçalho, seguidas automaticamente de uma linha em branco.
+// - (revisão 2) Injeção de fórmula: texto que começa com `=`, `+`, `-`, `@`, TAB ou CR (ex.: nome de garçom vindo da Zig,
+//   nome de funcionário) ganha um apóstrofo na frente (`'=HYPERLINK(…)`) para o Excel/LibreOffice não executar como fórmula.
+//   Números que NÓS geramos (`-50,00`, `-03:26`, `-1`) continuam como estão.
 
 export const CSV_BOM = '﻿'
 export const CSV_FIM = '\r\n'
 
+const CSV_FORMULA = /^[=+\-@\t\r]/
+const CSV_NUMERO = /^[-+]?\d+(?:[.,:]\d+)*$/
+
 export function campoCsv(v) {
   if (v === null || v === undefined) return ''
-  const texto = typeof v === 'boolean' ? (v ? 'Sim' : 'Não') : String(v)
+  let texto = typeof v === 'boolean' ? (v ? 'Sim' : 'Não') : String(v)
+  if (CSV_FORMULA.test(texto) && !CSV_NUMERO.test(texto)) texto = `'${texto}`
   return /[;"\r\n]/.test(texto) ? `"${texto.replace(/"/g, '""')}"` : texto
 }
 

@@ -981,6 +981,17 @@ begin
 
   if e.alvo = 'horarios' then
     perform public.controlid_envio_atualizar(e.empresa_id, null, e.integracao_id);
+    -- (revisão 2) Os funcionários que aguardavam os horários viram 'pendente' só agora, depois que o N8N já leu as
+    -- pendências desta rodada: sem um novo pedido, ficavam esperando o agendador (até 1 h). Enfileira um envio.
+    if v_status = 'enviado'
+       and exists (select 1 from public.controlid_envios
+                    where integracao_id = e.integracao_id and alvo = 'funcionario' and status = 'pendente')
+       and not exists (select 1 from public.sync_solicitacoes
+                        where integracao_id = e.integracao_id and status = 'pendente'
+                          and escopo in ('exportar_funcionarios', 'tudo')) then
+      insert into public.sync_solicitacoes (empresa_id, integracao_id, escopo, mensagem)
+      values (e.empresa_id, e.integracao_id, 'exportar_funcionarios', 'Automático: envio dos funcionários após os horários');
+    end if;
   end if;
   return jsonb_build_object('status', v_status, 'versao', e.versao);
 end $$;

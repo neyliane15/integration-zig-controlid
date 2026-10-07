@@ -742,7 +742,6 @@ export interface Rpcs {
     retorno: Uuid
   }
   // cadastros, integrações, sync (b1)
-  dia_de_trabalho: { args: { p_instante: InstanteISO; p_empresa: Uuid }; retorno: DataISO }
   dia_de_trabalho_atual: { args: { p_empresa?: Uuid | null }; retorno: DataISO }
   pontos_vigentes: { args: { p_funcionario: Uuid; p_data: DataISO }; retorno: number }
   funcionario_vincular_controlid: { args: { p_controlid_usuario: Uuid; p_funcionario: Uuid | null }; retorno: null }

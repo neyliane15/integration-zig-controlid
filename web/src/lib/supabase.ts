@@ -93,6 +93,16 @@ const TRADUCOES: [RegExp, string][] = [
   [/row-level security|permission denied/i, 'Sem permissão'],
   [/signups not allowed|signup is disabled/i, 'Cadastro de novas contas desativado.'],
   [/auth session missing/i, 'O link expirou ou já foi usado. Peça um novo.'],
+  // (revisão 2) erros do Postgres/PostgREST que chegavam em inglês à tela
+  [/invalid input syntax for type (date|timestamp)|date\/time field value out of range|out of range for type (date|timestamp)/i, 'Data inválida'],
+  [/invalid input syntax for type uuid/i, 'Registro não encontrado'],
+  [/invalid input syntax for type (integer|bigint|numeric|smallint)/i, 'Número inválido'],
+  [/numeric field overflow|out of range for type (integer|bigint|numeric|smallint)/i, 'Número fora do limite permitido'],
+  [/value too long for type|string is too long/i, 'Texto longo demais'],
+  [/duplicate key value violates unique constraint/i, 'Já existe um registro igual'],
+  [/violates foreign key constraint/i, 'Registro relacionado não encontrado ou ainda em uso'],
+  [/violates check constraint|violates not-null constraint/i, 'Valor inválido'],
+  [/statement timeout|canceling statement/i, 'A consulta demorou demais. Tente um período menor.'],
 ]
 
 /** Converte qualquer erro (Error, PostgrestError, AuthError, string) em texto para o usuário. */

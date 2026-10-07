@@ -960,6 +960,10 @@ begin
   if p_motivo is null or btrim(p_motivo) = '' then raise exception 'Informe o motivo' using errcode = '22023'; end if;
   if p_instante is null then raise exception 'Horário inválido' using errcode = '22023'; end if;
   if p_instante > public.agora() then raise exception 'Horário no futuro' using errcode = '22023'; end if;
+  -- (revisão 2) batida de anos atrás (digitação errada, ex.: 1926) era aceita e gravada fora de qualquer apuração
+  if p_instante < public.agora() - interval '366 days' then
+    raise exception 'Horário muito antigo (máximo 1 ano)' using errcode = '22023';
+  end if;
 
   insert into public.ponto_batidas (empresa_id, funcionario_id, origem, instante, motivo, criado_por)
   values (v_empresa, p_funcionario, 'manual', p_instante, btrim(p_motivo), auth.uid())
@@ -1224,6 +1228,10 @@ begin
   if p_motivo is null or btrim(p_motivo) = '' then raise exception 'Informe o motivo' using errcode = '22023'; end if;
   if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
   if p_minutos is null then raise exception 'Informe os minutos' using errcode = '22023'; end if;
+  -- (revisão 2) limite de sanidade: ±100.000 min (≈ 1.666 h); 2.147.483.647 min era aceito e distorcia o saldo
+  if abs(p_minutos::bigint) > 100000 then
+    raise exception 'Minutos fora do limite (máximo 100.000)' using errcode = '22023';
+  end if;
   if p_tipo = 'saldo_inicial'
      and exists (select 1 from public.banco_horas_lancamentos
                   where funcionario_id = p_funcionario and data = p_data and tipo = 'saldo_inicial') then

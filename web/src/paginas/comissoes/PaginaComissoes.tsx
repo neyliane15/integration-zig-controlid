@@ -135,6 +135,7 @@ function ModalNovoFechamento({ aoFechar, aoCriar }: { aoFechar(): void; aoCriar(
         <div>
           <p className="mb-1.5 text-sm font-semibold text-lavanda">Período</p>
           <FiltroPeriodo
+            hoje={hoje}
             inicio={inicio}
             fim={fim}
             aoMudar={(i, f) => {

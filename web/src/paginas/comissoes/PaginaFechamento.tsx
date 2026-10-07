@@ -198,7 +198,7 @@ function Fechamento({ fechamento: f, itens }: { fechamento: ComissaoFechamento; 
       titulo: 'Fechar a comissão?',
       mensagem: (
         <>
-          Base distribuível <strong>{formatarCentavos(f.base_distribuivel_centavos)}</strong> para {itens.filter((i) => i.incluido).length} participante(s).
+          Base distribuível <strong>{formatarCentavos(f.base_distribuivel_centavos)}</strong> para {itens.filter((i) => i.incluido && Number(i.pontos_efetivos) > 0).length} participante(s) com pontos.
           Depois de fechado, o fechamento não pode mais ser alterado nem excluído.
         </>
       ),

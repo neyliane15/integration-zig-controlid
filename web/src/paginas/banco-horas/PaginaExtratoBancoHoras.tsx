@@ -130,6 +130,7 @@ export function PaginaExtratoBancoHoras() {
 
       <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
         <FiltroPeriodo
+          hoje={hoje}
           inicio={inicio}
           fim={fim}
           aoMudar={(de, ate) => {
