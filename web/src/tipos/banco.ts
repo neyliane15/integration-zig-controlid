@@ -55,6 +55,10 @@ export type TipoAbono = 'folga' | 'feriado' | 'ferias' | 'atestado' | 'compensac
 export type TipoLancamento = 'saldo_inicial' | 'ajuste' | 'compensacao' | 'pagamento'
 export type TipoZig = 'Normal' | 'Couvert' | 'ZigCard' | 'Entrance' | 'Tip' | 'Outro'
 export type StatusFechamento = 'rascunho' | 'fechado'
+/** Adendo envio Control iD (A.2). */
+export type StatusEnvioControlId = 'pendente' | 'enviando' | 'enviado' | 'erro' | 'aguardando'
+export type OperacaoEnvio = 'salvar' | 'remover' | 'bloquear'
+export type AlvoEnvio = 'funcionario' | 'horarios'
 
 // ---------------------------------------------------------- tabelas (backend-1)
 export interface Empresa {
@@ -164,13 +168,24 @@ export interface ParametrosZig {
   rede?: string
   dias_retroativos?: number
 }
+/** Envio sistema → equipamento (adendo A.1). Padrão: desligado (opt-in por equipamento). */
+export interface ParametrosEnvioControlId {
+  ativo?: boolean
+  foto?: boolean
+  cartao?: boolean
+  senha?: boolean
+  horarios?: boolean
+  ao_desligar?: 'remover' | 'bloquear'
+}
 export interface ParametrosControlIdAcesso {
+  envio?: ParametrosEnvioControlId
   modelo?: string
   dias_retroativos?: number
   eventos_validos?: number[]
   relogio_em_hora_local?: boolean
 }
 export interface ParametrosControlIdRep {
+  envio?: ParametrosEnvioControlId
   modelo?: string
   dias_retroativos?: number
   identificador?: 'cpf' | 'pis'
@@ -308,6 +323,74 @@ export interface TarefaItem {
   feito: boolean
   feito_por: Uuid | null
   feito_em: InstanteISO | null
+}
+
+// ------------------------------------------- envio ao Control iD (adendo, b1)
+export interface ControlIdEnvio {
+  id: Uuid
+  empresa_id: Uuid
+  integracao_id: Uuid
+  alvo: AlvoEnvio
+  funcionario_id: Uuid | null
+  funcionario_nome: string | null
+  operacao: OperacaoEnvio
+  status: StatusEnvioControlId
+  versao: number
+  assinatura: string
+  assinatura_enviada: string | null
+  id_remoto: string | null
+  mapa_remoto: Record<string, { time_zone_id: number; access_rule_id: number }>
+  tentativas: number
+  erro: string | null
+  pendente_desde: InstanteISO | null
+  pego_em: InstanteISO | null
+  enviado_em: InstanteISO | null
+  criado_em: InstanteISO
+  atualizado_em: InstanteISO
+}
+
+export interface ControlIdHorario {
+  id: Uuid
+  empresa_id: Uuid
+  nome: string
+  ativo: boolean
+  criado_em: InstanteISO
+  atualizado_em: InstanteISO
+}
+
+export interface ControlIdHorarioFaixa {
+  id: Uuid
+  empresa_id: Uuid
+  horario_id: Uuid
+  /** 0 = domingo … 6 = sábado */
+  dia_semana: number
+  inicio: HoraISO
+  /** '23:59:59' = até o fim do dia */
+  fim: HoraISO
+}
+
+export interface FuncionarioHorario {
+  id: Uuid
+  empresa_id: Uuid
+  funcionario_id: Uuid
+  horario_id: Uuid
+  criado_em: InstanteISO
+}
+
+export interface FuncionarioFoto {
+  funcionario_id: Uuid
+  empresa_id: Uuid
+  bucket: string
+  caminho: string
+  atualizado_por: Uuid | null
+  atualizado_em: InstanteISO
+}
+
+/** Retorno de `funcionario_credenciais` — nunca a senha nem o número completo do cartão. */
+export interface CredenciaisFuncionario {
+  senha_definida: boolean
+  cartoes: { id: Uuid; final: string; criado_em: InstanteISO }[]
+  foto: { caminho: string; atualizado_em: InstanteISO } | null
 }
 
 // ---------------------------------------------------------- tabelas (backend-2)
@@ -550,6 +633,8 @@ export interface LinhaPontoDiaEmpresa {
   atraso_minutos: Minutos
   batidas: BatidaEspelho[]
   alarmes_abertos: number
+  /** horários previstos do dia (vazio em folga, abono ou sem escala) — revisão 1 */
+  esperadas: EsperadaEspelho[]
 }
 
 export interface LinhaBancoHorasResumo {
@@ -657,7 +742,6 @@ export interface Rpcs {
     retorno: Uuid
   }
   // cadastros, integrações, sync (b1)
-  dia_de_trabalho: { args: { p_instante: InstanteISO; p_empresa: Uuid }; retorno: DataISO }
   dia_de_trabalho_atual: { args: { p_empresa?: Uuid | null }; retorno: DataISO }
   pontos_vigentes: { args: { p_funcionario: Uuid; p_data: DataISO }; retorno: number }
   funcionario_vincular_controlid: { args: { p_controlid_usuario: Uuid; p_funcionario: Uuid | null }; retorno: null }
@@ -672,6 +756,16 @@ export interface Rpcs {
       p_parametros?: Record<string, unknown>
       p_empresa?: Uuid | null
     }
+    retorno: number
+  }
+  // envio ao Control iD (adendo, b1)
+  funcionario_definir_senha: { args: { p_funcionario: Uuid; p_senha: string | null }; retorno: null }
+  funcionario_adicionar_cartao: { args: { p_funcionario: Uuid; p_numero: string }; retorno: Uuid }
+  funcionario_remover_cartao: { args: { p_cartao: Uuid }; retorno: null }
+  funcionario_definir_foto: { args: { p_funcionario: Uuid; p_caminho: string | null }; retorno: null }
+  funcionario_credenciais: { args: { p_funcionario: Uuid }; retorno: CredenciaisFuncionario }
+  controlid_envio_reenviar: {
+    args: { p_integracao?: Uuid | null; p_funcionario?: Uuid | null; p_empresa?: Uuid | null }
     retorno: number
   }
   // tarefas (b1)

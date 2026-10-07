@@ -1,0 +1,21 @@
+{
+  "_descricao": "Funcionários da empresa demo A (Bar Bossa Nova) — mesmos nomes, matrículas e CPFs da carga de demonstração (contrato §15.3).",
+  "empresa": { "nome": "Bar Bossa Nova", "fuso": "America/Sao_Paulo", "virada_dia": "05:00" },
+  "jornadas": {
+    "salao_noite": { "nome": "Salão noite", "dias_semana": [0, 2, 3, 4, 5, 6], "horarios": ["17:00", "21:00", "21:30", "01:00"] },
+    "cozinha": { "nome": "Cozinha", "dias_semana": [1, 2, 3, 4, 5, 6], "horarios": ["10:00", "14:00", "15:00", "18:00"] }
+  },
+  "funcionarios": [
+    { "id_controlid": 1, "matricula": "1", "nome": "Ana Souza", "cargo": "Garçom", "cpf": "52998224725", "jornada": "salao_noite", "garcom_zig": true },
+    { "id_controlid": 2, "matricula": "2", "nome": "Bruno Lima", "cargo": "Garçom", "cpf": "11144477735", "jornada": "salao_noite", "garcom_zig": true },
+    { "id_controlid": 3, "matricula": "3", "nome": "Carla Dias", "cargo": "Cumim", "cpf": "39053344705", "jornada": "salao_noite", "garcom_zig": false },
+    { "id_controlid": 4, "matricula": "4", "nome": "Davi Rocha", "cargo": "Bartender", "cpf": "15350946056", "jornada": "salao_noite", "garcom_zig": true },
+    { "id_controlid": 5, "matricula": "5", "nome": "Eva Martins", "cargo": "Cozinha", "cpf": "71428793860", "jornada": "cozinha", "garcom_zig": false }
+  ],
+  "falha_programada": {
+    "_descricao": "Batida que o equipamento NÃO registra: volta do intervalo da Carla no dia de trabalho de anteontem (relativo a MOCK_HOJE ou à data em que o mock subiu).",
+    "matricula": "3",
+    "dias_atras": 2,
+    "indice_horario": 2
+  }
+}

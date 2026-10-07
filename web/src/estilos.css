@@ -22,7 +22,7 @@
   --color-tinta-ouro: #1a1405;
   --color-creme: #f4eedc;
   --color-lavanda: #8d93b8;
-  --color-lavanda-escuro: #5e6488;
+  --color-lavanda-escuro: #848ab0; /* revisão 2: era #5e6488 (contraste 2,7–3,4:1); agora ≥ 4,6:1 em todos os fundos */
   --color-sucesso: #4fb286;
   --color-alerta: #e8873a;
   --color-perigo: #e5604f;
@@ -49,6 +49,34 @@
   body {
     min-height: 100dvh;
     overflow-x: hidden;
+    text-rendering: optimizeLegibility;
+  }
+  #raiz {
+    min-height: 100dvh;
+    isolation: isolate;
+  }
+  button,
+  [role='button'] {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  a {
+    text-underline-offset: 3px;
+  }
+  /* autofill do Chrome sem fundo claro */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--color-creme);
+    -webkit-box-shadow: 0 0 0 1000px var(--color-entrada) inset;
+    caret-color: var(--color-creme);
+    transition: background-color 9999s ease-out 0s;
+  }
+  ::-webkit-calendar-picker-indicator {
+    filter: invert(0.75) sepia(0.4) saturate(2) hue-rotate(5deg);
+    cursor: pointer;
   }
   ::selection {
     background: color-mix(in srgb, var(--color-ouro) 35%, transparent);
@@ -82,5 +110,93 @@
   .numero {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* fundo das telas de acesso: noite com um brilho dourado muito discreto */
+  .fundo-noite {
+    background:
+      radial-gradient(1100px 520px at 50% -12%, rgb(201 162 61 / 0.075), transparent 62%),
+      radial-gradient(900px 600px at 100% 110%, rgb(52 64 106 / 0.22), transparent 60%),
+      var(--color-noite);
+  }
+
+  /* fio dourado no topo de cartões de destaque */
+  .fio-ouro {
+    position: relative;
+  }
+  .fio-ouro::before {
+    content: '';
+    position: absolute;
+    inset: 0 24px auto;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgb(201 162 61 / 0.55), transparent);
+    pointer-events: none;
+  }
+
+  .esqueleto {
+    background: linear-gradient(90deg, var(--color-cartao-2) 0%, #1f2a4a 45%, var(--color-cartao-2) 90%);
+    background-size: 220% 100%;
+    animation: mdg-brilho 1.4s ease-in-out infinite;
+  }
+
+  .aviso-entrando {
+    animation: mdg-subir 0.22s ease-out both;
+  }
+  .modal-caixa {
+    animation: mdg-subir 0.2s ease-out both;
+  }
+  .modal-fundo {
+    animation: mdg-aparecer 0.18s ease-out both;
+  }
+  .gaveta {
+    animation: mdg-gaveta 0.22s ease-out both;
+  }
+  .surgir {
+    animation: mdg-subir 0.35s ease-out both;
+  }
+}
+
+@keyframes mdg-brilho {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+@keyframes mdg-subir {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes mdg-gaveta {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes mdg-aparecer {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

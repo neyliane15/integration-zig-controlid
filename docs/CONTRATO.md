@@ -392,7 +392,7 @@ create table if not exists public.integracoes (
   nome                 text not null check (btrim(nome) <> ''),    -- ex.: 'Zig', 'iDFace porta dos fundos', 'iDClass salão'
   ativa                boolean not null default true,
   parametros           jsonb not null default '{}'::jsonb,          -- NÃO secreto; formato em §11.1
-  intervalo_minutos    int not null default 60 check (intervalo_minutos >= 15),
+  intervalo_minutos    int not null default 60 check (intervalo_minutos >= 15),  -- formulário do front: 15 para controlid_acesso, 60 para os demais (revisão 2)
   cursor               jsonb not null default '{}'::jsonb,          -- mantido pela ingestão; o front não altera
   ultimo_sucesso_em    timestamptz,
   ultima_execucao_em   timestamptz,
@@ -859,7 +859,9 @@ Não grava nada. Fonte única da verdade usada por `ponto_apurar` e `ponto_espel
    Dia sem escala/folga/abono com batidas → `saldo = trabalhado` (hora extra). Dia escalado sem batida e encerrado → `saldo = −previsto`.
    Dia **não encerrado** (D ≥ dia de trabalho atual) → `saldo = 0` (provisório; não entra no banco).
 6. **Atraso** (`atraso_minutos`): com `esperadas > 0` e `n > 0`: `max(0, floor((primeira − E1)/60s))` se maior que
-   `tolerancia_batida_minutos`, senão 0. (E1 = instante previsto da entrada, §2.4.)
+   `tolerancia_batida_minutos`, senão 0. (E1 = instante previsto da entrada, §2.4.) *(Revisão 1)* Com `0 < n < esperadas`, só há
+   atraso se a combinação escolhida no §7.3 inclui a **entrada** — se a entrada foi esquecida, o dia gera `batida_faltando`
+   na entrada e **não** um atraso de horas (a regra vale também no dia em andamento).
 7. **Situação** (na ordem):
    `encerrado = false` → `em_andamento`; abono → `abonado`; `esperadas = 0 e n = 0` → `sem_escala` (sem jornada) ou `folga`;
    `n = 0` → `ausente`; `n ≥ esperadas e n par` → `completo`; senão `incompleto`.
@@ -968,7 +970,10 @@ Para um fechamento de `[data_inicio, data_fim]` (loja opcional):
 8. `valor_ponto = base / soma` (numeric, 6 casas, só para exibir).
 9. **Arredondamento (maior resto, determinístico)**: `exato_i = base × pe_i / soma` (numeric sem arredondar);
    `piso_i = floor(exato_i)`; `resto = base − Σ piso_i` (0 ≤ resto < nº de participantes); dá **+1 centavo** a `resto` participantes
-   ordenados por: parte fracionária desc, `pontos_efetivos` desc, `funcionario_nome` asc, `funcionario_id` asc.
+   ordenados por: parte fracionária desc, `pontos_efetivos` desc, `funcionario_nome` asc, `funcionario_id` asc (nulos por último).
+   *(Revisão 1)* No banco o cálculo é exato: `piso = div(base × pe, soma)` e a parte fracionária é comparada por `mod(base × pe, soma)`
+   (mesmo denominador); o nome é comparado com `collate "C"` (ordem de código de caractere — `B < a < Á`), que é exatamente a
+   comparação de texto do JavaScript usada na prévia (`web/src/lib/comissao.ts`), qualquer que seja a collation do banco.
    Garantia: `Σ valor_centavos = base` exatamente.
 
 **Exemplo (vetor de teste obrigatório no banco e no vitest)**:
@@ -1020,10 +1025,10 @@ sem empresa (vê nada até `criar_minha_empresa`).
 ### 10.2 Cadastros, integrações e sincronização (backend-1)
 | assinatura | etiqueta / quem | regra |
 |---|---|---|
-| `dia_de_trabalho(p_instante timestamptz, p_empresa uuid) returns date` | `[api]` | §2.4 |
+| `dia_de_trabalho(p_instante timestamptz, p_empresa uuid) returns date` | `[interno]` *(revisão 2; era `[api]`)* | §2.4. Não exposta: qualquer usuário descobria fuso/virada de outra empresa pelo id. O front usa `dia_de_trabalho_atual`; `dia_de_trabalho_instante` também passou a `[interno]` |
 | `dia_de_trabalho_atual(p_empresa uuid default null) returns date` | `[api]` | `dia_de_trabalho(agora(), resolver_empresa(p_empresa,'ler'))` |
 | `pontos_vigentes(p_funcionario uuid, p_data date) returns numeric` | `[api]` G A M | §5 |
-| `funcionario_vincular_controlid(p_controlid_usuario uuid, p_funcionario uuid) returns void` | `[api]` G A M | `p_funcionario null` desvincula. Mesma empresa. Se o funcionário já está ligado a outro usuário do mesmo equipamento, o vínculo antigo é removido. `vinculo='manual'`. |
+| `funcionario_vincular_controlid(p_controlid_usuario uuid, p_funcionario uuid) returns void` | `[api]` G A M | `p_funcionario null` desvincula. Mesma empresa. Se o funcionário já está ligado a outro usuário do mesmo equipamento, o vínculo antigo é removido. `vinculo='manual'`. *(Revisão 1, confirmado)* O desvínculo grava `funcionario_id = null` **com** `vinculo = 'manual'` de propósito: o vínculo automático da importação (§11.3) só atua em `vinculo is null`, então um usuário desligado à mão não é religado sozinho; a tela mostra "Desvinculado manualmente" e religar é escolher o funcionário de novo. |
 | `integracao_definir_segredos(p_integracao uuid, p_segredos jsonb) returns void` | `[api]` A M | *Merge*: chave com valor string não vazio grava; `null` ou `''` remove. Só chaves permitidas para o tipo (§11.1) → senão `Segredo inválido para este tipo de integração`. |
 | `integracao_segredos_preenchidos(p_integracao uuid) returns text[]` | `[api]` G A M | nomes das chaves preenchidas (nunca os valores) |
 | `sync_solicitar(p_integracao uuid default null, p_escopo text default 'tudo', p_data_inicio date default null, p_data_fim date default null, p_parametros jsonb default '{}', p_empresa uuid default null) returns integer` | `[api]` G A M | Cria uma solicitação por integração **ativa** alvo (`p_integracao` null = todas as ativas da empresa compatíveis com o escopo; escopos `apurar_ponto`/`exportar_fechamento` não têm integração). Pula alvo que já tem solicitação `pendente`/`em_andamento` com o mesmo escopo. Período máx. 31 dias. Retorna quantas criou. Solicitação `em_andamento` há mais de 30 min é marcada `erro` ('Expirada') antes. |
@@ -1050,9 +1055,9 @@ Responsável (leitura): `tarefas.responsavel_perfil_id = auth.uid()` ou `respons
 | assinatura | quem | regra |
 |---|---|---|
 | `ponto_espelho(p_funcionario uuid, p_inicio date, p_fim date) returns table(data date, dia_semana smallint, situacao text, encerrado boolean, abono_tipo text, jornada_nome text, previsto_minutos int, trabalhado_minutos int, saldo_minutos int, atraso_minutos int, batidas jsonb, alarmes jsonb, esperadas jsonb)` | `[api]` L G A M | Máx. 62 dias. Calcula ao vivo (`ponto_calcular_dia`); dias fora do vínculo são omitidos. `batidas`: `[{id, instante, origem, desconsiderada, duplicada, motivo}]` (inclui desconsideradas, ordenadas). `alarmes`: `[{id, tipo, batida_esperada, status, detalhe, justificativa}]` (da tabela). `esperadas`: `[{batida:'entrada'|..., instante}]`. |
-| `ponto_dia_empresa(p_data date default null, p_empresa uuid default null) returns table(funcionario_id uuid, funcionario_nome text, cargo text, situacao text, encerrado boolean, previsto_minutos int, trabalhado_minutos int, saldo_minutos int, atraso_minutos int, batidas jsonb, alarmes_abertos int)` | `[api]` L G A M | Todos os funcionários no vínculo na data (padrão: dia atual), ao vivo. Ordem por nome. |
+| `ponto_dia_empresa(p_data date default null, p_empresa uuid default null) returns table(funcionario_id uuid, funcionario_nome text, cargo text, situacao text, encerrado boolean, previsto_minutos int, trabalhado_minutos int, saldo_minutos int, atraso_minutos int, batidas jsonb, alarmes_abertos int, esperadas jsonb)` | `[api]` L G A M | Todos os funcionários no vínculo na data (padrão: dia atual), ao vivo. Ordem por nome. `esperadas` *(revisão 1)* = mesmo formato do espelho (`[{batida, instante}]`; vazio em folga, abono e sem escala) — o front não recalcula mais a partir da jornada. |
 | `ponto_reapurar(p_inicio date, p_fim date, p_funcionario uuid default null, p_empresa uuid default null) returns integer` | `[api]` G A M | máx. 93 dias; todos os funcionários da empresa se `p_funcionario` null |
-| `ponto_incluir_batida(p_funcionario uuid, p_instante timestamptz, p_motivo text) returns uuid` | `[api]` G A M | motivo obrigatório; instante não pode ser futuro (`Horário no futuro`) |
+| `ponto_incluir_batida(p_funcionario uuid, p_instante timestamptz, p_motivo text) returns uuid` | `[api]` G A M | motivo obrigatório; instante não pode ser futuro (`Horário no futuro`) nem ter mais de 366 dias (`Horário muito antigo (máximo 1 ano)`, revisão 2) |
 | `ponto_desconsiderar_batida(p_batida uuid, p_motivo text) returns void` | `[api]` G A M | |
 | `ponto_restaurar_batida(p_batida uuid, p_motivo text) returns void` | `[api]` G A M | |
 | `ponto_justificar_alarme(p_alarme uuid, p_justificativa text) returns void` | `[api]` G A M | justificativa obrigatória |
@@ -1062,7 +1067,7 @@ Responsável (leitura): `tarefas.responsavel_perfil_id = auth.uid()` ou `respons
 | `banco_horas_saldo(p_funcionario uuid, p_ate date default null) returns bigint` | `[api]` L G A M | §7.5 |
 | `banco_horas_resumo(p_ate date default null, p_empresa uuid default null) returns table(funcionario_id uuid, funcionario_nome text, cargo text, saldo_minutos bigint, saldo_mes_minutos bigint, ultimo_dia_apurado date)` | `[api]` L G A M | funcionários ativos; `saldo_mes` = soma de dias+lançamentos do mês de `p_ate` |
 | `banco_horas_extrato(p_funcionario uuid, p_inicio date, p_fim date) returns table(data date, tipo text, descricao text, minutos int, saldo_acumulado bigint, referencia_id uuid)` | `[api]` L G A M | 1ª linha `tipo='saldo_anterior'` (data = p_inicio − 1); depois, por data, `tipo='dia'` (dias encerrados com saldo ≠ 0 ou situação ≠ folga) e `tipo=<tipo do lançamento>`; dias antes de lançamentos no mesmo dia. Máx. 366 dias. |
-| `banco_horas_lancar(p_funcionario uuid, p_data date, p_tipo text, p_minutos integer, p_motivo text) returns uuid` | `[api]` G A M; `saldo_inicial` só A M | |
+| `banco_horas_lancar(p_funcionario uuid, p_data date, p_tipo text, p_minutos integer, p_motivo text) returns uuid` | `[api]` G A M; `saldo_inicial` só A M | *(revisão 2)* `abs(p_minutos) ≤ 100000` (`Minutos fora do limite (máximo 100.000)`) |
 | `banco_horas_excluir_lancamento(p_lancamento uuid) returns void` | `[api]` A M | |
 
 ### 10.5 Vendas (backend-2)
@@ -1122,6 +1127,25 @@ Leitura: `comissao_fechamentos` e `comissao_itens` direto (RLS G A M).
 `Cadastro de novas empresas desativado` · `Segredo inválido para este tipo de integração` · `Integração não encontrada` ·
 `Integração inativa` · `Tipo de integração incompatível` · `Loja não encontrada` · `Fuso horário inválido` · `Tarefa não encontrada`.
 
+*(Revisão 1)* Mensagens que as migrações já usavam e não estavam listadas (texto exato; o front as mostra como vierem):
+- usuários/empresa: `Usuário não encontrado` · `Usuário de outra empresa`;
+- cadastros/jornadas/tarefas: `Jornada não encontrada` · `Rotina não encontrada` · `Horário não encontrado` · `Status inválido`;
+- integrações/sincronização: `Escopo inválido` · `Parâmetros inválidos` · `Usuário do equipamento não encontrado` · `Solicitação não encontrada` ·
+  `Execução não encontrada` · `Integração de outra empresa` · `Lista de usuários inválida` · `Lista de itens inválida` · `Lote maior que 2000 itens` ·
+  `Informe a data`;
+- ponto/banco de horas: `Horário inválido` · `Batida sem funcionário vinculado` · `Batida importada não pode ser alterada` ·
+  `Batida inválida para a origem <origem>` · `Abono não encontrado` · `Tipo de abono inválido` · `Tipo de lançamento inválido` ·
+  `Informe os minutos` · `Já existe saldo inicial nesta data` · `Lançamento não encontrado` ·
+  *(revisão 2)* `Horário muito antigo (máximo 1 ano)` · `Minutos fora do limite (máximo 100.000)`;
+- comissão: `Percentual de retenção inválido` · `Pontos inválidos` · `Item não pode mudar de fechamento`;
+- envio ao Control iD: as do adendo (A.6).
+*(Revisão 2)* Erros do próprio Postgres/PostgREST (tipo inválido, estouro numérico, chave duplicada, FK, check, timeout, `permission denied`)
+são traduzidos no front (`web/src/lib/supabase.ts`, `mensagemDeErro`) para `Data inválida`, `Número inválido`, `Número fora do limite permitido`,
+`Texto longo demais`, `Já existe um registro igual`, `Registro relacionado não encontrado ou ainda em uso`, `Valor inválido`,
+`A consulta demorou demais. Tente um período menor.` e `Sem permissão` — nunca chegam em inglês à tela.
+Motivos por item nas ingestões (vão em `erros[].motivo`, §11.2, não são exceção do lote): `item inválido` · `id_externo ausente` ·
+`informe instante ou instante_local` · `instante inválido` · `sem CPF/PIS` · `transactionId ausente` · `paymentId ausente` · `id ausente` · `id repetido`.
+
 ---
 
 ## 11. Integrações: parâmetros, segredos e payloads de ingestão
@@ -1179,7 +1203,7 @@ Resolve funcionário (§7.1); apura **cada (funcionário, data_trabalho) afetado
 | RPC | `p_itens` = resposta de | idempotência |
 |---|---|---|
 | `ingestao_zig_lojas(p_integracao uuid, p_lojas jsonb) returns jsonb` | `/erp/lojas` `[{id, name}]` | upsert `(empresa_id, loja_id_externo)`; `nome` atualizado; `sincronizar` preservado (novas = true) |
-| `ingestao_zig_saida_produtos(p_integracao uuid, p_loja text, p_data date, p_itens jsonb) returns jsonb` | `/erp/saida-produtos` | **substitui o dia**: apaga `(empresa, loja, data_operacao = p_data)` e insere o lote, na mesma transação |
+| `ingestao_zig_saida_produtos(p_integracao uuid, p_loja text, p_data date, p_itens jsonb) returns jsonb` | `/erp/saida-produtos` | **substitui o dia**: apaga `(empresa, loja, data_operacao = p_data)` e insere o lote, na mesma transação. *(Revisão 2)* As quatro ingestões que substituem o dia pegam antes `pg_advisory_xact_lock(hashtextextended('mdg:<tabela>:<empresa>:<loja>:<data>', 0))`: cargas simultâneas do mesmo dia (agendador × "Sincronizar agora") ficam em fila — sem a trava, as duas apagavam e as duas inseriam (itens e serviço em dobro) |
 | `ingestao_zig_faturamento(p_integracao uuid, p_loja text, p_data date, p_itens jsonb) returns jsonb` | `/erp/faturamento` | substitui o dia |
 | `ingestao_zig_faturamento_bandeiras(p_integracao uuid, p_loja text, p_data date, p_itens jsonb) returns jsonb` | `/erp/faturamento/detalhesMaquinaIntegrada` (cada `values[]` vira uma linha) | substitui o dia |
 | `ingestao_zig_compradores(p_integracao uuid, p_loja text, p_data date, p_itens jsonb) returns jsonb` | `/erp/compradores` (descarta `userDocument`, `userDocumentType`, `userPhone`, `userName`, `userEmail`) | substitui o dia |
@@ -1260,7 +1284,8 @@ Despacho (n8n-2) por `tipo`/`escopo`:
    `ingestao_controlid_usuarios` com `[{id: String(id), registration, name}]`.
 3. Batidas: `POST {url}/load_objects.fcgi?session=S` `{"object":"access_logs","where":{"access_logs":{"time":{">=":T}}}}` com
    `T = max(cursor.ultimo_instante − 1 dia, hoje − dias_retroativos)` em unix (no mesmo referencial do relógio — ver `relogio_em_hora_local`);
-   sem cursor: `hoje − dias_retroativos`. Paginar com `"limit": 1000, "offset": n` se o equipamento aceitar. Cada log →
+   sem cursor: `hoje − dias_retroativos`. Se a integração ficar parada mais que `dias_retroativos`, a recuperação é pela sincronização
+   manual com `data_inicio` (tela Integrações → Sincronizar agora → período), que ignora o limite. Paginar com `"limit": 1000, "offset": n` se o equipamento aceitar. Cada log →
    `{id_externo: String(id), user_id: String(user_id), evento: event, instante_local|instante}`; envia em lotes de ≤ 1000.
 4. Exportar: `ingestao_funcionarios_para_exportar` → `POST {url}/create_objects.fcgi?session=S`
    `{"object":"users","values":[{"name": nome, "registration": matricula}]}` → em seguida reimporta usuários (vínculo automático pela matrícula).
@@ -1271,12 +1296,13 @@ Despacho (n8n-2) por `tipo`/`escopo`:
 2. Usuários: `POST {url}/load_users.fcgi?session=S` `{}` → `{"users":[{name, pis|cpf, registration,…}]}` → ingestão com `id` = cpf/pis (dígitos).
 3. AFD: `POST {url}/get_afd.fcgi?session=S` com `{"initial_nsr": cursor.ultimo_nsr + 1}`; sem cursor
    `{"initial_date": {"day": d, "month": m, "year": a}}` (hoje − dias_retroativos). Resposta: texto AFD.
-4. Parser AFD (`n8n/controlid/lib/afd.mjs`, função `lerAfd(texto) → {marcacoes, ignoradas}`), só registros tipo **3**:
+4. Parser AFD (`n8n/controlid/lib/afd.mjs`, função `lerAfd(texto) → {marcacoes, ignoradas}`), registros de marcação tipo **3** e tipo **7**
+   (tipo 7 = marcação de REP-P/REP-A na Portaria 671; mesmo mapeamento de NSR, data-hora e CPF do tipo 3):
    - **Portaria 671** (50 colunas): `1–9` NSR · `10` tipo `3` · `11–34` data-hora `AAAA-MM-DDThh:mm:00-0300` · `35–46` CPF (12, zero à esquerda) · `47–50` CRC-16.
      → `{id_externo: String(nsr), nsr, instante: "AAAA-MM-DDThh:mm:00-03:00", cpf: <11 dígitos>}`.
    - **Portaria 1510 (legado)** (34 colunas): `1–9` NSR · `10` tipo `3` · `11–18` data `DDMMAAAA` · `19–22` hora `hhmm` · `23–34` PIS (12).
      → `{id_externo: String(nsr), nsr, instante_local: "AAAA-MM-DDThh:mm:00", pis: <11 dígitos>}`.
-   - Detecção por linha: caractere 10 = `3` e (caractere 21 = `T` → 671; senão comprimento ≥ 34 → 1510). Demais tipos (1, 2, 4, 5, 6, 7, 9…) ignorados.
+   - Detecção por linha: caractere 10 = `3` e (caractere 21 = `T` → 671; senão comprimento ≥ 34 → 1510). Demais tipos (1, 2, 4, 5, 6, 9…) ignorados.
      Linhas com `\r\n` aceitas. CRC não validado (documentado).
 
 ### 12.5 Zig (n8n-2)
@@ -1300,6 +1326,8 @@ com `detalhes = {"lojas": n, "dias": n, "por_endpoint": {"saida_produtos": {...}
 ## 13. Exportação CSV (formato único — front e N8N)
 
 UTF-8 **com BOM**, separador `;`, fim de linha `\r\n`, aspas duplas quando o campo tiver `;`, `"` ou quebra de linha (aspas internas dobradas).
+*(Revisão 2 — injeção de fórmula)* texto que começa com `=`, `+`, `-`, `@`, TAB ou CR recebe um apóstrofo na frente (`'=HYPERLINK(…)`),
+exceto valores puramente numéricos que nós geramos (`^[-+]?\d+([.,:]\d+)*$`, ex.: `-50,00`, `-03:26`, `-1`). Mesma regra no front e no N8N.
 Dinheiro com vírgula decimal e sem separador de milhar (`2094,74`); datas `dd/mm/aaaa`; minutos como `hh:mm` com sinal (`-03:26`).
 Nome do arquivo: `<tipo>_<empresa-slug>_<aaaa-mm-dd>[_<aaaa-mm-dd>].csv`.
 
@@ -1337,7 +1365,7 @@ Tema **escuro único** (`color-scheme: dark`). Os nomes abaixo são a API: o Tai
 | `--color-tinta-ouro` | `#1A1405` | texto sobre o dourado |
 | `--color-creme` | `#F4EEDC` | texto principal |
 | `--color-lavanda` | `#8D93B8` | texto secundário, rótulos |
-| `--color-lavanda-escuro` | `#5E6488` | texto desabilitado, placeholders |
+| `--color-lavanda-escuro` | `#848AB0` | texto desabilitado, placeholders, rótulos secundários (revisão 2: era `#5E6488`, contraste < 4,5:1) |
 | `--color-sucesso` | `#4FB286` | |
 | `--color-alerta` | `#E8873A` | alarmes abertos, atraso |
 | `--color-perigo` | `#E5604F` | erros, saldo negativo |
@@ -1352,7 +1380,7 @@ Tema **escuro único** (`color-scheme: dark`). Os nomes abaixo são a API: o Tai
 
 Classes utilitárias (em `estilos.css`, camada `components`): `.sobrancelha` (caixa alta, `letter-spacing: .24em`, 11px, `text-ouro`, peso 700),
 `.titulo-display` (Fraunces 400, 32–44px, `text-creme`), `.titulo-italico` (Fraunces itálico, `text-ouro-claro`), `.numero` (mono, `tabular-nums`).
-Tela de login: cartão centralizado de 420px; sobrancelha "MEU DIA DE GERENTE"; título em duas linhas ("Bom te ver" / *"de volta."* em itálico dourado-claro);
+Tela de login: cartão centralizado de 420px; sobrancelha "MEU DIA DE GERENTE"; título em duas linhas ("Organize seu dia." / *"Não esqueça nada."* em itálico dourado-claro, subtítulo lavanda "Seu assistente diário de rotina na loja.", fiel à referência do cliente);
 campos E-mail e Senha; caixa "Manter-me conectado"; botão **Entrar** (dourado, texto `tinta-ouro`); divisor "ou"; botão secundário
 **Entrar com Google** (contorno `borda`, ícone G); links "Recuperar senha" e "Criar conta".
 Responsivo: 390 px (celular: barra lateral vira menu inferior/gaveta, tabelas viram cartões) e 1440 px (barra lateral fixa 260 px).
@@ -1514,7 +1542,9 @@ Toda mutação de ponto invalida `painel`, `ponto-dia`, `espelho`, `alarmes`, `b
 - Cada arquivo de teste roda dentro de `begin; … rollback;` e não depende de outro. Prefixos: b1 = `10_`–`19_` e `90_`; b2 = `20_`–`69_`.
   Arquivos: b1 `10_base_rls.sql`, `12_usuarios.sql`, `14_cadastros.sql`, `16_integracoes_sync.sql`, `18_tarefas.sql`, `90_auditoria.sql`;
   b2 `20_ponto_apuracao.sql`, `22_ponto_alarmes.sql`, `24_ponto_ajustes.sql`, `30_banco_horas.sql`, `40_zig.sql`, `50_comissoes.sql`,
-  `60_ingestao.sql`, `65_painel.sql`.
+  `60_ingestao.sql`, `65_painel.sql`. Revisão 1: `26_ponto_revisao.sql` (atraso × entrada esquecida; esperadas no ponto do dia),
+  `56_comissao_desempate.sql` (desempate por nome = front, soma exata em valores extremos) e `92_isolamento.sql` (varre o catálogo e
+  confere, para **toda** tabela com `empresa_id`, que usuários de uma empresa não leem, alteram, apagam nem inserem dados da outra).
 - Obrigatórios: isolamento entre empresas em **toda** tabela (L/G/A da empresa A não vê/escreve nada da B); `anon` sem acesso;
   `integracoes_segredos` invisível a authenticated; `[servico]` negadas a authenticated; idempotência das ingestões (rodar 2× = mesmo
   resultado); vetores do §7.6 e do §9.
@@ -1550,6 +1580,25 @@ em `auth.users.encrypted_password`), `/auth/v1/user`, `/auth/v1/logout`, `/auth/
 "Conferir estoque do bar" (semanal ter/sex). A carga b2 gera, **relativa ao dia de trabalho atual**: batidas dos últimos 14 dias (com uma volta
 de intervalo faltando, um dia ímpar e uma ausência), dados Zig dos últimos 30 dias (faturamento, itens, Tips) e um fechamento de comissão
 `fechado` do mês anterior + um `rascunho` do mês corrente.
+
+### 15.3.1 Integração real N8N × banco (revisão 1)
+`npm run local` e depois `npm run test:integracao` (= `MDG_INTEGRACAO_REAL=1 node --test --test-concurrency=1 n8n/integracao-real.test.mjs n8n/cenario-revisao2.test.mjs`; em sequência, porque os dois gravam no mesmo banco): executa os
+**JSON de verdade** dos workflows (fila → subfluxos Zig e Control iD, exportação do fechamento, rotina diária, agendador) no simulador
+`n8n/mocks/simulador-n8n.mjs` (que passou a executar nós HTTP Request), contra os mocks e o **PostgREST local com as migrações reais**.
+Confere nomes/formatos dos parâmetros das RPCs, idempotência e os dados gravados. Sem a variável, o teste é pulado.
+`npm run sql:conferir` (= `ferramentas/gerar-instalar.sh --conferir`) falha se o `supabase/instalar.sql` versionado não for idêntico
+ao gerado a partir das migrações.
+
+### 15.3.2 Revisão 2: cenário à mão e fuzz banco × front
+- `n8n/cenario-revisao2.test.mjs` (dentro de `npm run test:integracao`): mocks controlados `n8n/mocks/cenario-revisao2.mjs` (REP com AFD que
+  atravessa a meia-noite, batida esquecida e duplicada; Zig com Tip de dois garçons e balcão) → workflows reais → banco local → RPCs
+  chamadas como master/administrador/gerente. Valores conferidos à mão (ponto, alarme, banco de horas, ranking, comissão 3845 − 20% = 3076
+  → 2051 + 1025), reimportação idempotente, fila + agendador simultâneos e CSV do e-mail sem fórmula.
+- `npm run test:fuzz` (`MDG_FUZZ_BANCO=1`, banco `MDG_PG_BANCO`, padrão `mdg_local`; `MDG_FUZZ_SEMENTE` muda a semente):
+  `web/src/lib/comissao.fuzz.test.ts` (200 fechamentos aleatórios: `comissao_calcular` = `calcularComissao` centavo a centavo; a parte
+  só-JS, 3.000 casos contra uma referência independente, roda sempre no `npm test`) e `web/src/lib/ponto.fuzz.test.ts` (~880 dias aleatórios
+  em 2 fusos: duplicadas, trabalhado, batida faltante do alarme = `identificarFaltantes`, situação, idempotência da reapuração).
+- `supabase/testes/94_revisao2.sql`: achados V2-02/03/05/07.
 
 ### 15.4 E2E (Playwright)
 `playwright.config.ts` + `e2e/apoio/` + `e2e/acesso.spec.ts`, `e2e/casca.spec.ts` (f1); `e2e/operacao.spec.ts` (f2). Projetos `desktop`
