@@ -14,7 +14,7 @@
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "test:banco": "supabase/testes/preparar-postgres.sh > /dev/null && supabase/testes/executar.sh",
-    "sql:instalar": "ferramentas/gerar-instalar.sh",
+    "sql:instalar": "ferramentas/gerar-instalar.sh && python3 ferramentas/dividir-instalar.py",
     "local": "ferramentas/local/subir.sh",
     "test:e2e": "playwright test",
     "n8n:verificar": "node n8n/verificar.mjs",
