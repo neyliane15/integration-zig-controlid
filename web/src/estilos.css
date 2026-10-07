@@ -22,7 +22,7 @@
   --color-tinta-ouro: #1a1405;
   --color-creme: #f4eedc;
   --color-lavanda: #8d93b8;
-  --color-lavanda-escuro: #5e6488;
+  --color-lavanda-escuro: #848ab0; /* revisão 2: era #5e6488 (contraste 2,7–3,4:1); agora ≥ 4,6:1 em todos os fundos */
   --color-sucesso: #4fb286;
   --color-alerta: #e8873a;
   --color-perigo: #e5604f;

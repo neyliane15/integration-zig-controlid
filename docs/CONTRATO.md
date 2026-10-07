@@ -392,7 +392,7 @@ create table if not exists public.integracoes (
   nome                 text not null check (btrim(nome) <> ''),    -- ex.: 'Zig', 'iDFace porta dos fundos', 'iDClass salão'
   ativa                boolean not null default true,
   parametros           jsonb not null default '{}'::jsonb,          -- NÃO secreto; formato em §11.1
-  intervalo_minutos    int not null default 60 check (intervalo_minutos >= 15),
+  intervalo_minutos    int not null default 60 check (intervalo_minutos >= 15),  -- formulário do front: 15 para controlid_acesso, 60 para os demais (revisão 2)
   cursor               jsonb not null default '{}'::jsonb,          -- mantido pela ingestão; o front não altera
   ultimo_sucesso_em    timestamptz,
   ultima_execucao_em   timestamptz,
@@ -1025,7 +1025,7 @@ sem empresa (vê nada até `criar_minha_empresa`).
 ### 10.2 Cadastros, integrações e sincronização (backend-1)
 | assinatura | etiqueta / quem | regra |
 |---|---|---|
-| `dia_de_trabalho(p_instante timestamptz, p_empresa uuid) returns date` | `[api]` | §2.4 |
+| `dia_de_trabalho(p_instante timestamptz, p_empresa uuid) returns date` | `[interno]` *(revisão 2; era `[api]`)* | §2.4. Não exposta: qualquer usuário descobria fuso/virada de outra empresa pelo id. O front usa `dia_de_trabalho_atual`; `dia_de_trabalho_instante` também passou a `[interno]` |
 | `dia_de_trabalho_atual(p_empresa uuid default null) returns date` | `[api]` | `dia_de_trabalho(agora(), resolver_empresa(p_empresa,'ler'))` |
 | `pontos_vigentes(p_funcionario uuid, p_data date) returns numeric` | `[api]` G A M | §5 |
 | `funcionario_vincular_controlid(p_controlid_usuario uuid, p_funcionario uuid) returns void` | `[api]` G A M | `p_funcionario null` desvincula. Mesma empresa. Se o funcionário já está ligado a outro usuário do mesmo equipamento, o vínculo antigo é removido. `vinculo='manual'`. *(Revisão 1, confirmado)* O desvínculo grava `funcionario_id = null` **com** `vinculo = 'manual'` de propósito: o vínculo automático da importação (§11.3) só atua em `vinculo is null`, então um usuário desligado à mão não é religado sozinho; a tela mostra "Desvinculado manualmente" e religar é escolher o funcionário de novo. |
@@ -1057,7 +1057,7 @@ Responsável (leitura): `tarefas.responsavel_perfil_id = auth.uid()` ou `respons
 | `ponto_espelho(p_funcionario uuid, p_inicio date, p_fim date) returns table(data date, dia_semana smallint, situacao text, encerrado boolean, abono_tipo text, jornada_nome text, previsto_minutos int, trabalhado_minutos int, saldo_minutos int, atraso_minutos int, batidas jsonb, alarmes jsonb, esperadas jsonb)` | `[api]` L G A M | Máx. 62 dias. Calcula ao vivo (`ponto_calcular_dia`); dias fora do vínculo são omitidos. `batidas`: `[{id, instante, origem, desconsiderada, duplicada, motivo}]` (inclui desconsideradas, ordenadas). `alarmes`: `[{id, tipo, batida_esperada, status, detalhe, justificativa}]` (da tabela). `esperadas`: `[{batida:'entrada'|..., instante}]`. |
 | `ponto_dia_empresa(p_data date default null, p_empresa uuid default null) returns table(funcionario_id uuid, funcionario_nome text, cargo text, situacao text, encerrado boolean, previsto_minutos int, trabalhado_minutos int, saldo_minutos int, atraso_minutos int, batidas jsonb, alarmes_abertos int, esperadas jsonb)` | `[api]` L G A M | Todos os funcionários no vínculo na data (padrão: dia atual), ao vivo. Ordem por nome. `esperadas` *(revisão 1)* = mesmo formato do espelho (`[{batida, instante}]`; vazio em folga, abono e sem escala) — o front não recalcula mais a partir da jornada. |
 | `ponto_reapurar(p_inicio date, p_fim date, p_funcionario uuid default null, p_empresa uuid default null) returns integer` | `[api]` G A M | máx. 93 dias; todos os funcionários da empresa se `p_funcionario` null |
-| `ponto_incluir_batida(p_funcionario uuid, p_instante timestamptz, p_motivo text) returns uuid` | `[api]` G A M | motivo obrigatório; instante não pode ser futuro (`Horário no futuro`) |
+| `ponto_incluir_batida(p_funcionario uuid, p_instante timestamptz, p_motivo text) returns uuid` | `[api]` G A M | motivo obrigatório; instante não pode ser futuro (`Horário no futuro`) nem ter mais de 366 dias (`Horário muito antigo (máximo 1 ano)`, revisão 2) |
 | `ponto_desconsiderar_batida(p_batida uuid, p_motivo text) returns void` | `[api]` G A M | |
 | `ponto_restaurar_batida(p_batida uuid, p_motivo text) returns void` | `[api]` G A M | |
 | `ponto_justificar_alarme(p_alarme uuid, p_justificativa text) returns void` | `[api]` G A M | justificativa obrigatória |
@@ -1067,7 +1067,7 @@ Responsável (leitura): `tarefas.responsavel_perfil_id = auth.uid()` ou `respons
 | `banco_horas_saldo(p_funcionario uuid, p_ate date default null) returns bigint` | `[api]` L G A M | §7.5 |
 | `banco_horas_resumo(p_ate date default null, p_empresa uuid default null) returns table(funcionario_id uuid, funcionario_nome text, cargo text, saldo_minutos bigint, saldo_mes_minutos bigint, ultimo_dia_apurado date)` | `[api]` L G A M | funcionários ativos; `saldo_mes` = soma de dias+lançamentos do mês de `p_ate` |
 | `banco_horas_extrato(p_funcionario uuid, p_inicio date, p_fim date) returns table(data date, tipo text, descricao text, minutos int, saldo_acumulado bigint, referencia_id uuid)` | `[api]` L G A M | 1ª linha `tipo='saldo_anterior'` (data = p_inicio − 1); depois, por data, `tipo='dia'` (dias encerrados com saldo ≠ 0 ou situação ≠ folga) e `tipo=<tipo do lançamento>`; dias antes de lançamentos no mesmo dia. Máx. 366 dias. |
-| `banco_horas_lancar(p_funcionario uuid, p_data date, p_tipo text, p_minutos integer, p_motivo text) returns uuid` | `[api]` G A M; `saldo_inicial` só A M | |
+| `banco_horas_lancar(p_funcionario uuid, p_data date, p_tipo text, p_minutos integer, p_motivo text) returns uuid` | `[api]` G A M; `saldo_inicial` só A M | *(revisão 2)* `abs(p_minutos) ≤ 100000` (`Minutos fora do limite (máximo 100.000)`) |
 | `banco_horas_excluir_lancamento(p_lancamento uuid) returns void` | `[api]` A M | |
 
 ### 10.5 Vendas (backend-2)
@@ -1135,9 +1135,14 @@ Leitura: `comissao_fechamentos` e `comissao_itens` direto (RLS G A M).
   `Informe a data`;
 - ponto/banco de horas: `Horário inválido` · `Batida sem funcionário vinculado` · `Batida importada não pode ser alterada` ·
   `Batida inválida para a origem <origem>` · `Abono não encontrado` · `Tipo de abono inválido` · `Tipo de lançamento inválido` ·
-  `Informe os minutos` · `Já existe saldo inicial nesta data` · `Lançamento não encontrado`;
+  `Informe os minutos` · `Já existe saldo inicial nesta data` · `Lançamento não encontrado` ·
+  *(revisão 2)* `Horário muito antigo (máximo 1 ano)` · `Minutos fora do limite (máximo 100.000)`;
 - comissão: `Percentual de retenção inválido` · `Pontos inválidos` · `Item não pode mudar de fechamento`;
 - envio ao Control iD: as do adendo (A.6).
+*(Revisão 2)* Erros do próprio Postgres/PostgREST (tipo inválido, estouro numérico, chave duplicada, FK, check, timeout, `permission denied`)
+são traduzidos no front (`web/src/lib/supabase.ts`, `mensagemDeErro`) para `Data inválida`, `Número inválido`, `Número fora do limite permitido`,
+`Texto longo demais`, `Já existe um registro igual`, `Registro relacionado não encontrado ou ainda em uso`, `Valor inválido`,
+`A consulta demorou demais. Tente um período menor.` e `Sem permissão` — nunca chegam em inglês à tela.
 Motivos por item nas ingestões (vão em `erros[].motivo`, §11.2, não são exceção do lote): `item inválido` · `id_externo ausente` ·
 `informe instante ou instante_local` · `instante inválido` · `sem CPF/PIS` · `transactionId ausente` · `paymentId ausente` · `id ausente` · `id repetido`.
 
@@ -1198,7 +1203,7 @@ Resolve funcionário (§7.1); apura **cada (funcionário, data_trabalho) afetado
 | RPC | `p_itens` = resposta de | idempotência |
 |---|---|---|
 | `ingestao_zig_lojas(p_integracao uuid, p_lojas jsonb) returns jsonb` | `/erp/lojas` `[{id, name}]` | upsert `(empresa_id, loja_id_externo)`; `nome` atualizado; `sincronizar` preservado (novas = true) |
-| `ingestao_zig_saida_produtos(p_integracao uuid, p_loja text, p_data date, p_itens jsonb) returns jsonb` | `/erp/saida-produtos` | **substitui o dia**: apaga `(empresa, loja, data_operacao = p_data)` e insere o lote, na mesma transação |
+| `ingestao_zig_saida_produtos(p_integracao uuid, p_loja text, p_data date, p_itens jsonb) returns jsonb` | `/erp/saida-produtos` | **substitui o dia**: apaga `(empresa, loja, data_operacao = p_data)` e insere o lote, na mesma transação. *(Revisão 2)* As quatro ingestões que substituem o dia pegam antes `pg_advisory_xact_lock(hashtextextended('mdg:<tabela>:<empresa>:<loja>:<data>', 0))`: cargas simultâneas do mesmo dia (agendador × "Sincronizar agora") ficam em fila — sem a trava, as duas apagavam e as duas inseriam (itens e serviço em dobro) |
 | `ingestao_zig_faturamento(p_integracao uuid, p_loja text, p_data date, p_itens jsonb) returns jsonb` | `/erp/faturamento` | substitui o dia |
 | `ingestao_zig_faturamento_bandeiras(p_integracao uuid, p_loja text, p_data date, p_itens jsonb) returns jsonb` | `/erp/faturamento/detalhesMaquinaIntegrada` (cada `values[]` vira uma linha) | substitui o dia |
 | `ingestao_zig_compradores(p_integracao uuid, p_loja text, p_data date, p_itens jsonb) returns jsonb` | `/erp/compradores` (descarta `userDocument`, `userDocumentType`, `userPhone`, `userName`, `userEmail`) | substitui o dia |
@@ -1321,6 +1326,8 @@ com `detalhes = {"lojas": n, "dias": n, "por_endpoint": {"saida_produtos": {...}
 ## 13. Exportação CSV (formato único — front e N8N)
 
 UTF-8 **com BOM**, separador `;`, fim de linha `\r\n`, aspas duplas quando o campo tiver `;`, `"` ou quebra de linha (aspas internas dobradas).
+*(Revisão 2 — injeção de fórmula)* texto que começa com `=`, `+`, `-`, `@`, TAB ou CR recebe um apóstrofo na frente (`'=HYPERLINK(…)`),
+exceto valores puramente numéricos que nós geramos (`^[-+]?\d+([.,:]\d+)*$`, ex.: `-50,00`, `-03:26`, `-1`). Mesma regra no front e no N8N.
 Dinheiro com vírgula decimal e sem separador de milhar (`2094,74`); datas `dd/mm/aaaa`; minutos como `hh:mm` com sinal (`-03:26`).
 Nome do arquivo: `<tipo>_<empresa-slug>_<aaaa-mm-dd>[_<aaaa-mm-dd>].csv`.
 
@@ -1358,7 +1365,7 @@ Tema **escuro único** (`color-scheme: dark`). Os nomes abaixo são a API: o Tai
 | `--color-tinta-ouro` | `#1A1405` | texto sobre o dourado |
 | `--color-creme` | `#F4EEDC` | texto principal |
 | `--color-lavanda` | `#8D93B8` | texto secundário, rótulos |
-| `--color-lavanda-escuro` | `#5E6488` | texto desabilitado, placeholders |
+| `--color-lavanda-escuro` | `#848AB0` | texto desabilitado, placeholders, rótulos secundários (revisão 2: era `#5E6488`, contraste < 4,5:1) |
 | `--color-sucesso` | `#4FB286` | |
 | `--color-alerta` | `#E8873A` | alarmes abertos, atraso |
 | `--color-perigo` | `#E5604F` | erros, saldo negativo |
@@ -1575,12 +1582,23 @@ de intervalo faltando, um dia ímpar e uma ausência), dados Zig dos últimos 30
 `fechado` do mês anterior + um `rascunho` do mês corrente.
 
 ### 15.3.1 Integração real N8N × banco (revisão 1)
-`npm run local` e depois `npm run test:integracao` (= `MDG_INTEGRACAO_REAL=1 node --test n8n/integracao-real.test.mjs`): executa os
+`npm run local` e depois `npm run test:integracao` (= `MDG_INTEGRACAO_REAL=1 node --test --test-concurrency=1 n8n/integracao-real.test.mjs n8n/cenario-revisao2.test.mjs`; em sequência, porque os dois gravam no mesmo banco): executa os
 **JSON de verdade** dos workflows (fila → subfluxos Zig e Control iD, exportação do fechamento, rotina diária, agendador) no simulador
 `n8n/mocks/simulador-n8n.mjs` (que passou a executar nós HTTP Request), contra os mocks e o **PostgREST local com as migrações reais**.
 Confere nomes/formatos dos parâmetros das RPCs, idempotência e os dados gravados. Sem a variável, o teste é pulado.
 `npm run sql:conferir` (= `ferramentas/gerar-instalar.sh --conferir`) falha se o `supabase/instalar.sql` versionado não for idêntico
 ao gerado a partir das migrações.
+
+### 15.3.2 Revisão 2: cenário à mão e fuzz banco × front
+- `n8n/cenario-revisao2.test.mjs` (dentro de `npm run test:integracao`): mocks controlados `n8n/mocks/cenario-revisao2.mjs` (REP com AFD que
+  atravessa a meia-noite, batida esquecida e duplicada; Zig com Tip de dois garçons e balcão) → workflows reais → banco local → RPCs
+  chamadas como master/administrador/gerente. Valores conferidos à mão (ponto, alarme, banco de horas, ranking, comissão 3845 − 20% = 3076
+  → 2051 + 1025), reimportação idempotente, fila + agendador simultâneos e CSV do e-mail sem fórmula.
+- `npm run test:fuzz` (`MDG_FUZZ_BANCO=1`, banco `MDG_PG_BANCO`, padrão `mdg_local`; `MDG_FUZZ_SEMENTE` muda a semente):
+  `web/src/lib/comissao.fuzz.test.ts` (200 fechamentos aleatórios: `comissao_calcular` = `calcularComissao` centavo a centavo; a parte
+  só-JS, 3.000 casos contra uma referência independente, roda sempre no `npm test`) e `web/src/lib/ponto.fuzz.test.ts` (~880 dias aleatórios
+  em 2 fusos: duplicadas, trabalhado, batida faltante do alarme = `identificarFaltantes`, situação, idempotência da reapuração).
+- `supabase/testes/94_revisao2.sql`: achados V2-02/03/05/07.
 
 ### 15.4 E2E (Playwright)
 `playwright.config.ts` + `e2e/apoio/` + `e2e/acesso.spec.ts`, `e2e/casca.spec.ts` (f1); `e2e/operacao.spec.ts` (f2). Projetos `desktop`

@@ -237,7 +237,7 @@ begin
   return ((p_instante at time zone v_fuso) - v_virada)::date;
 end $$;
 comment on function public.dia_de_trabalho(timestamptz, uuid) is
-  '[api] Dia de trabalho de um instante na empresa (fuso e virada_dia).';
+  '[interno] Dia de trabalho de um instante na empresa (fuso e virada_dia). Revisão 2: não exposta à API (revelava fuso/virada de outra empresa pelo id); o front usa dia_de_trabalho_atual.';
 
 create or replace function public.dia_de_trabalho_atual(p_empresa uuid default null) returns date
 language sql stable security definer
@@ -263,7 +263,7 @@ begin
   return ((p_data + p_hora) + case when p_hora < v_virada then interval '1 day' else interval '0' end) at time zone v_fuso;
 end $$;
 comment on function public.dia_de_trabalho_instante(date, time, uuid) is
-  '[api] Instante de um horário de escala no dia de trabalho (horário antes da virada = dia seguinte).';
+  '[interno] Instante de um horário de escala no dia de trabalho (horário antes da virada = dia seguinte). Revisão 2: não exposta à API.';
 
 -- ================================================================= gatilhos de empresas
 create or replace function public.empresas_antes_gravar() returns trigger
@@ -3232,6 +3232,17 @@ begin
 
   if e.alvo = 'horarios' then
     perform public.controlid_envio_atualizar(e.empresa_id, null, e.integracao_id);
+    -- (revisão 2) Os funcionários que aguardavam os horários viram 'pendente' só agora, depois que o N8N já leu as
+    -- pendências desta rodada: sem um novo pedido, ficavam esperando o agendador (até 1 h). Enfileira um envio.
+    if v_status = 'enviado'
+       and exists (select 1 from public.controlid_envios
+                    where integracao_id = e.integracao_id and alvo = 'funcionario' and status = 'pendente')
+       and not exists (select 1 from public.sync_solicitacoes
+                        where integracao_id = e.integracao_id and status = 'pendente'
+                          and escopo in ('exportar_funcionarios', 'tudo')) then
+      insert into public.sync_solicitacoes (empresa_id, integracao_id, escopo, mensagem)
+      values (e.empresa_id, e.integracao_id, 'exportar_funcionarios', 'Automático: envio dos funcionários após os horários');
+    end if;
   end if;
   return jsonb_build_object('status', v_status, 'versao', e.versao);
 end $$;
@@ -4203,6 +4214,10 @@ begin
   if p_motivo is null or btrim(p_motivo) = '' then raise exception 'Informe o motivo' using errcode = '22023'; end if;
   if p_instante is null then raise exception 'Horário inválido' using errcode = '22023'; end if;
   if p_instante > public.agora() then raise exception 'Horário no futuro' using errcode = '22023'; end if;
+  -- (revisão 2) batida de anos atrás (digitação errada, ex.: 1926) era aceita e gravada fora de qualquer apuração
+  if p_instante < public.agora() - interval '366 days' then
+    raise exception 'Horário muito antigo (máximo 1 ano)' using errcode = '22023';
+  end if;
 
   insert into public.ponto_batidas (empresa_id, funcionario_id, origem, instante, motivo, criado_por)
   values (v_empresa, p_funcionario, 'manual', p_instante, btrim(p_motivo), auth.uid())
@@ -4467,6 +4482,10 @@ begin
   if p_motivo is null or btrim(p_motivo) = '' then raise exception 'Informe o motivo' using errcode = '22023'; end if;
   if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
   if p_minutos is null then raise exception 'Informe os minutos' using errcode = '22023'; end if;
+  -- (revisão 2) limite de sanidade: ±100.000 min (≈ 1.666 h); 2.147.483.647 min era aceito e distorcia o saldo
+  if abs(p_minutos::bigint) > 100000 then
+    raise exception 'Minutos fora do limite (máximo 100.000)' using errcode = '22023';
+  end if;
   if p_tipo = 'saldo_inicial'
      and exists (select 1 from public.banco_horas_lancamentos
                   where funcionario_id = p_funcionario and data = p_data and tipo = 'saldo_inicial') then
@@ -5405,6 +5424,9 @@ begin
   p_itens := public.ingestao_lista(p_itens);
   select e.fuso into v_fuso from public.empresas e where e.id = ig.empresa_id;
 
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_vendas_itens:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
   delete from public.zig_vendas_itens where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
   get diagnostics v_rem = row_count;
 
@@ -5460,6 +5482,9 @@ begin
   if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
   perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
   p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_faturamento:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
   delete from public.zig_faturamento where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
   get diagnostics v_rem = row_count;
   for x in select value from jsonb_array_elements(p_itens) loop
@@ -5495,6 +5520,9 @@ begin
   if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
   perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
   p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_faturamento_bandeiras:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
   delete from public.zig_faturamento_bandeiras
    where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
   get diagnostics v_rem = row_count;
@@ -5533,6 +5561,9 @@ begin
   if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
   perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
   p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_compradores:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
   delete from public.zig_compradores where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
   get diagnostics v_rem = row_count;
   for x in select value from jsonb_array_elements(p_itens) loop

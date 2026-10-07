@@ -83,7 +83,7 @@ export function PaginaTarefas() {
       <div className="mb-5 flex flex-wrap items-center gap-2">
         <Botao variante="secundario" aria-label="Dia anterior" icone={<ChevronLeft aria-hidden className="size-4" />} onClick={() => irPara(somarDias(data, -1))} />
         <div className="w-44">
-          <EntradaData id="data-tarefas" valor={data} aoMudar={(v) => irPara(v)} />
+          <EntradaData id="data-tarefas" rotulo="Dia das tarefas" valor={data} aoMudar={(v) => irPara(v)} />
         </div>
         <Botao variante="secundario" aria-label="Próximo dia" icone={<ChevronRight aria-hidden className="size-4" />} onClick={() => irPara(somarDias(data, 1))} />
         {data !== hoje && (

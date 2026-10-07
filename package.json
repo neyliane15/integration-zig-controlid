@@ -19,8 +19,9 @@
     "test:e2e": "playwright test",
     "n8n:verificar": "node n8n/verificar.mjs",
     "n8n:mocks": "node n8n/mocks/servidor.mjs",
-    "test:integracao": "MDG_INTEGRACAO_REAL=1 node --test n8n/integracao-real.test.mjs",
-    "sql:conferir": "ferramentas/gerar-instalar.sh --conferir"
+    "test:integracao": "MDG_INTEGRACAO_REAL=1 node --test --test-concurrency=1 n8n/integracao-real.test.mjs n8n/cenario-revisao2.test.mjs",
+    "sql:conferir": "ferramentas/gerar-instalar.sh --conferir",
+    "test:fuzz": "MDG_FUZZ_BANCO=1 vitest run web/src/lib/comissao.fuzz.test.ts web/src/lib/ponto.fuzz.test.ts"
   },
   "dependencies": {
     "@fontsource-variable/fraunces": "^5.3.0",

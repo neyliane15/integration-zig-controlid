@@ -12,6 +12,11 @@ ferramentas/local/subir.sh --recriar   # apaga e recria o banco mdg_local com a 
 ferramentas/local/subir.sh --parar     # para PostgREST e portão (o Postgres continua)
 ```
 
+Dois ambientes ao mesmo tempo (revisão 2): cada porta do portão tem a sua pasta de execução (`run-<porta>`, com pids e logs),
+então `MDG_PORTA_PORTAO=54361 MDG_PORTA_POSTGREST=54363 MDG_LOCAL_BANCO=mdg_outro ferramentas/local/subir.sh` não derruba o ambiente
+da porta padrão (antes os pids eram compartilhados e o segundo `subir.sh` matava o primeiro). Para parar o outro:
+`MDG_PORTA_PORTAO=54361 ferramentas/local/subir.sh --parar`.
+
 Requisitos: Postgres 16 em `/usr/lib/postgresql/16/bin` (ou `MDG_PG_BIN`), Node ≥ 22, `curl`. O PostgREST (v12) é usado
 do `PATH`; se não houver, o script baixa o binário estático para `${TMPDIR:-/tmp}/mdg-postgres/bin`.
 

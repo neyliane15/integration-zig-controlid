@@ -190,7 +190,7 @@ export function PaginaPontoDia() {
       <nav aria-label="Escolher dia" className="mb-5 flex flex-wrap items-end gap-2">
         <Botao variante="secundario" aria-label="Dia anterior" icone={<ChevronLeft aria-hidden className="size-4" />} onClick={() => irPara(somarDias(data, -1))} />
         <div className="w-44">
-          <EntradaData valor={data} max={hoje} aoMudar={(v) => irPara(v)} id="data-ponto" />
+          <EntradaData valor={data} max={hoje} aoMudar={(v) => irPara(v)} id="data-ponto" rotulo="Dia do ponto" />
         </div>
         <Botao variante="secundario" aria-label="Próximo dia" icone={<ChevronRight aria-hidden className="size-4" />} disabled={data >= hoje} onClick={() => irPara(somarDias(data, 1))} />
         {!ehHoje && (

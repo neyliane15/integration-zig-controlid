@@ -181,6 +181,9 @@ e empresa ativa, e cada funcionário `F` da empresa:
 5. REP: exige CPF (`identificador = 'cpf'`, padrão) ou PIS → senão `status = 'aguardando'` com o motivo.
 6. Acesso com horários: se `F` tem horários vinculados e o envio `'horarios'` do equipamento não está `enviado` →
    `aguardando` (`'Aguardando envio dos horários'`); libera sozinho quando os horários forem enviados.
+   *(Revisão 2)* Ao registrar `enviado` para a linha `'horarios'`, se ficou algum funcionário `pendente` e não há pedido pendente
+   da integração, `ingestao_controlid_envio_resultado` cria um `sync_solicitacoes` `exportar_funcionarios` (mensagem `Automático: …`): os
+   liberados saem na próxima volta da fila (~1 min) em vez de esperar o agendador.
 7. Linha `'horarios'` existe para cada equipamento de acesso com `envio.horarios = true` e ao menos um horário ativo da empresa
    (ou que já tenha `mapa_remoto` não vazio — para apagar no equipamento o que ficou sem uso).
 8. A assinatura muda quando muda qualquer item do *payload* (A.5) — para senha/cartões entra a `versao` da credencial e os ids dos

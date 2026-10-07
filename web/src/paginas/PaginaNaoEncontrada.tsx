@@ -8,6 +8,7 @@ export function PaginaNaoEncontrada() {
     <div className="mx-auto max-w-lg pt-10">
       <p className="sobrancelha mb-3 text-center">Erro 404</p>
       <Vazio
+        principal
         icone={<Compass aria-hidden />}
         titulo="Página não encontrada"
         descricao="O endereço pode ter mudado ou não existir mais."

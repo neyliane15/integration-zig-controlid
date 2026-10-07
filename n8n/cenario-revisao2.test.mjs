@@ -140,7 +140,7 @@ describe('cenário revisão 2: AFD com virada + Zig com Tip → ponto, alarme, b
     const z1 = dia.find((l) => l.funcionario_id === zeca.id)
     const y1 = dia.find((l) => l.funcionario_id === yara.id)
     // Zeca: 17:58, 22:01, 02:03(+1) → 3 de 4, trabalhado 243 (só o 1º par), saldo 243 − 450 = −207
-    assert.equal(z1.batidas_validas, 3)
+    assert.equal(z1.batidas.filter((b) => !b.duplicada && !b.desconsiderada).length, 3)
     assert.equal(z1.trabalhado_minutos, 243)
     assert.equal(z1.saldo_minutos, -207)
     assert.equal(z1.situacao, 'incompleto')
@@ -181,10 +181,10 @@ describe('cenário revisão 2: AFD com virada + Zig com Tip → ponto, alarme, b
     assert.equal(Number(r.servico), 3845)
     const ranking = await rpc('gerente', 'vendas_por_garcom', { p_inicio: D2, p_fim: D1, p_empresa: empresa })
     const por = (nome) => ranking.find((g) => g.funcionario_nome === nome)
-    assert.deepEqual([Number(por('Zeca Silva').vendas), Number(por('Zeca Silva').servico), Number(por('Zeca Silva').transacoes)], [25670, 2567, 3])
-    assert.deepEqual([Number(por('Yara Lima').vendas), Number(por('Yara Lima').servico), Number(por('Yara Lima').transacoes)], [12780, 1278, 2])
+    assert.deepEqual([Number(por('Zeca Silva').valor_vendas), Number(por('Zeca Silva').valor_servico), Number(por('Zeca Silva').transacoes)], [25670, 2567, 3])
+    assert.deepEqual([Number(por('Yara Lima').valor_vendas), Number(por('Yara Lima').valor_servico), Number(por('Yara Lima').transacoes)], [12780, 1278, 2])
     const balcao = ranking.find((g) => g.employee_name == null)
-    assert.equal(Number(balcao.vendas), 2500)
+    assert.equal(Number(balcao.valor_vendas), 2500)
   })
 
   it('reimportar (pedido com período) não duplica batidas nem vendas; duas importações SIMULTÂNEAS do mesmo dia também não', async () => {
@@ -199,10 +199,12 @@ describe('cenário revisão 2: AFD com virada + Zig com Tip → ponto, alarme, b
     await rodarFila()
     assert.deepEqual(await contar(), antes, 'reimportação idempotente')
 
-    // V2-02: dois pedidos de vendas (ex.: agendador + "Sincronizar agora") processados AO MESMO TEMPO
+    // V2-02: "Sincronizar agora" (fila) e o agendador rodando o MESMO subfluxo da Zig ao mesmo tempo (a fila não deduplica
+    // contra o agendador, que chama o subfluxo direto). Antes da correção: itens do dia em dobro → serviço e comissão em dobro.
     assert.equal(await rpc('gerente', 'sync_solicitar', { p_integracao: zig.id, p_escopo: 'vendas', p_empresa: empresa, p_data_inicio: D2, p_data_fim: D1 }), 1)
-    assert.equal(await rpc('admin', 'sync_solicitar', { p_integracao: zig.id, p_escopo: 'vendas', p_empresa: empresa, p_data_inicio: D2, p_data_fim: D1 }), 1)
-    await Promise.all([executarWorkflow(ctx.workflows.fila, [], ctx), executarWorkflow(ctx.workflows.fila, [], ctx)])
+    const agendado = { json: { integracao_id: zig.id, empresa_id: empresa, tipo: 'zig', escopo: 'tudo', gatilho: 'agendado', solicitacao_id: null, data_inicio: D2, data_fim: D1, parametros: {} } }
+    const r2 = await Promise.all([executarWorkflow(ctx.workflows.fila, [], ctx), executarWorkflow(ctx.workflows['wf-zig'], [agendado], ctx), executarWorkflow(ctx.workflows['wf-zig'], [agendado], ctx)])
+    for (const r of r2) assert.equal(r.erro, null, r.erro && `${r.erro.no}: ${r.erro.message}`)
     // e direto na RPC, 6 cargas paralelas do mesmo dia
     const itensDia = (await import('./mocks/cenario-revisao2.mjs')).vendas(D1).length
     assert.ok(itensDia > 0)
@@ -224,7 +226,7 @@ describe('cenário revisão 2: AFD com virada + Zig com Tip → ponto, alarme, b
     const itens = await tabela('gerente', `comissao_itens?select=funcionario_nome,valor_centavos&fechamento_id=eq.${id}&order=funcionario_nome`)
     // exato: Zeca 3076×10/15 = 2050,667 → 2050 + 1 (maior resto); Yara 3076×5/15 = 1025,333 → 1025
     assert.deepEqual(Object.fromEntries(itens.map((i) => [i.funcionario_nome, i.valor_centavos])), { 'Zeca Silva': 2051, 'Yara Lima': 1025, '=HYPERLINK("http://evil.example";"x")': 0 })
-    await assert.rejects(rpc('gerente', 'comissao_fechar', { p_fechamento: id }), /Sem permissão/, 'gerente não fecha')
+    await assert.rejects(rpc('gerente', 'comissao_fechar', { p_fechamento: id }), /Somente o administrador fecha/, 'gerente não fecha')
     await rpc('admin', 'comissao_fechar', { p_fechamento: id })
     for (const quem of ['admin', 'master', 'gerente']) {
       await assert.rejects(rpc(quem, 'comissao_atualizar_fechamento', { p_fechamento: id, p_titulo: 'x', p_servico_ajuste_centavos: 100000, p_percentual_retencao: 0, p_proporcional_dias: false, p_observacoes: null }), /já está fechado/)

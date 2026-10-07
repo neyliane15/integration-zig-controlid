@@ -90,7 +90,9 @@ select teste.ok('dia sem escala nem batida não gera alarme', not exists (select
 select teste.ok('Manaus (2 batidas esperadas): só 16:50 → falta a entrada (09:00 local)',
   (select array_agg(batida_esperada || ':' || detalhe) from al where funcionario_id = 'e2000000-0000-4000-8000-000000000391'
      and data = '2026-10-05') = array['entrada:Faltou a entrada (09:00)']);
-select teste.ok('dia corrente sem alarmes de falta', not exists (select 1 from public.ponto_alarmes where data = '2026-10-06'));
+-- (revisão 2) restrito às empresas do teste: a carga demo usa o relógio REAL e, depois das 05:00 de 07/10, tem alarmes em 06/10
+select teste.ok('dia corrente sem alarmes de falta', not exists (select 1 from public.ponto_alarmes where data = '2026-10-06'
+  and empresa_id in ('e2000000-0000-4000-8000-00000000000a', 'e2000000-0000-4000-8000-00000000000b')));
 
 -- resolução/reabertura automáticas
 select teste.como('b2.ger.a@teste.local');

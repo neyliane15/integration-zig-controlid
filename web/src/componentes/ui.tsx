@@ -272,16 +272,20 @@ export function EntradaData({
   min,
   max,
   id,
+  rotulo,
 }: {
   valor: string | null
   aoMudar(v: string | null): void
   min?: string
   max?: string
   id?: string
+  /** nome acessível quando não há <label> (revisão 2) */
+  rotulo?: string
 }) {
   return (
     <Entrada
       id={id}
+      aria-label={rotulo}
       type="date"
       className="numero [color-scheme:dark]"
       value={valor ?? ''}
@@ -783,13 +787,27 @@ export function Modal({
 }
 
 // ------------------------------------------------------------------ estados
-export function Vazio({ titulo, descricao, acao, icone }: { titulo: string; descricao?: ReactNode; acao?: ReactNode; icone?: ReactNode }) {
+export function Vazio({
+  titulo,
+  descricao,
+  acao,
+  icone,
+  principal = false,
+}: {
+  titulo: string
+  descricao?: ReactNode
+  acao?: ReactNode
+  icone?: ReactNode
+  /** true: o título é o h1 da página (404, sem permissão) */
+  principal?: boolean
+}) {
+  const Titulo = principal ? 'h1' : 'p'
   return (
     <div className="flex flex-col items-center gap-2 rounded-cartao border border-dashed border-borda-forte/70 px-6 py-12 text-center">
       <div className="mb-2 grid size-12 place-items-center rounded-full border border-borda bg-cartao-2 text-ouro [&_svg]:size-5">
         {icone ?? <Inbox aria-hidden />}
       </div>
-      <p className="font-display text-xl text-creme">{titulo}</p>
+      <Titulo className="font-display text-xl text-creme">{titulo}</Titulo>
       {descricao && <p className="max-w-md text-sm leading-relaxed text-lavanda">{descricao}</p>}
       {acao && <div className="mt-3">{acao}</div>}
     </div>

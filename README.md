@@ -77,13 +77,18 @@ loja, ou com VPN até ela), o **token da API da Zig** e acesso de administrador 
    - chave **service_role / secret** → vai **só** para o N8N. **Nunca** coloque a service_role no site, em planilha ou mensagem.
 8. Opcional:
    - Fechar o cadastro aberto (só o master cria empresas): no SQL Editor, `update public.configuracao set cadastro_aberto = false where id = 1;`
-   - Dados de demonstração: [`supabase/instalacao/carga_demo.sql`](supabase/instalacao/carga_demo.sql) — **não** use num ambiente
-     com clientes reais (os usuários de demonstração têm senha conhecida).
+   - Dados de demonstração: rode no SQL Editor o conteúdo de [`supabase/seed/10_demo_base.sql`](supabase/seed/10_demo_base.sql) e
+     depois o de [`supabase/seed/20_demo_operacao.sql`](supabase/seed/20_demo_operacao.sql) (o arquivo
+     [`supabase/instalacao/carga_demo.sql`](supabase/instalacao/carga_demo.sql) só explica isso e como remover a demonstração; sozinho
+     ele não carrega nada). **Não** use num ambiente com clientes reais (os usuários de demonstração têm senha conhecida).
 
 O depósito de fotos faciais (privado, separado por empresa) já é criado pelo `instalar.sql`.
 
 ### 3.2 Vercel (o site)
 1. Em <https://vercel.com>, *Add New → Project* e importe este repositório do GitHub. O Vercel lê o `vercel.json` (Vite, `npm run build`, pasta `dist`) — não mude nada.
+   - O `vercel.json` envia uma política de segurança (CSP) que só deixa o site falar com `https://*.supabase.co`. Se o seu Supabase
+     usar **domínio próprio** (ex.: `api.seudominio.com.br`), acrescente esse endereço em `connect-src` e `img-src` (e `wss://…` em
+     `connect-src`) no `vercel.json`, senão o login não funciona.
 2. Em *Environment Variables* cadastre:
 
    | variável | valor |
@@ -150,7 +155,8 @@ equipamentos/token da Zig direto do banco (área que nem o site consegue ler).
 3. **Acerte data e hora** do equipamento (de preferência com NTP ligado).
 4. No site, como administrador: *Integrações → Nova integração*:
    - Tipo: **Control iD — controle de acesso** (iDFace, iDFlex, iDAccess) ou **Control iD — relógio de ponto (REP)** (iDClass).
-   - Nome (ex.: "iDFace porta dos fundos"), modelo, dias retroativos (2 está bom).
+   - Nome (ex.: "iDFace porta dos fundos"), modelo, dias retroativos (2 está bom). Frequência automática: o controle de acesso já
+     vem com 15 min (o ponto aparece quase na hora); Zig e REP com 1 h.
    - Segredos: URL (`http://192.168.x.x` no acesso, `https://192.168.x.x` no REP), login e senha do equipamento. Depois de
      salvos, aparecem só como "configurado ✓".
    - REP: identificador **CPF** (Portaria 671; só use PIS em relógio antigo).
@@ -163,6 +169,7 @@ equipamentos/token da Zig direto do banco (área que nem o site consegue ler).
    senha, foto — só iDFace —, horários de acesso) e o que fazer ao desligar alguém (remover ou bloquear). A partir daí, cadastrar,
    alterar ou desligar um funcionário (e sua foto, cartão, senha e horários na aba *Control iD* da ficha) é enviado na próxima
    sincronização; a situação aparece na própria ficha. Foto: JPEG, rosto de frente, até 1024 px.
+   Com horários de acesso: os horários vão primeiro e, logo em seguida (pedido automático, ~1 min), os funcionários que dependiam deles.
 
 ### 3.5 Zig (vendas)
 1. Peça à Zig (suporte/gerente de conta) o **token da API de integração** e o **id da sua rede**.
@@ -200,6 +207,8 @@ Requisitos: Node 22+, Postgres 16 em `/usr/lib/postgresql/16/bin` (ou `MDG_PG_BI
 ```bash
 npm ci
 npm run local          # Postgres + migrações + dados demo + PostgREST + login falso em http://127.0.0.1:54321 (grava .env.local)
+                       # outras portas/banco (dá para ter dois ambientes no ar):
+                       # MDG_PORTA_PORTAO=54361 MDG_PORTA_POSTGREST=54363 MDG_LOCAL_BANCO=mdg_outro ferramentas/local/subir.sh
 npm run dev            # site em http://127.0.0.1:5173  (usuários demo: gerente@barbossanova.com.br etc., senha gerente123)
 npm run n8n:mocks      # Zig e Control iD falsos (portas 54340–54342) para testar com um N8N de verdade
 ```
@@ -212,7 +221,8 @@ npm run n8n:mocks      # Zig e Control iD falsos (portas 54340–54342) para tes
 | `npm run sql:instalar` / `npm run sql:conferir` | regera `supabase/instalar.sql` / confere se está idêntico ao gerado das migrações (`ferramentas/gerar-instalar.sh --verificar` instala num banco limpo) |
 | `npm run n8n:verificar` | estrutura dos 9 workflows, cópias das bibliotecas, nenhuma credencial no JSON |
 | `node --test "n8n/**/*.test.mjs"` | testes do N8N com o executor do Node |
-| `npm run test:integracao` | com `npm run local` no ar: roda os workflows de verdade contra o banco local e os mocks (Zig + Control iD ponta a ponta) |
+| `npm run test:integracao` | com `npm run local` no ar: roda os workflows de verdade contra o banco local e os mocks (Zig + Control iD ponta a ponta), incluindo o cenário com valores calculados à mão (`n8n/cenario-revisao2.test.mjs`: AFD com virada, alarme, banco de horas, ranking, comissão, importações simultâneas) |
+| `npm run test:fuzz` | testes de propriedade banco × front (comissão e apuração de ponto, centenas de casos aleatórios); usa o banco de `MDG_PG_BANCO` (padrão `mdg_local`, ou seja, rode `npm run local` antes) |
 | `npm run test:e2e` | Playwright (celular 390 px e computador 1440 px). Com outro Vite já no ar: `E2E_URL=http://127.0.0.1:PORTA npx playwright test` |
 
 Pastas: `web/` (site), `supabase/` (banco: migrações, testes, instalação), `n8n/` (workflows, bibliotecas, mocks), `e2e/`,
@@ -231,6 +241,7 @@ Pastas: `web/` (site), `supabase/` (banco: migrações, testes, instalação), `
 | Batidas com 3 h de diferença | Ajuste "Relógio do equipamento em hora local" (3.4-6). |
 | Zig `HTTP 401` | Token da Zig errado. `parcial` com `429` = limite da Zig; a próxima rodada completa sozinha. |
 | Não chega o e-mail de recuperar senha | Configure o SMTP do Supabase (3.1-6) e confira as Redirect URLs (3.1-5). |
+| Ao abrir o CSV no Excel um nome aparece com `'` na frente (ex.: `'=Fulano`) | Proteção contra fórmulas maliciosas: textos que começam com `=`, `+`, `-` ou `@` ganham um apóstrofo. É esperado. |
 | Funcionário não aparece ligado ao usuário do equipamento | Confira matrícula/CPF; ou ligue à mão na tela da integração. "Desvinculado manualmente" não é religado sozinho. |
 
 ---
@@ -243,3 +254,6 @@ Pastas: `web/` (site), `supabase/` (banco: migrações, testes, instalação), `
 - Fotos faciais ficam num depósito **privado**, separado por empresa.
 - Da Zig não guardamos dados pessoais de clientes (nome, documento, telefone, e-mail dos compradores são descartados).
 - A chave `service_role` do Supabase só existe no N8N.
+- O site envia cabeçalhos de segurança (CSP, `X-Frame-Options`, `nosniff`) e os CSV exportados neutralizam fórmulas de planilha.
+- **Cadastro aberto**: por padrão qualquer pessoa pode criar uma conta e uma empresa vazia ("Criar conta"). Se só você vai criar as
+  empresas, feche (3.1-8). Se deixar aberto, mantenha **Confirm email** ligado no Supabase.

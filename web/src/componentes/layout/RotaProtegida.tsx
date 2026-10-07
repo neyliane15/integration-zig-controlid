@@ -76,6 +76,7 @@ export function SoPara({ permitir, children }: { permitir(p: Papel): boolean; ch
   return (
     <div className="mx-auto max-w-xl pt-10">
       <Vazio
+        principal
         icone={<ShieldAlert aria-hidden />}
         titulo="Sem permissão"
         descricao="Seu papel não dá acesso a esta área. Se precisar, peça ao administrador."
