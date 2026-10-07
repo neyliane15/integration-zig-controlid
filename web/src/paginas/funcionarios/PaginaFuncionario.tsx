@@ -516,7 +516,7 @@ function AbaComissao({
   const id = useId()
   const historico = usePontosFuncionario(operar ? funcionarioId : null)
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <Cartao titulo="Pontos de comissão" sobrancelha="Rateio do serviço">
         <div className="flex flex-col gap-4">
           <Campo
@@ -585,7 +585,7 @@ function AbaJornada({ funcionario, operar }: { funcionario: Funcionario; operar:
   }
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
       <Cartao titulo="Jornada vigente" sobrancelha="Escala">
         {historico.isLoading ? (
           <Carregando />
@@ -697,7 +697,7 @@ function AbaControlId({ funcionario }: { funcionario: Funcionario }) {
   const meus = new Set((vinculos.data ?? []).filter((v) => v.funcionario_id === funcionario.id).map((v) => v.horario_id))
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <Cartao titulo="Estado do envio" sobrancelha="Por equipamento" className="lg:col-span-2">
         <EstadoEnvioControlId funcionarioId={funcionario.id} editavel />
       </Cartao>

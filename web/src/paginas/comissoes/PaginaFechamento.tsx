@@ -282,7 +282,7 @@ function Fechamento({ fechamento: f, itens }: { fechamento: ComissaoFechamento; 
       )}
       {rascunho && !administrar && <p className="mb-4 text-sm text-lavanda">Somente o administrador fecha a comissão. Você pode preparar o rascunho.</p>}
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
         <Cartao sobrancelha="Cálculo" titulo={<span className="numero">{formatarCentavos(previa.baseCentavos)}</span>}>
           <p className="-mt-3 mb-4 text-sm text-lavanda">base distribuível</p>
           <dl className="flex flex-col gap-2.5 text-sm">

@@ -1,0 +1,11 @@
+-- =====================================================================================================
+-- Carga de demonstração (opcional, NÃO use em produção com clientes reais).
+-- No SQL Editor, rode o conteúdo de supabase/seed/10_demo_base.sql e depois supabase/seed/20_demo_operacao.sql.
+-- Usuários criados (senha gerente123): master@meudiadegerente.app, admin@barbossanova.com.br,
+-- gerente@barbossanova.com.br, leitura@barbossanova.com.br, admin@cantinaroma.com.br.
+-- Para remover a demonstração depois:
+-- =====================================================================================================
+-- delete from auth.users where email in ('master@meudiadegerente.app', 'admin@barbossanova.com.br',
+--   'gerente@barbossanova.com.br', 'leitura@barbossanova.com.br', 'admin@cantinaroma.com.br');
+-- delete from public.empresas where id in ('a0000000-0000-4000-8000-00000000000a', 'b0000000-0000-4000-8000-00000000000b');
+select 'leia as instruções no topo deste arquivo' as aviso;

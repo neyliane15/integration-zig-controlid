@@ -128,7 +128,7 @@ insert into public.funcionario_horarios (funcionario_id, horario_id)
 values ('c1000000-0000-4000-8000-0000000001a1', 'c1000000-0000-4000-8000-000000000501');
 select teste.erro('horário de outra empresa',
   $$insert into public.funcionario_horarios (funcionario_id, horario_id) values ('c1000000-0000-4000-8000-0000000001a2', 'c1000000-0000-4000-8000-000000000501')$$,
-  'row-level security');
+  'Horário de outra empresa', '22023');
 select teste.ok('envio de horários criado só no acesso da E1',
   (select count(*) = 1 and bool_and(integracao_id = 'c1000000-0000-4000-8000-000000000101' and status = 'pendente')
      from public.controlid_envios where alvo = 'horarios'));
@@ -179,8 +179,8 @@ select teste.ok('2º lote: Fulano (completo) e Beltrano (erro, nova tentativa)',
 select teste.ok('payload do Fulano: senha, cartão, foto, regra com access_rule_id',
   (select x @> jsonb_build_object('operacao', 'salvar', 'senha', '1234', 'cartoes', jsonb_build_array('12345678'),
                                   'usuario', jsonb_build_object('nome', 'Fulano Um', 'matricula', '1', 'cpf', '52998224725'),
-                                  'regras_acesso', jsonb_build_array(jsonb_build_object('horario_id', 'c1000000-0000-4000-8000-000000000501', 'access_rule_id', 201))),
-                                  'id_remoto', null)
+                                  'regras_acesso', jsonb_build_array(jsonb_build_object('horario_id', 'c1000000-0000-4000-8000-000000000501', 'access_rule_id', 201)))
+          and x -> 'id_remoto' = 'null'
           and x -> 'foto' ->> 'caminho' like '%/rosto.jpg'
      from _lote, jsonb_array_elements(r -> 'itens') x where x ->> 'funcionario_id' = 'c1000000-0000-4000-8000-0000000001a1'));
 -- mudança no meio do envio: a versão enviada fica velha
