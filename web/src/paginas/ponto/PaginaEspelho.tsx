@@ -131,7 +131,7 @@ export function PaginaEspelho() {
       <div className="mb-5 flex flex-wrap items-end gap-3">
         <nav aria-label="Escolher mês" className="flex items-center gap-2">
           <Botao variante="secundario" aria-label="Mês anterior" icone={<ChevronLeft aria-hidden className="size-4" />} onClick={() => irMes(somarMeses(mes, -1))} />
-          <span className="min-w-36 text-center font-display text-lg capitalize text-creme">{nomeDoMes(mes)}</span>
+          <span className="min-w-36 text-center font-display text-lg text-creme">{nomeDoMes(mes)}</span>
           <Botao variante="secundario" aria-label="Próximo mês" icone={<ChevronRight aria-hidden className="size-4" />} disabled={mes >= hoje.slice(0, 7)} onClick={() => irMes(somarMeses(mes, 1))} />
         </nav>
         <div className="w-full sm:ml-auto sm:w-72">

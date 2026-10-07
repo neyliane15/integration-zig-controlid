@@ -194,7 +194,7 @@ export function PaginaVendas() {
               <ErroCarga erro={resumo.error} aoTentar={() => resumo.refetch()} />
             </div>
           ) : (
-            <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-3 2xl:grid-cols-5">
               <Indicador rotulo="Faturamento" valor={resumo.isLoading ? '…' : formatarCentavos(ind.faturamento)} tom="ouro" />
               <Indicador rotulo="Vendas" valor={resumo.isLoading ? '…' : formatarCentavos(ind.vendas)} detalhe="itens, sem serviço" />
               <Indicador

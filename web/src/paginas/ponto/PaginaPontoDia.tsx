@@ -208,8 +208,8 @@ export function PaginaPontoDia() {
         <Indicador rotulo="Horas trabalhadas" valor={formatarMinutos(resumo.trabalhado)} detalhe="soma da equipe" />
       </div>
 
-      <div className="mb-4 flex flex-wrap items-end gap-4">
-        <div className="min-w-0 flex-1 sm:max-w-sm">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-4">
+        <div className="w-full min-w-0 sm:max-w-sm">
           <Campo rotulo="Buscar" htmlFor="busca-ponto">
             <div className="relative">
               <Search aria-hidden className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-lavanda" />
@@ -217,7 +217,7 @@ export function PaginaPontoDia() {
             </div>
           </Campo>
         </div>
-        <div className="pb-2.5">
+        <div className="sm:pb-2.5">
           <Interruptor rotulo="Só quem precisa de atenção" marcado={soProblemas} aoMudar={setSoProblemas} />
         </div>
       </div>

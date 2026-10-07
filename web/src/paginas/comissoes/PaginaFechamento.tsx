@@ -397,7 +397,7 @@ function Fechamento({ fechamento: f, itens }: { fechamento: ComissaoFechamento; 
               <Vazio titulo="Sem participantes" descricao="Inclua funcionários abaixo para ratear o serviço." />
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="relative overflow-x-auto">
               <table className="w-full min-w-[640px] text-sm">
                 <thead>
                   <tr className="bg-cartao-2/70 text-[11px] font-bold tracking-[0.14em] text-lavanda uppercase">
@@ -456,7 +456,7 @@ function Fechamento({ fechamento: f, itens }: { fechamento: ComissaoFechamento; 
                           {i.dias_trabalhados}/{f.dias_periodo}
                         </td>
                         <td className="numero px-3 py-3 text-right">{fmtPontos(p?.pontosEfetivos ?? 0, 6)}</td>
-                        <td className="numero px-3 py-3 text-right font-semibold text-ouro-claro">
+                        <td className="numero px-3 py-3 text-right font-semibold whitespace-nowrap text-ouro-claro">
                           {formatarCentavos(p?.valorCentavos ?? 0)}
                           {p?.centavoExtra && (
                             <span className="ml-1 text-[10px] text-lavanda" title="Recebeu +1 centavo no arredondamento pelo maior resto">
