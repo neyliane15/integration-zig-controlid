@@ -23,7 +23,7 @@ O bucket privado `funcionarios-fotos` (fotos faciais para o iDFace) e suas polí
 |---|---|
 | `migrations/` | SQL idempotente, numerado por dono (contrato §4). `…0900_permissoes.sql` é sempre a última. |
 | `instalar.sql` | **gerado** por `ferramentas/gerar-instalar.sh` (`npm run sql:instalar`): todas as migrações numa transação. Não edite à mão. |
-| `seed/` | carga de demonstração (`10_demo_base.sql`, `20_demo_operacao.sql`), idempotente. |
+| `seed/` | carga de demonstração (`10_demo_base.sql`, `20_demo_operacao.sql`, `30_demo_extras.sql`), idempotente. |
 | `testes/` | testes de banco (Postgres 16 local). |
 | `instalacao/` | SQLs avulsos de instalação (criar master, carga demo). |
 
