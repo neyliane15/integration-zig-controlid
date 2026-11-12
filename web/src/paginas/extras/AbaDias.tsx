@@ -120,7 +120,7 @@ export function AbaDias({
       alinhar: 'direita',
       render: (d) => <span className="numero">{d.tipo === 'extra' ? pontosTexto(d.pontos) : <span className="text-lavanda-escuro">—</span>}</span>,
     },
-    { id: 'valor', titulo: 'Valor', alinhar: 'direita', render: (d) => <span className="numero font-semibold">{formatarCentavos(d.valor_centavos)}</span> },
+    { id: 'valor', titulo: 'Valor', alinhar: 'direita', render: (d) => <span className="numero font-semibold whitespace-nowrap">{formatarCentavos(d.valor_centavos)}</span> },
     {
       id: 'pago',
       titulo: 'Pagamento',
@@ -140,7 +140,7 @@ export function AbaDias({
       titulo: '',
       alinhar: 'direita',
       render: (d) => (
-        <div className="flex flex-wrap justify-end gap-1">
+        <div className="flex justify-end gap-1">
           <Botao
             variante={d.pago ? 'fantasma' : 'secundario'}
             tamanho="p"

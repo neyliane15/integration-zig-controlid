@@ -505,7 +505,7 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
               <div className="relative overflow-x-auto">
                 <table className="w-full min-w-[620px] text-sm">
                   <thead>
-                    <tr className="bg-cartao-2/70 text-[11px] font-bold tracking-[0.14em] text-lavanda uppercase">
+                    <tr className="bg-cartao-2/70 text-[11px] font-bold tracking-[0.14em] whitespace-nowrap text-lavanda uppercase">
                       <th scope="col" className="px-5 py-3 text-left">Participante</th>
                       <th scope="col" className="px-3 py-3 text-center">Incluído</th>
                       <th scope="col" className="px-3 py-3 text-right" title={diario ? 'Vazio = automático: pontos vigentes de cada dia' : undefined}>

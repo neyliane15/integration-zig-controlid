@@ -16,6 +16,15 @@ export function lerPontos(s: string): number | null {
 /** Pontos para exibir/editar: 7.5 → "7,5". */
 export const pontosTexto = (n: number | null | undefined) => (n == null ? '' : n.toLocaleString('pt-BR', { maximumFractionDigits: 2 }))
 
+/** "11988880001" → "(11) 98888-0001"; outros formatos ficam como estão. */
+export function formatarTelefone(t: string | null | undefined): string {
+  if (!t) return ''
+  const d = t.replace(/\D/g, '')
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`
+  return t
+}
+
 const normalizar = (s: string) =>
   s
     .normalize('NFD')

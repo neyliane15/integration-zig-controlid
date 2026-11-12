@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Diaria, GastosPeriodo } from '@/tipos/banco'
-import { csvDiarias, csvGastos, fechamentoQueCobre, filtrarExtras, lerPontos, totaisDiarias } from './extras'
+import { csvDiarias, csvGastos, fechamentoQueCobre, filtrarExtras, formatarTelefone, lerPontos, totaisDiarias } from './extras'
 
 const dia = (d: Partial<Diaria>): Diaria => ({
   id: 'd',
@@ -30,6 +30,13 @@ describe('extras', () => {
     expect(lerPontos('1,555')).toBeNull()
     expect(lerPontos('-1')).toBeNull()
     expect(lerPontos('')).toBeNull()
+  })
+
+  it('formata telefone', () => {
+    expect(formatarTelefone('11988880001')).toBe('(11) 98888-0001')
+    expect(formatarTelefone('1133334444')).toBe('(11) 3333-4444')
+    expect(formatarTelefone('+55 11 x')).toBe('+55 11 x')
+    expect(formatarTelefone(null)).toBe('')
   })
 
   it('busca por nome sem acento, função e dígitos do telefone/documento', () => {

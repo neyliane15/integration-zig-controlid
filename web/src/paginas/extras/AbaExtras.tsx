@@ -7,7 +7,7 @@ import type { Extra } from '@/tipos/banco'
 import { AreaTexto, Botao, Campo, Cartao, Entrada, EntradaMoeda, ErroCarga, Interruptor, Modal, Selo, Tabela, Vazio, type Coluna } from '@/componentes/ui'
 import { useAvisos } from '@/componentes/avisos'
 import { useAtivarExtra, useExcluirExtra, useExtras, useSalvarExtra } from '@/consultas/extras'
-import { filtrarExtras, lerPontos, pontosTexto } from '@/lib/extras'
+import { filtrarExtras, formatarTelefone, lerPontos, pontosTexto } from '@/lib/extras'
 import { formatarCentavos, formatarData } from '@/lib/formato'
 
 export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void }) {
@@ -58,7 +58,7 @@ export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void 
             <span className="truncate">{x.nome}</span>
             {!x.ativo && <Selo>Inativo</Selo>}
           </p>
-          <p className="text-xs text-lavanda">{[x.funcao, x.telefone].filter(Boolean).join(' · ') || '—'}</p>
+          <p className="text-xs text-lavanda">{[x.funcao, formatarTelefone(x.telefone)].filter(Boolean).join(' · ') || '—'}</p>
         </div>
       ),
     },
@@ -86,7 +86,7 @@ export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void 
       titulo: '',
       alinhar: 'direita',
       render: (x) => (
-        <div className="flex flex-wrap justify-end gap-1">
+        <div className="flex justify-end gap-1">
           {x.ativo && (
             <Botao variante="secundario" tamanho="p" icone={<CalendarPlus aria-hidden />} aria-label={`Lançar dia de ${x.nome}`} onClick={() => aoLancarDia(x.id)}>
               <span className="hidden sm:inline">Lançar dia</span>
