@@ -40,29 +40,34 @@ function caso(rnd: () => number, i: number, modo: 'diario' | 'periodo' | 'qualqu
   const participantes: ParticipanteComissao[] = []
   for (let k = 0; k < n; k++) {
     const extra = rnd() < 0.3
-    const id = `f${String(i).padStart(7, '0')}-0000-4000-8000-${String(k).padStart(12, '0')}`
+    const id = `e99${String(i).padStart(5, '0')}-0000-4000-8000-${String(k).padStart(12, '0')}`
+    const itemId = `e99${String(i).padStart(5, '0')}-0000-4000-9000-${String(k).padStart(12, '0')}`
     if (extra) {
       const entrada = datas.filter(() => rnd() < 0.4).map((data) => ({ data, presente: true, pontos: escolha(PONTOS(inteiro)) }))
-      participantes.push({ tipo: 'extra', funcionarioId: null, extraId: id, nome: escolha(NOMES), incluido: rnd() > 0.1, pontos: 0, diasTrabalhados: entrada.length, entrada })
+      participantes.push({ itemId, tipo: 'extra', funcionarioId: null, extraId: id, nome: escolha(NOMES), incluido: rnd() > 0.1, pontos: 0, diasTrabalhados: entrada.length, entrada })
     } else {
       const snapshot = rnd() < 0.1
       const pontos = escolha(PONTOS(inteiro))
-      const muda = rnd() < 0.2 // pontos vigentes mudam no meio do período
-      const entrada = snapshot ? [] : datas.map((data, d) => ({ data, presente: rnd() < 0.6, pontos: muda && d >= dias / 2 ? escolha(PONTOS(inteiro)) : pontos }))
+      // pontos vigentes mudam uma vez no meio do período (a partir do dia `corte`)
+      const novo = rnd() < 0.2 ? escolha(PONTOS(inteiro)) : null
+      const corte = Math.ceil(dias / 2)
+      const entrada = snapshot ? [] : datas.map((data, d) => ({ data, presente: rnd() < 0.6, pontos: novo != null && d >= corte ? novo : pontos }))
       participantes.push({
+        itemId,
         tipo: 'funcionario',
         funcionarioId: snapshot ? null : id,
         nome: escolha(NOMES),
         incluido: rnd() > 0.1,
         pontos,
         pontosManual: !snapshot && rnd() < 0.2,
-        diasTrabalhados: snapshot ? inteiro(0, dias) : entrada.filter((l) => l.presente).length,
+        // snapshot sem funcionário: o banco zera os dias a cada cálculo (não há batidas)
+        diasTrabalhados: snapshot ? 0 : entrada.filter((l) => l.presente).length,
         entrada,
       })
     }
   }
   const escalaBase = [0, 1, 7, 99, 100, 12345, 995000, 99999999][inteiro(0, 7)]!
-  const servicoDias = datas.map((data) => ({ data, servicoZigCentavos: rnd() < 0.2 ? 0 : inteiro(0, escalaBase) }))
+  const servicoDias = datas.map((data) => ({ data, servicoZigCentavos: rnd() < 0.2 ? 0 : rnd() < 0.05 ? -inteiro(1, 500) : inteiro(0, escalaBase) }))
   const zig = servicoDias.reduce((t, d) => t + d.servicoZigCentavos, 0)
   return {
     modoRateio: diario ? 'diario' : 'periodo',
@@ -141,8 +146,8 @@ function referenciaDiario(e: EntradaComissao) {
   const sd = e.servicoDias!.map((d) => BigInt(d.servicoZigCentavos))
   const A = BigInt(e.servicoAjusteCentavos)
   const absA = A < 0n ? -A : A
-  const somaS = sd.reduce((t, v) => t + v, 0n)
-  const w = somaS === 0n ? sd.map(() => 1n) : sd
+  const pos = sd.map((v) => (v > 0n ? v : 0n))
+  const w = pos.reduce((t, v) => t + v, 0n) === 0n ? sd.map(() => 1n) : pos
   const sw = w.reduce((t, v) => t + v, 0n)
   // parte do ajuste por dia: maior resto com desempate por data (índice)
   const pisos = w.map((x) => (absA * x) / sw)
@@ -239,74 +244,97 @@ describe('comissão — propriedades (fuzz, 3.000 casos, modos diário e períod
 const BANCO_ATIVO = process.env.MDG_FUZZ_BANCO === '1'
 const sqlTexto = (s: string) => `'${s.replace(/'/g, "''")}'`
 
-describe.skipIf(!BANCO_ATIVO)('comissão — front × banco (fuzz, 200 casos; MDG_FUZZ_BANCO=1)', () => {
-  it('comissao_calcular dá os mesmos centavos que calcularComissao', { timeout: 120_000 }, () => {
+describe.skipIf(!BANCO_ATIVO)('comissão — front × banco (fuzz, 200 casos diário/período com extras; MDG_FUZZ_BANCO=1)', () => {
+  it('comissao_calcular dá os mesmos centavos que calcularComissao', { timeout: 300_000 }, () => {
     const rnd = gerador(Number(process.env.MDG_FUZZ_SEMENTE ?? 424242))
     const casos: EntradaComissao[] = []
     for (let i = 0; i < 200; i++) {
       const e = caso(rnd, i)
-      // Banco: dias trabalhados só são guardados (snapshot) para item sem funcionário; no proporcional usa snapshots
-      // com nomes únicos (sem id, o desempate final do banco é o id interno do item — não reproduzível no front).
-      // colunas numeric(18,6) do banco: valor do ponto até 10¹² centavos — limita o serviço a R$ 1 milhão (realista)
-      e.servicoZigCentavos %= 100_000_000
+      // colunas numeric(18,6) do banco: limita o serviço a R$ 1 milhão (realista)
+      e.servicoDias!.forEach((d) => (d.servicoZigCentavos %= 100_000_000))
+      e.servicoZigCentavos = e.servicoDias!.reduce((t, d) => t + d.servicoZigCentavos, 0)
       e.servicoAjusteCentavos %= 100_000_000
-      if (e.proporcionalDias) e.participantes.forEach((p) => Object.assign(p, { funcionarioId: null }))
-      e.participantes.forEach((p, k) => {
-        if (p.funcionarioId == null) p.nome = `${p.nome} #${k}`
-      })
       casos.push(e)
     }
-    // uma empresa por caso: os pontos extras entram em qualquer fechamento da empresa que cubra a data (adendo E.1)
-    const empresaDe = (i: number) => `e99${String(i).padStart(5, '0')}-0000-4000-8000-00000000eeee`
+    // uma empresa por caso (os dias dos extras entram em qualquer fechamento da empresa que cubra a data)
     let sql = `begin;\nset local client_min_messages = warning;\n`
     casos.forEach((e, i) => {
-      const empresa = empresaDe(i)
+      const n = String(i).padStart(5, '0')
+      const empresa = `e99${n}-0000-4000-8000-00000000eeee`
+      const fid = `e99${n}-0000-4000-8000-00000000ffff`
       sql += `insert into public.empresas (id, nome) values ('${empresa}', 'Fuzz comissão ${i}');\n`
-      const fid = `e99${String(i).padStart(5, '0')}-0000-4000-8000-000000000000`
-      sql += `insert into public.comissao_fechamentos (id, empresa_id, titulo, data_inicio, data_fim, percentual_retencao, servico_ajuste_centavos, proporcional_dias)
-        values ('${fid}', '${empresa}', 'f${i}', '${e.dataInicio}', '${e.dataFim}', ${e.percentualRetencao}, ${e.servicoZigCentavos + e.servicoAjusteCentavos}, ${e.proporcionalDias});\n`
-      e.participantes.forEach((p, k) => {
+      sql += `insert into public.comissao_fechamentos (id, empresa_id, titulo, data_inicio, data_fim, percentual_retencao, servico_ajuste_centavos, proporcional_dias, modo_rateio)
+        values ('${fid}', '${empresa}', 'f${i}', '${e.dataInicio}', '${e.dataFim}', ${e.percentualRetencao}, ${e.servicoAjusteCentavos}, ${e.proporcionalDias}, '${e.modoRateio}');\n`
+      e.servicoDias!.forEach((d, k) => {
+        if (d.servicoZigCentavos !== 0)
+          sql += `insert into public.zig_vendas_itens (empresa_id, loja_id_externo, data_operacao, transaction_id, tipo, valor_total)
+            values ('${empresa}', 'L1', '${d.data}', 't${i}-${k}', 'Tip', ${d.servicoZigCentavos});\n`
+      })
+      e.participantes.forEach((p) => {
+        if (p.tipo === 'extra') {
+          sql += `insert into public.extras (id, empresa_id, nome, pontos_padrao) values ('${p.extraId}', '${empresa}', ${sqlTexto(p.nome)}, 0);\n`
+          for (const l of p.entrada ?? [])
+            sql += `insert into public.diarias (tipo, extra_id, pessoa_nome, data, pontos, valor_centavos, criado_por_nome)
+              values ('extra', '${p.extraId}', ${sqlTexto(p.nome)}, '${l.data}', ${l.pontos}, 0, 'Fuzz');\n`
+          // o item pré-criado guarda o "incluído" (o cálculo só cria o item de extra que ainda não existe)
+          sql += `insert into public.comissao_itens (id, empresa_id, fechamento_id, tipo, extra_id, funcionario_nome, incluido, pontos)
+            values ('${p.itemId}', '${empresa}', '${fid}', 'extra', '${p.extraId}', ${sqlTexto(p.nome)}, ${p.incluido}, 0);\n`
+          return
+        }
         let fun = 'null'
         if (p.funcionarioId) {
-          const id = `e99${String(i).padStart(5, '0')}-0000-4000-8000-${String(k).padStart(12, '0')}`
-          p.funcionarioId = id
-          fun = `'${id}'`
-          sql += `insert into public.funcionarios (id, empresa_id, nome) values (${fun}, '${empresa}', ${sqlTexto(p.nome)});\n`
+          fun = `'${p.funcionarioId}'`
+          const inicial = p.entrada![0]!.pontos
+          sql += `insert into public.funcionarios (id, empresa_id, nome, pontos_comissao, data_admissao) values (${fun}, '${empresa}', ${sqlTexto(p.nome)}, ${inicial}, '2026-01-01');\n`
+          const troca = p.entrada!.find((l) => l.pontos !== inicial)
+          if (troca)
+            sql += `insert into public.funcionario_pontos (empresa_id, funcionario_id, pontos, vigente_desde) values ('${empresa}', ${fun}, ${troca.pontos}, '${troca.data}');\n`
+          for (const l of p.entrada!)
+            if (l.presente)
+              sql += `insert into public.ponto_dias (funcionario_id, data, empresa_id, batidas_validas, situacao, encerrado) values (${fun}, '${l.data}', '${empresa}', 2, 'completo', true);\n`
         }
-        sql += `insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, incluido, pontos, dias_trabalhados, pontos_extras)
-          values ('${empresa}', '${fid}', ${fun}, ${sqlTexto(p.nome)}, ${p.incluido}, ${p.pontos}, ${p.diasTrabalhados}, ${p.funcionarioId ? 0 : (p.pontosExtras ?? 0)});\n`
-        // com funcionário o banco relê os extras de comissao_pontos_extras; sem funcionário (snapshot) mantém a coluna
-        if (p.funcionarioId && (p.pontosExtras ?? 0) > 0)
-          sql += `insert into public.comissao_pontos_extras (empresa_id, funcionario_id, data, pontos, motivo, criado_por_nome)
-            values ('${empresa}', ${fun}, '${e.dataInicio}', ${p.pontosExtras}, 'fuzz', 'Fuzz');\n`
+        sql += `insert into public.comissao_itens (id, empresa_id, fechamento_id, tipo, funcionario_id, funcionario_nome, incluido, pontos, pontos_manual, dias_trabalhados, dias_presentes)
+          values ('${p.itemId}', '${empresa}', '${fid}', 'funcionario', ${fun}, ${sqlTexto(p.nome)}, ${p.incluido}, ${p.pontos}, ${!!p.pontosManual}, ${p.diasTrabalhados}, ${p.diasTrabalhados});\n`
       })
-      // o ajuste já contém o "serviço da Zig" do caso (não há vendas nesta empresa)
-      e.servicoAjusteCentavos += e.servicoZigCentavos
-      e.servicoZigCentavos = 0
       sql += `select public.comissao_calcular('${fid}');\n`
     })
     sql += `select json_agg(json_build_object('f', f.titulo, 'base', f.base_distribuivel_centavos, 'ret', f.retencao_centavos,
-              'itens', (select json_agg(json_build_object('id', i.funcionario_id, 'nome', i.funcionario_nome, 'v', i.valor_centavos)) from public.comissao_itens i where i.fechamento_id = f.id)))
+              'sp', f.dias_sem_presenca, 'spart', f.dias_sem_participantes,
+              'itens', (select json_agg(json_build_object('id', i.id, 'v', i.valor_centavos, 'd', i.dias_presentes)) from public.comissao_itens i where i.fechamento_id = f.id)))
             from public.comissao_fechamentos f where f.empresa_id::text like 'e99%-0000-4000-8000-00000000eeee';\nrollback;\n`
     const base = process.env.MDG_PG_DIR ?? `${process.env.TMPDIR ?? '/tmp'}/mdg-postgres`
     const r = spawnSync('psql', ['-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1', '-d', process.env.MDG_PG_BANCO ?? 'mdg_local'], {
       input: sql,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, PGHOST: process.env.PGHOST ?? `${base}/socket`, PGPORT: process.env.PGPORT ?? '54329', PGUSER: process.env.PGUSER ?? 'postgres' },
+      env: { ...process.env, PGHOST: process.env.PGHOST ?? `${base}/socket`, PGPORT: process.env.PGPORT ?? process.env.MDG_PG_PORTA ?? '54329', PGUSER: process.env.PGUSER ?? 'postgres' },
     })
     expect(r.status, r.stderr).toBe(0)
-    const saida = r.stdout
-    const linhaJson = saida.split('\n').find((l) => l.startsWith('['))!
-    const banco = new Map((JSON.parse(linhaJson) as { f: string; base: number; ret: number; itens: { id: string | null; nome: string; v: number }[] }[]).map((x) => [x.f, x]))
+    const linhaJson = r.stdout.split('\n').find((l) => l.startsWith('['))!
+    type Banco = { f: string; base: number; ret: number; sp: number; spart: number; itens: { id: string; v: number; d: number }[] | null }
+    const banco = new Map((JSON.parse(linhaJson) as Banco[]).map((x) => [x.f, x]))
+    let diarios = 0
     casos.forEach((e, i) => {
       const r = calcularComissao(e)
       const b = banco.get(`f${i}`)!
       const contexto = JSON.stringify(e)
+      if (e.modoRateio === 'diario') diarios++
       expect(b.base, contexto).toBe(r.baseCentavos)
       expect(b.ret, contexto).toBe(r.retencaoCentavos)
-      const doBanco = new Map(b.itens.map((x) => [`${x.id ?? ''}|${x.nome}`, x.v]))
-      for (const it of r.itens) expect(doBanco.get(`${it.funcionarioId ?? ''}|${it.nome}`), contexto).toBe(it.valorCentavos)
+      expect(b.sp, contexto).toBe(r.diasSemPresenca)
+      expect(b.spart, contexto).toBe(r.diasSemParticipantes)
+      const doBanco = new Map((b.itens ?? []).map((x) => [x.id, x]))
+      for (const it of r.itens) {
+        const x = doBanco.get(it.itemId!)
+        // item de extra sem dia lançado no período é apagado pelo banco (e vale 0 na prévia)
+        if (!x) {
+          expect(it.tipo === 'extra' && it.valorCentavos === 0 && (it.entrada ?? []).length === 0, contexto).toBe(true)
+          continue
+        }
+        expect(x.v, `${contexto}\n${it.nome}`).toBe(it.valorCentavos)
+        expect(x.d, `${contexto}\n${it.nome}`).toBe(it.diasTrabalhados)
+      }
     })
+    expect(diarios).toBeGreaterThan(80)
   })
 })

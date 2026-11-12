@@ -306,10 +306,11 @@ function calcularDiario(e: EntradaComissao): ResultadoComissao {
   const A = BigInt(Math.trunc(e.servicoAjusteCentavos))
   const pct100 = escalar(e.percentualRetencao, 2)
 
-  // 2. ajuste do dia: |A| repartido pelo peso s_d (ou 1 se Σ s_d = 0); sobra por resto desc, data asc
+  // 2. ajuste do dia: |A| repartido pelo peso max(s_d, 0) (ou 1 para todos se a soma for 0); sobra por resto desc, data asc
   const absA = A < 0n ? -A : A
   const sinal = A < 0n ? -1n : 1n
-  const pesos = zig === 0n ? s.map(() => 1n) : s
+  const positivos = s.map((v) => (v > 0n ? v : 0n))
+  const pesos = positivos.some((v) => v > 0n) ? positivos : s.map(() => 1n)
   const somaPesos = pesos.reduce((a, v) => a + v, 0n)
   const partes = s.map(() => 0n)
   if (absA > 0n && somaPesos !== 0n) {
