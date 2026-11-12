@@ -328,7 +328,7 @@ function LinhaReserva({ r, operar, aoEditar }: { r: Reserva; operar: boolean; ao
           {r.observacao && <p className="mt-1 text-sm break-words text-lavanda">{r.observacao}</p>}
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2 pl-[72px] sm:pl-0">
+      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
         {operar ? (
           <>
             <label htmlFor={`${id}-st`} className="sr-only">

@@ -104,6 +104,10 @@ O depósito de fotos faciais (privado, separado por empresa) já é criado pelo 
 4. Toda alteração de variável exige um novo *Redeploy*.
 
 ### 3.3 N8N (o robô que conversa com a Zig e o Control iD)
+
+> **N8N na VPS da Hostinger, Control iD pela VPN (Tailscale) e reservas da Tagme:** siga o passo a passo de
+> [`docs/IMPLANTACAO-N8N-HOSTINGER.md`](docs/IMPLANTACAO-N8N-HOSTINGER.md). Os 10 workflows prontos para importar, na ordem,
+> estão em [`n8n/pacote/workflows/`](n8n/pacote/workflows/) (inclui "MDG · Tagme · Importar").
 **Onde instalar**: num computador ligado o tempo todo **na rede da loja** (mini-PC, servidor) — assim ele alcança o IP dos
 equipamentos Control iD. N8N na nuvem só funciona para a Zig, ou com VPN até a loja (ver 3.4).
 
@@ -222,7 +226,7 @@ npm run n8n:mocks      # Zig e Control iD falsos (portas 54340–54342) para tes
 | `npm test` | lógica do site e do N8N (vitest): comissão, ponto, CSV, AFD, Zig, Control iD, workflows no simulador |
 | `npm run test:banco` | banco em Postgres 16 descartável: RLS e isolamento entre empresas em todas as tabelas, regras de ponto/banco de horas/comissão, ingestões, auditoria de privilégios |
 | `npm run sql:instalar` / `npm run sql:conferir` | regera `supabase/instalar.sql` / confere se está idêntico ao gerado das migrações (`ferramentas/gerar-instalar.sh --verificar` instala num banco limpo) |
-| `npm run n8n:verificar` | estrutura dos 9 workflows, cópias das bibliotecas, nenhuma credencial no JSON |
+| `npm run n8n:verificar` | estrutura dos 10 workflows, cópias das bibliotecas, nenhuma credencial no JSON |
 | `node --test "n8n/**/*.test.mjs"` | testes do N8N com o executor do Node |
 | `npm run test:integracao` | com `npm run local` no ar: roda os workflows de verdade contra o banco local e os mocks (Zig + Control iD ponta a ponta), incluindo o cenário com valores calculados à mão (`n8n/cenario-revisao2.test.mjs`: AFD com virada, alarme, banco de horas, ranking, comissão, importações simultâneas) |
 | `npm run test:fuzz` | testes de propriedade banco × front (comissão e apuração de ponto, centenas de casos aleatórios); usa o banco de `MDG_PG_BANCO` (padrão `mdg_local`, ou seja, rode `npm run local` antes) |

@@ -28,7 +28,7 @@ export function AbaGastos({ inicio, fim }: { inicio: string; fim: string }) {
     return (
       <div className="flex flex-col gap-5" aria-busy="true">
         <span className="sr-only">Carregando gastos…</span>
-        <div className="grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-3 2xl:grid-cols-5">
           {[0, 1, 2, 3, 4].map((i) => (
             <Esqueleto key={i} className="h-[112px] rounded-cartao" />
           ))}
@@ -65,12 +65,12 @@ export function AbaGastos({ inicio, fim }: { inicio: string; fim: string }) {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-3 2xl:grid-cols-5">
         <Indicador rotulo="Diárias pagas" valor={formatarCentavos(t.diarias_pagas)} tom="sucesso" detalhe={`${t.diarias_qtd} diária(s) no período`} />
         <Indicador rotulo="Diárias a pagar" valor={formatarCentavos(t.diarias_a_pagar)} tom={t.diarias_a_pagar > 0 ? 'alerta' : undefined} />
         <Indicador rotulo="Comissões fechadas" valor={formatarCentavos(t.comissoes_fechadas)} />
         <Indicador rotulo="Comissões previstas" valor={formatarCentavos(t.comissoes_previstas)} detalhe="Rascunhos (não somam no total)" tom="info" />
-        <div className="col-span-2 lg:col-span-1">
+        <div className="col-span-2 lg:col-span-1 2xl:col-span-1">
           <Indicador
             rotulo="Total geral"
             valor={formatarCentavos(t.total)}

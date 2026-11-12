@@ -47,7 +47,7 @@ export function AbaPontosExtras({ inicio, fim }: { inicio: string; fim: string }
     try {
       await lancar.mutateAsync({ funcionarioId: funcionario!, data: data!, pontos: valorPontos!, motivo: motivo.trim() })
       avisos.sucesso(
-        rascunhos.length > 0 ? 'Pontos lançados. Recalcule o fechamento em rascunho para incluir os extras.' : 'Pontos extras lançados',
+        rascunhos.length > 0 ? 'Pontos lançados. Abra o rascunho e clique em “Reler serviço e presença” para incluir os extras.' : 'Pontos extras lançados',
       )
       setPontos('')
       setMotivo('')
@@ -163,7 +163,7 @@ export function AbaPontosExtras({ inicio, fim }: { inicio: string; fim: string }
                   </Link>
                 </span>
               ))}
-              . Depois de lançar, abra e clique em “Recalcular”.
+              . Depois de lançar, abra o fechamento e clique em “Reler serviço e presença”.
             </p>
           )}
           <Botao type="submit" icone={<Plus aria-hidden />} carregando={lancar.isPending} disabled={!!fechado}>
