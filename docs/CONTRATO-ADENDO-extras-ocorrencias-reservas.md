@@ -1,4 +1,6 @@
-# Adendo ao contrato — Ocorrências disciplinares, Extras (pontos extras, diárias, gastos) e Reservas (Tagme)
+# Adendo ao contrato — Ocorrências disciplinares, Extras (freelas, dias trabalhados, rateio diário, gastos) e Reservas (Tagme)
+
+> **Versão 2** — seção E reescrita (extras = freelas/diaristas; comissão com rateio diário). Seções O e R sem mudança.
 
 Dono: **backend** (banco). Implementam contra este adendo: **frontend** (`web/`) e **N8N** (`n8n/`).
 Complementa `docs/CONTRATO.md`; onde houver conflito, **este adendo vale**. Convenções de sempre (§2): etiquetas no
@@ -11,10 +13,10 @@ Migrações:
 |---|---|
 | `…0120_integracoes_sync.sql` (ajuste) | tipo `tagme` (check, parâmetros, segredos), escopo `reservas`, `sync_execucoes.tipo` `tagme_importar` |
 | `…0200_ponto.sql` (ajuste) | abono `suspensao`, situação `suspenso`, coluna `ponto_abonos.ocorrencia_id` |
-| `…0220_comissoes.sql` (ajuste) | `comissao_pontos_extras`, `comissao_itens.pontos_extras`, cálculo com extras (§E.1) |
+| `…0220_comissoes.sql` (ajuste) | `modo_rateio`, rateio diário (§E.3), tabelas de detalhe, `comissao_detalhe`; remove `comissao_pontos_extras` e `pontos_extras` |
 | `…0240_painel.sql` (ajuste) | blocos `reservas` e `ocorrencias` no `painel_do_dia` |
 | `…0250_ocorrencias.sql` (nova) | ocorrências, anexos, bucket `funcionarios-documentos`, RPCs |
-| `…0260_extras.sql` (nova) | valor padrão de diária, `diarias`, `gastos_periodo`, RPCs dos extras |
+| `…0260_extras.sql` (nova) | cadastro `extras`, `diarias` (extra ou funcionário), valor padrão de diária, `gastos_periodo`, RPCs (§E) |
 | `…0270_reservas.sql` (nova) | `reservas`, RPCs, importação CSV, `ingestao_reservas` |
 
 Testes: `supabase/testes/70_ocorrencias.sql`, `72_extras.sql`, `74_reservas.sql`. Carga demo: `supabase/seed/30_demo_extras.sql`.
@@ -125,87 +127,70 @@ funcionários com suspensão cobrindo hoje (`hoje ∈ [suspensao_inicio, suspens
 
 ---
 
-## E. Extras
+## E. Extras (v2 — freelas/diaristas)
 
-### E.1 Pontos extras de comissão
+> **v2 (correção do cliente).** O conceito da v1 ("pontos extras de comissão" lançados para funcionários) estava errado e foi
+> **removido**. **Extra = freela/diarista** que trabalha em dias avulsos: tem cadastro próprio (com pontuação e diária padrão),
+> cada dia trabalhado é lançado, e os pontos do dia entram na comissão **daquele dia** (rateio diário, E.3).
+> Removidos do banco (DROPs idempotentes — quem já rodou a v1 no Supabase só roda a instalação de novo):
+> tabela `comissao_pontos_extras`, coluna `comissao_itens.pontos_extras`, RPCs `comissao_extra_lancar`, `comissao_extra_excluir`,
+> `comissao_extras_listar`, e as assinaturas antigas de `diaria_lancar`, `diaria_atualizar`, `diarias_listar` e
+> `comissao_criar_fechamento`/`comissao_atualizar_fechamento` (ganharam parâmetro novo). O "nome avulso" da diária acabou:
+> **todo extra é cadastrado** (o front cria o cadastro na hora, `extra_criar`, e lança em seguida).
+> Atualização por cima da v1: cada diária avulsa vira um extra cadastrado (um por empresa + nome sem diferença de maiúsculas;
+> pontuação 0, diária padrão = valor da diária mais recente) e o lançamento passa a ser `tipo = 'extra'` com `pontos = 0`.
+> Fechamentos existentes ficam `modo_rateio = 'periodo'` (os fechados não são recalculados; os valores ficam como estavam).
 
-```sql
--- ================================================ comissao_pontos_extras  [api:leitura]  (select: G A M)
-create table if not exists public.comissao_pontos_extras (
-  id               uuid primary key default gen_random_uuid(),
-  empresa_id       uuid not null references public.empresas (id) on delete cascade,    -- gatilho: do funcionário
-  funcionario_id   uuid not null references public.funcionarios (id) on delete cascade,
-  data             date not null,
-  pontos           numeric(8,2) not null check (pontos > 0 and pontos <= 9999.99),
-  motivo           text not null check (btrim(motivo) <> ''),    -- ex.: 'Cobriu folga', 'Meta batida'
-  criado_por       uuid references public.perfis (id) on delete set null,
-  criado_por_nome  text not null,
-  criado_em        timestamptz not null default now()
-);
--- comissao_itens ganha:  pontos_extras numeric(10,2) not null default 0
-```
-
-**Regra nova do §9** (substitui os passos 4–6):
-- `extras_i = Σ comissao_pontos_extras.pontos` do funcionário com `data ∈ [data_inicio, data_fim]` (qualquer loja — extras não têm loja).
-- A cada cálculo (criar, editar, recalcular, definir/remover item, fechar): (a) funcionários da empresa com `extras > 0` no período que
-  ainda não têm item **entram** com `pontos = 0`, `incluido = true` (snapshot de nome/cargo) — mesmo sem pontos base, inativo ou
-  `participa_comissao = false` (o lançamento explícito vale); (b) `pontos_extras` de todo item com `funcionario_id` é relido.
-  Item com `funcionario_id null` (funcionário excluído) mantém o último `pontos_extras`.
-- `base_i = pontos_i` ou, com `proporcional_dias`, `round(pontos_i × dias_trabalhados_i / dias_periodo, 6)` (como antes).
-- **`pontos_efetivos_i = incluido_i ? base_i + pontos_extras_i : 0`** — os extras **não** são proporcionalizados.
-- Soma, valor do ponto, maior resto exato e desempate: **sem mudança** (§9 passos 7–9, sobre `pontos_efetivos`).
-- `comissao_remover_item` de funcionário que tem extras no período **não apaga**: marca `incluido = false` (senão ele voltaria no
-  próximo cálculo). Para tirá-lo de vez, exclua os extras.
-- Lançar/excluir extra cuja `data` está dentro de um fechamento **fechado** da empresa → `Período de comissão já fechado` (22023).
-  Rascunhos **não** são recalculados sozinhos: o front chama `comissao_recalcular` (ou mostra "recalcule para incluir os extras").
-
-**Para o front replicar** (`web/src/lib/comissao.ts`): a entrada de cada participante ganha `pontosExtras` (número com 2 casas);
-em escala 10⁶: `pe6 = incluido ? (proporcional ? dividirArredondando(pontos6 × dias, diasPeriodo) : pontos6) + escalar(pontosExtras, 2) × 10⁴ : 0`.
-O resto do algoritmo não muda. Participante só com extras: `pontos = 0`.
-
-**Vetores (banco e vitest)** — base `796000` do exemplo do §9 (bruto 995000, retenção 20%):
-1. Exemplo do §9 sem extras: valores inalterados (209474, 209474, 125684, 167579, 83789).
-2. Proporcional (30 dias, Eva 15 dias, demais 30) **+ Carla 1,5 extra**: pe Ana 10, Bruno 10, Carla 7,5, Davi 8, Eva 2 → soma 37,5;
-   exatos 212266,67 / 212266,67 / 159200 / 169813,33 / 42453,33; pisos 795998, resto 2 → Ana e Bruno:
-   **Ana 212267, Bruno 212267, Carla 159200, Davi 169813, Eva 42453** (Σ 796000).
-3. Não proporcional **+ Eva 1 extra + Fábio Nunes (pontos 0, só 3 extras)**: pe 10, 10, 6, 8, 5, 3 → soma 42;
-   pisos 189523, 189523, 113714, 151619, 94761, 56857 (Σ 795997), resto 3 → Eva (0,905), Ana (0,810), Bruno (0,810):
-   **Ana 189524, Bruno 189524, Carla 113714, Davi 151619, Eva 94762, Fábio 56857** (Σ 796000).
-
-RPCs (`[api]`, G A M):
-| assinatura | regra |
-|---|---|
-| `comissao_extra_lancar(p_funcionario uuid, p_data date, p_pontos numeric, p_motivo text) returns uuid` | `Pontos extras inválidos` (≤ 0 ou > 9999,99 ou mais de 2 casas), `Informe o motivo`, `Informe a data`, `Período de comissão já fechado` |
-| `comissao_extra_excluir(p_extra uuid) returns void` | `Lançamento não encontrado`, `Período de comissão já fechado` |
-| `comissao_extras_listar(p_inicio date, p_fim date, p_funcionario uuid default null, p_empresa uuid default null) returns table(id uuid, funcionario_id uuid, funcionario_nome text, cargo text, data date, pontos numeric, motivo text, criado_por_nome text, criado_em timestamptz, fechado boolean)` | máx. 366 dias; `fechado` = data dentro de fechamento fechado; ordem `data desc, criado_em desc` |
-
-**CSV de comissão (§13, front e N8N idênticos)** — nova coluna entre "Dias trabalhados" e "Pontos efetivos":
-`Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos extras;Pontos efetivos;Valor (R$)`
-- `Pontos extras` = `numeroCsv(pontos_extras, 2)` (`0` quando zero, `1,5`, `3`).
-- Linha final: `Total;;;<Σ pontos dos incluídos>;;<Σ pontos extras dos incluídos>;<Σ pontos efetivos>;<base distribuível>`.
-- Preâmbulo sem mudança. `ingestao_fechamento_exportar` já devolve `pontos_extras` em cada item (todas as colunas de `comissao_itens`).
-
-### E.2 Diárias
+### E.1 Cadastro de extras
 
 ```sql
--- ======================================== funcionario_valores_diaria  [api:leitura]  (select: G A M)
--- Valor PADRÃO da diária do funcionário (fora de `funcionarios` porque a leitura enxerga funcionarios).
-create table if not exists public.funcionario_valores_diaria (
-  funcionario_id         uuid primary key references public.funcionarios (id) on delete cascade,
-  empresa_id             uuid not null references public.empresas (id) on delete cascade,   -- gatilho
-  valor_diaria_centavos  bigint not null check (valor_diaria_centavos between 0 and 100000000),
-  atualizado_por         uuid references public.perfis (id) on delete set null,
+-- ============================================================== extras  [api:leitura]  (select: G A M; L NÃO vê)
+create table if not exists public.extras (
+  id                     uuid primary key default gen_random_uuid(),
+  empresa_id             uuid not null references public.empresas (id) on delete cascade,
+  nome                   text not null check (btrim(nome) <> ''),
+  funcao                 text,                                    -- ex.: 'Garçom', 'Cozinha'
+  telefone               text,                                    -- opcional (dado pessoal)
+  documento              text,                                    -- opcional, livre (CPF/RG; dado pessoal)
+  pontos_padrao          numeric(8,2) not null default 0 check (pontos_padrao between 0 and 9999.99),
+  valor_diaria_centavos  bigint check (valor_diaria_centavos between 0 and 100000000),   -- null = sem padrão
+  ativo                  boolean not null default true,
+  observacoes            text,
+  criado_por             uuid references public.perfis (id) on delete set null,
+  criado_em              timestamptz not null default now(),
   atualizado_em          timestamptz not null default now()
 );
+-- índices: (empresa_id, lower(nome)), (criado_por)
+```
+Regras: textos com `btrim`, vazio → `null` (nome vazio → `Informe o nome`); pontos com no máximo 2 casas em 0..9999,99
+(`Pontos inválidos`); valor em 0..100000000 (`Valor inválido`). Nome não é único (dois freelas podem ter o mesmo nome).
+Excluir só sem dias lançados (`Extra com dias lançados: desative em vez de excluir`); senão desative (`ativo = false`).
+Extra inativo não recebe lançamento novo (`Extra inativo`), mas os lançamentos antigos continuam valendo.
 
+RPCs (`[api]`, G A M; leitura recebe `Sem permissão`):
+| assinatura | retorno / regra |
+|---|---|
+| `extra_criar(p_nome text, p_funcao text default null, p_pontos_padrao numeric default 0, p_valor_diaria_centavos bigint default null, p_telefone text default null, p_documento text default null, p_observacoes text default null, p_empresa uuid default null) returns uuid` | id; `p_pontos_padrao null` = 0 |
+| `extra_atualizar(p_extra uuid, p_nome text, p_funcao text, p_pontos_padrao numeric, p_valor_diaria_centavos bigint, p_telefone text, p_documento text, p_ativo boolean, p_observacoes text) returns void` | **substitui tudo** (`p_pontos_padrao null` = 0, `p_valor null` = sem padrão, `p_ativo null` = true); `Extra não encontrado` (P0002). Não altera dias já lançados |
+| `extra_excluir(p_extra uuid) returns void` | `Extra não encontrado`, `Extra com dias lançados: desative em vez de excluir` (22023) |
+| `extras_listar(p_incluir_inativos boolean default false, p_empresa uuid default null) returns table(id uuid, nome text, funcao text, telefone text, documento text, pontos_padrao numeric, valor_diaria_centavos bigint, ativo boolean, observacoes text, dias_lancados int, ultimo_dia date, criado_em timestamptz)` | ordem `lower(nome), id`; `dias_lancados`/`ultimo_dia` = todos os lançamentos do extra |
+
+### E.2 Dias trabalhados (tabela `diarias`)
+
+Um lançamento é **de um extra** (tem pontos, que entram na comissão do dia) **ou de um funcionário** (só custo, sem pontos).
+
+```sql
 -- ===================================================== diarias  [api:leitura]  (select: G A M; L NÃO vê)
 create table if not exists public.diarias (
   id               uuid primary key default gen_random_uuid(),
-  empresa_id       uuid not null references public.empresas (id) on delete cascade,
-  funcionario_id   uuid references public.funcionarios (id) on delete set null,   -- null = avulso (freelancer sem cadastro)
-  pessoa_nome      text not null check (btrim(pessoa_nome) <> ''),   -- snapshot do nome do funcionário ou nome livre
+  empresa_id       uuid not null references public.empresas (id) on delete cascade,   -- gatilho: do extra/funcionário
+  tipo             text not null default 'funcionario' check (tipo in ('extra', 'funcionario')),
+  extra_id         uuid references public.extras (id),                               -- sem cascade: extra com dias não é excluído
+  funcionario_id   uuid references public.funcionarios (id) on delete set null,
+  pessoa_nome      text not null check (btrim(pessoa_nome) <> ''),   -- snapshot do nome no lançamento
   data             date not null,
-  funcao           text,                                             -- padrão: cargo do funcionário
+  funcao           text,                                             -- padrão: função do extra / cargo do funcionário
+  pontos           numeric(8,2) check (pontos between 0 and 9999.99),-- só extra (padrão: pontos_padrao); null em funcionário
   valor_centavos   bigint not null check (valor_centavos between 0 and 100000000),
   observacao       text,
   pago             boolean not null default false,
@@ -214,52 +199,254 @@ create table if not exists public.diarias (
   criado_por_nome  text not null,
   criado_em        timestamptz not null default now(),
   atualizado_em    timestamptz not null default now(),
-  constraint diarias_pagamento check (pago or pago_em is null)
+  constraint diarias_pagamento check (pago or pago_em is null),
+  constraint diarias_participante check (
+    (tipo = 'extra' and extra_id is not null and funcionario_id is null and pontos is not null)
+    or (tipo = 'funcionario' and extra_id is null and pontos is null))
 );
+create unique index if not exists diarias_extra_dia_uidx on public.diarias (extra_id, data) where extra_id is not null;
+-- funcionario_valores_diaria (valor padrão da diária do FUNCIONÁRIO): sem mudança desde a v1.
 ```
-Regras: com `p_funcionario` → mesma empresa, `pessoa_nome` = nome atual do funcionário (o `p_pessoa_nome` é ignorado), `funcao`
-padrão = cargo, `valor` padrão = `funcionario_valores_diaria`; sem funcionário → `p_pessoa_nome` obrigatório
-(`Informe o funcionário ou o nome`). Sem valor e sem padrão → `Informe o valor da diária`. `Valor inválido` fora de 0..100000000.
-`p_pago = true` e `p_pago_em null` → `pago_em` = dia de trabalho atual; `p_pago = false` → `pago_em = null`.
-Data em `[hoje − 366, hoje + 62]` (`Data fora do limite`).
+
+Regras:
+- Exatamente um de `p_extra` / `p_funcionario` (`Informe o extra ou o funcionário`, 22023). Mesma empresa (`Extra de outra empresa` /
+  `Funcionário de outra empresa`; de empresa que o usuário não opera → `Sem permissão`).
+- **Extra**: precisa estar ativo (`Extra inativo`); `pontos` padrão = `pontos_padrao` (2 casas, 0..9999,99, `Pontos inválidos`);
+  `valor` padrão = `valor_diaria_centavos` do cadastro; `funcao` padrão = função do cadastro. **Um lançamento por extra por dia**
+  (`Extra já tem dia lançado em DD/MM/AAAA`, 23505).
+- **Funcionário**: `p_pontos` deve ser `null` (`Diária de funcionário não tem pontos`); `valor` padrão = `funcionario_valores_diaria`;
+  `funcao` padrão = cargo. Pode haver mais de uma no mesmo dia. Não afeta comissão.
+- Sem valor e sem padrão → `Informe o valor da diária`; `Valor inválido` fora de 0..100000000; data em `[hoje − 366, hoje + 62]`
+  (`Data fora do limite`); `p_pago = true` e `p_pago_em null` → `pago_em` = dia de trabalho atual; `p_pago = false` → `pago_em null`.
+- **Trava de comissão** (só `tipo = 'extra'`): se a data (antiga ou nova) estiver dentro de um fechamento **fechado** da empresa
+  (qualquer loja/modo), é recusado com `Período de comissão já fechado` (22023): lançar, excluir, mudar a `data` ou os `pontos`.
+  **Pagamento, valor, função e observação continuam editáveis** (não afetam a comissão). Diária de funcionário nunca trava.
+- Rascunhos **não** são recalculados sozinhos: o front chama `comissao_recalcular` (ou avisa "recalcule para incluir os extras").
 
 RPCs (`[api]`, G A M):
-| assinatura | retorno |
+| assinatura | retorno / regra |
 |---|---|
-| `funcionario_definir_valor_diaria(p_funcionario uuid, p_valor_centavos bigint) returns void` | `null` remove o padrão |
-| `funcionario_valores_diaria_listar(p_empresa uuid default null) returns table(funcionario_id uuid, valor_diaria_centavos bigint)` | |
-| `diaria_lancar(p_data date, p_funcionario uuid default null, p_pessoa_nome text default null, p_funcao text default null, p_valor_centavos bigint default null, p_observacao text default null, p_pago boolean default false, p_pago_em date default null, p_empresa uuid default null) returns uuid` | id |
-| `diaria_atualizar(p_diaria uuid, p_data date, p_funcionario uuid, p_pessoa_nome text, p_funcao text, p_valor_centavos bigint, p_observacao text, p_pago boolean, p_pago_em date) returns void` | substitui tudo; `Diária não encontrada` |
-| `diaria_marcar_paga(p_diaria uuid, p_pago boolean, p_pago_em date default null) returns void` | |
-| `diaria_excluir(p_diaria uuid) returns void` | |
-| `diarias_listar(p_inicio date, p_fim date, p_funcionario uuid default null, p_pago boolean default null, p_empresa uuid default null) returns table(id uuid, data date, funcionario_id uuid, pessoa_nome text, avulso boolean, funcao text, valor_centavos bigint, observacao text, pago boolean, pago_em date, criado_por_nome text, criado_em timestamptz)` | máx. 366 dias; ordem `data desc, pessoa_nome, criado_em` |
+| `diaria_lancar(p_data date, p_extra uuid default null, p_funcionario uuid default null, p_pontos numeric default null, p_valor_centavos bigint default null, p_funcao text default null, p_observacao text default null, p_pago boolean default false, p_pago_em date default null) returns uuid` | id (empresa vem do extra/funcionário) |
+| `diaria_atualizar(p_diaria uuid, p_data date, p_pontos numeric, p_valor_centavos bigint, p_funcao text, p_observacao text, p_pago boolean, p_pago_em date) returns void` | a pessoa não muda (exclua e lance de novo). `null` **mantém** em `p_data`, `p_pontos`, `p_valor_centavos` e `p_pago` (com `p_pago null` o `pago_em` também fica); `p_funcao`/`p_observacao` substituem (vazio → padrão / `null`). `Diária não encontrada` |
+| `diaria_marcar_paga(p_diaria uuid, p_pago boolean, p_pago_em date default null) returns void` | sem mudança (nunca trava) |
+| `diaria_excluir(p_diaria uuid) returns void` | trava de comissão para extra |
+| `diarias_listar(p_inicio date, p_fim date, p_tipo text default null, p_extra uuid default null, p_funcionario uuid default null, p_pago boolean default null, p_empresa uuid default null) returns table(id uuid, data date, tipo text, extra_id uuid, funcionario_id uuid, pessoa_nome text, funcao text, pontos numeric, valor_centavos bigint, observacao text, pago boolean, pago_em date, fechado boolean, criado_por_nome text, criado_em timestamptz)` | máx. 366 dias; `p_tipo` em `extra`/`funcionario` (`Tipo inválido`); `pessoa_nome` = nome atual do cadastro (ou o snapshot); `fechado` = tipo extra e data em fechamento fechado; ordem `data desc, pessoa_nome, criado_em, id` |
+| `funcionario_definir_valor_diaria(p_funcionario uuid, p_valor_centavos bigint) returns void` · `funcionario_valores_diaria_listar(p_empresa uuid default null) returns table(funcionario_id uuid, valor_diaria_centavos bigint)` | sem mudança desde a v1 |
 
-### E.3 Gastos totais por período — `gastos_periodo(p_inicio date, p_fim date, p_empresa uuid default null) returns jsonb`
+### E.3 Comissão com rateio diário (substitui o §9 para `modo_rateio = 'diario'`)
+
+#### E.3.1 DDL (ajustes em `…0220_comissoes.sql` e `…0260_extras.sql`)
+```sql
+-- comissao_fechamentos ganha:
+modo_rateio             text not null default 'diario' check (modo_rateio in ('diario', 'periodo')),
+                        -- coluna criada com default 'periodo' (fechamentos existentes) e o default trocado para 'diario'
+dias_sem_presenca       int  not null default 0,   -- modo diário: dias com base > 0 rateados pelo fallback (sem presença)
+dias_sem_participantes  int  not null default 0,   -- modo diário: dias com base > 0 sem ninguém para ratear (fechar é recusado)
+
+-- comissao_itens: participante = funcionário OU extra (snapshot de nome/cargo em funcionario_nome/cargo)
+tipo            text not null default 'funcionario' check (tipo in ('funcionario', 'extra')),
+extra_id        uuid references public.extras (id) on delete set null,
+dias_presentes  int not null default 0,          -- funcionário: dias com batida válida no período; extra: dias lançados
+pontos_manual   boolean not null default false,  -- funcionário: pontos fixados no rascunho (senão: vigentes de cada dia)
+constraint comissao_itens_participante check ((tipo = 'funcionario' and extra_id is null) or (tipo = 'extra' and funcionario_id is null)),
+unique (fechamento_id, extra_id)                 -- além do unique (fechamento_id, funcionario_id) existente
+-- REMOVIDA: pontos_extras.  dias_trabalhados continua (= dias_presentes; mantida por compatibilidade).
+
+-- ======================================== comissao_rateio_dias  [api:leitura]  (select: G A M) — um por dia (modo diário)
+create table if not exists public.comissao_rateio_dias (
+  fechamento_id           uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id              uuid not null references public.empresas (id) on delete cascade,
+  data                    date not null,
+  servico_zig_centavos    bigint not null,   -- Tips do dia (loja do fechamento, se houver)
+  ajuste_centavos         bigint not null,   -- parte do ajuste manual que coube ao dia (E.3.2 passo 2)
+  servico_bruto_centavos  bigint not null,   -- greatest(0, servico + ajuste)
+  retencao_centavos       bigint not null,
+  base_centavos           bigint not null,
+  soma_pontos             numeric(18,2) not null,
+  participantes           int not null,
+  sem_presenca            boolean not null,  -- base > 0 e ninguém presente → rateado entre os funcionários incluídos
+  sem_participantes       boolean not null,  -- base > 0 e ninguém nem no fallback → não rateado
+  primary key (fechamento_id, data)
+);
+-- ================================= comissao_rateio_itens_dia  [api:leitura]  (select: G A M) — participante × dia
+create table if not exists public.comissao_rateio_itens_dia (
+  item_id         uuid not null references public.comissao_itens (id) on delete cascade,
+  fechamento_id   uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id      uuid not null references public.empresas (id) on delete cascade,
+  data            date not null,
+  pontos          numeric(8,2) not null,     -- pontos usados no dia (> 0)
+  valor_centavos  bigint not null,
+  fallback        boolean not null,          -- entrou pelo fallback (dia sem presença)
+  primary key (item_id, data)
+);
+-- índices: (fechamento_id, data), (empresa_id, data). As duas tabelas: fechamento 'fechado' = imutável (mesmo gatilho dos itens);
+-- no modo 'periodo' ficam vazias. Recalcular o rascunho apaga e regrava as duas.
+```
+
+#### E.3.2 Regra (modo `diario`, padrão para fechamentos novos)
+Período `[data_inicio, data_fim]` com `D = dias_periodo` dias, loja opcional, `pct = percentual_retencao`, ajuste `A`.
+1. **Serviço do dia** `s_d` = Σ `valor_total` dos itens `Tip` com `data_operacao = d` (e loja). `servico_zig = Σ s_d` (igual a hoje).
+2. **Ajuste do dia** `a_d` (exato em centavos, maior resto): reparte `|A|` entre os dias com peso `s_d` (se `Σ s_d = 0`, peso 1 para
+   todos os dias): `piso_d = div(|A| × w_d, Σ w)`, sobra `|A| − Σ piso_d` → +1 para os dias em ordem de `mod(|A| × w_d, Σ w)` desc,
+   `data` asc; `a_d = sinal(A) × parte_d`. Assim `Σ a_d = A` sempre.
+3. `bruto_d = greatest(0, s_d + a_d)`; `retencao_d = round(bruto_d × pct / 100)` (meio para longe do zero); `base_d = bruto_d − retencao_d`.
+   Totais do fechamento: `servico_bruto = Σ bruto_d` (= `greatest(0, servico_zig + A)`, porque a parte do ajuste nunca passa do
+   serviço do dia quando `A ≥ −servico_zig`), **`retencao = Σ retencao_d`** (pode diferir em centavos de `round(bruto × pct/100)` do
+   modo período — é a regra), `base_distribuivel = Σ base_d`.
+4. **Participantes do dia** (só itens `incluido = true`):
+   - funcionário com `ponto_dias.batidas_validas > 0` no dia `d`, com `pontos_d` = `item.pontos` se `pontos_manual`, senão
+     `pontos_vigentes(funcionário, d)`; suspensão/abono/falta = sem presença;
+   - extra com lançamento (`diarias.tipo = 'extra'`) no dia `d`, com `pontos_d` = `diarias.pontos` do lançamento;
+   - só entra quem tem `pontos_d > 0`.
+5. **Fallback** (dia com `base_d > 0` e **ninguém** presente — ex.: ponto ainda não integrado): participam **todos os funcionários
+   incluídos** com `pontos_d > 0` (`item.pontos` se `pontos_manual` ou se o funcionário foi excluído — snapshot sem id —, senão os
+   vigentes do dia); o dia fica `sem_presenca = true` e o item `fallback = true` (o front avisa "dia sem presença registrada").
+   Extras nunca entram por fallback. Se nem assim houver alguém: `sem_participantes = true`, nada é rateado no dia e
+   **fechar é recusado** com `Há dias com serviço sem participantes para ratear` (22023).
+6. **Rateio do dia** (maior resto exato, igual ao §9 passo 9): `piso_i = div(base_d × p_i, S_d)`, resto `= mod(base_d × p_i, S_d)`,
+   com `S_d = Σ p_i`; a sobra `base_d − Σ piso_i` dá +1 por ordem: resto desc, `pontos_d` desc, nome `collate "C"` asc,
+   tipo (`funcionario` antes de `extra`), id do participante (`funcionario_id`/`extra_id`) asc nulos por último, `item.id`.
+   **Garantia**: em todo dia com participantes, `Σ valores do dia = base_d`; logo `Σ valor_centavos dos itens = base_distribuivel`
+   sempre que `dias_sem_participantes = 0` (condição para fechar). Dias com `base_d = 0` também gravam os presentes (valor 0).
+7. **Item**: `valor_centavos = Σ` dos dias; `pontos_efetivos = Σ pontos_d` dos dias em que entrou (inclusive fallback);
+   `dias_presentes` (= `dias_trabalhados`) = funcionário: dias com batida válida no período; extra: dias lançados no período.
+   `pontos`: funcionário = `pontos_vigentes(funcionário, data_fim)` (ou o manual); **extra = média dos pontos dos lançamentos do
+   período, 2 casas** (`round(avg, 2)`; sem lançamento: `pontos_padrao`) — só para exibir.
+   Fechamento: `soma_pontos_efetivos = Σ soma_pontos dos dias`, `valor_ponto_centavos = round(base / soma, 6)` (média, só exibição;
+   `null` se soma 0), `dias_sem_presenca`, `dias_sem_participantes`.
+8. **Extras no rascunho**: a cada cálculo, todo extra com lançamento no período que ainda não tem item **entra** (`incluido = true`,
+   snapshot nome/função atualizados a cada cálculo enquanto rascunho); item de extra sem nenhum lançamento no período é apagado.
+   Tirar um extra = `comissao_definir_extra(…, false)` → `incluido = false` (não volta sozinho).
+9. `proporcional_dias` é ignorado no modo diário (a presença já é dia a dia).
+
+**Modo `periodo`** (opção para quem não tem ponto integrado; fechamentos antigos): exatamente o §9 (passos 1–9, com `proporcional_dias`
+opcional, `pontos` do item), mais os extras: `pontos_efetivos(extra) = incluido ? round(Σ pontos dos lançamentos do período / dias_periodo, 6) : 0`
+(o extra vale a fração de "um período inteiro" que trabalhou, com ou sem `proporcional_dias`). Desempate como no passo 6.
+As tabelas de detalhe ficam vazias.
+
+#### E.3.3 Vetores (banco `50_comissoes.sql` e vitest)
+**V1 — diário, 3 dias, extra e fallback.** Período 01/09 a 03/09/2026, retenção 20%, ajuste 0. Tips: 01/09 `100000`, 02/09 `50001`, 03/09 `30000`.
+Ana Souza 10, Bruno Lima 10, Carla Dias 6 (funcionários); Marcos Freitas = extra (lançado 01/09 com 5 pontos e 02/09 com 7,5).
+Presença: 01/09 Ana, Bruno, Carla; 02/09 Ana, Carla; 03/09 ninguém.
+
+| dia | serviço | bruto | retenção | base | participantes (pontos) | soma | valores |
+|---|---|---|---|---|---|---|---|
+| 01/09 | 100000 | 100000 | 20000 | 80000 | Ana 10, Bruno 10, Carla 6, Marcos 5 | 31 | Ana **25807**, Bruno 25806, Carla 15484, Marcos 12903 |
+| 02/09 | 50001 | 50001 | 10000 | 40001 | Ana 10, Carla 6, Marcos 7,5 | 23,5 | Ana 17022, Carla 10213, Marcos 12766 |
+| 03/09 | 30000 | 30000 | 6000 | 24000 | **fallback**: Ana 10, Bruno 10, Carla 6 (`sem_presenca`) | 26 | Ana 9231, Bruno 9231, Carla 5538 |
+
+01/09: pisos 25806, 25806, 15483, 12903 (Σ 79998), sobra 2 → Carla (fração 0,871) e Ana (0,452; empata com Bruno, ganha pelo nome).
+Totais: **Ana 52060, Bruno 35037, Carla 31235, Marcos 25669** = 144001 = base (80000 + 40001 + 24000); retenção 36000;
+`dias_sem_presenca = 1`; Marcos `pontos` 6,25 (média), `dias_presentes` 2, `pontos_efetivos` 12,5; Ana `dias_presentes` 2, `pontos_efetivos` 30.
+
+**V2 — mesmo cenário, ajuste +1000** (peso = serviço do dia, Σ 180001): exatos 555,552 / 277,782 / 166,666 → pisos 555, 277, 166,
+sobra 2 → 02/09 e 03/09: **a = 555, 278, 167**. bruto 100555 / 50279 / 30167; retenção 20111 / 10056 / 6033; base 80444 / 40223 / 24134.
+Valores: 01/09 Ana 25950, Bruno 25949, Carla 15570, Marcos 12975; 02/09 Ana 17116, Carla 10270, Marcos 12837; 03/09 Ana 9282, Bruno 9282,
+Carla 5570. Totais **Ana 52348, Bruno 35231, Carla 31410, Marcos 25812** = 144801; retenção 36200.
+
+**V3 — ajuste −500**: partes de 500 = 277,776 / 138,891 / 83,333 → 277, 138, 83 (+1 para 02/09 e 01/09) → **a = −278, −139, −83**;
+bruto 99722 / 49862 / 29917; retenção 19944 / 9972 / 5983; base 79778 / 39890 / 23934; totais **Ana 51915, Bruno 34940, Carla 31149,
+Marcos 25598** = 143602.
+
+**V4 — sem serviço, ajuste +100, retenção 0%**: peso igual → **a = 34, 33, 33** (sobra para o 1º dia); valores 01/09 Ana 11, Bruno 11,
+Carla 7, Marcos 5; 02/09 Ana 14, Carla 8, Marcos 11; 03/09 (fallback) Ana 13, Bruno 13, Carla 7 → **Ana 38, Bruno 24, Carla 22, Marcos 16** = 100.
+
+**V5 — ajuste ≤ −serviço** (ex.: −180501): todos os dias com bruto 0, base 0, valores 0 (presentes gravados com valor 0).
+
+**V6 — modo período + extra.** Exemplo do §9 (base 796000, não proporcional, Ana 10, Bruno 10, Carla 6, Davi 8, Eva 4) + extra Marcos
+com 3 lançamentos de 5 pontos num período de 30 dias → pe = 15/30 = 0,5; soma 38,5; pisos 206753, 206753, 124051, 165402, 82701, 10337
+(Σ 795997), sobra 3 → Carla (0,948), Marcos (0,662), Davi (0,597): **Ana 206753, Bruno 206753, Carla 124052, Davi 165403, Eva 82701,
+Marcos 10338** (Σ 796000).
+
+#### E.3.4 RPCs de comissão (mudanças; demais do §10.6 sem mudança)
+| assinatura | regra |
+|---|---|
+| `comissao_criar_fechamento(p_data_inicio date, p_data_fim date, p_titulo text default null, p_loja text default null, p_proporcional_dias boolean default false, p_empresa uuid default null, p_modo_rateio text default 'diario') returns uuid` | `Modo de rateio inválido` (22023). Itens: funcionários como hoje + extras com lançamento no período |
+| `comissao_atualizar_fechamento(p_fechamento uuid, p_titulo text, p_servico_ajuste_centavos bigint, p_percentual_retencao numeric, p_proporcional_dias boolean, p_observacoes text, p_modo_rateio text default null) returns void` | `p_modo_rateio null` mantém |
+| `comissao_definir_item(p_fechamento uuid, p_funcionario uuid, p_pontos numeric, p_incluido boolean default true) returns void` | **`p_pontos null` = automático** (`pontos_manual = false`, pontos vigentes); número = manual (`pontos_manual = true`). O front manda `null` quando o usuário não fixou pontos |
+| `comissao_definir_extra(p_fechamento uuid, p_extra uuid, p_incluido boolean) returns void` | inclui/tira o extra; `Extra não encontrado`, `Extra de outra empresa`, `Extra sem dias lançados no período` (22023, ao incluir quem não tem lançamento) |
+| `comissao_remover_item(p_fechamento uuid, p_funcionario uuid) returns void` | só funcionário (apaga o item); para extra use `comissao_definir_extra` |
+| `comissao_detalhe(p_fechamento uuid) returns jsonb` | **novo**, G A M; formato abaixo |
+
+`comissao_detalhe` — formato exato (o front exibe o rateio e recalcula a prévia com `entrada` + `servico_dias`):
+```json
+{
+  "fechamento": { "...": "todas as colunas de comissao_fechamentos" },
+  "servico_dias": [ { "data": "2026-09-01", "servico_zig_centavos": 100000 } ],
+  "dias": [ { "data": "2026-09-01", "servico_zig_centavos": 100000, "ajuste_centavos": 0, "servico_bruto_centavos": 100000,
+              "retencao_centavos": 20000, "base_centavos": 80000, "soma_pontos": 31.00, "participantes": 4,
+              "sem_presenca": false, "sem_participantes": false,
+              "rateio": [ { "item_id": "uuid", "pontos": 10.00, "valor_centavos": 25807, "fallback": false } ] } ],
+  "itens": [ { "id": "uuid", "tipo": "funcionario", "funcionario_id": "uuid|null", "extra_id": "uuid|null",
+               "nome": "Ana Souza", "cargo": "Garçom", "incluido": true, "pontos": 10.00, "pontos_manual": false,
+               "dias_presentes": 2, "pontos_efetivos": 30.000000, "valor_centavos": 52060,
+               "entrada": [ { "data": "2026-09-01", "presente": true, "pontos": 10.00 } ] } ]
+}
+```
+- `servico_dias`: **um por dia** do período (zeros incluídos), Tips da loja do fechamento — sempre (qualquer modo).
+- `dias`: um por dia do período no modo diário (o que está gravado em `comissao_rateio_dias`); `[]` no modo período.
+  `rateio` em ordem de nome (`collate "C"`), tipo, id.
+- `itens`: ordem nome (`collate "C"`), tipo, id. `entrada` (para a prévia): funcionário com id → **um por dia** do período,
+  `presente` = batida válida no dia, `pontos` = vigentes na data (a prévia usa `item.pontos` quando `pontos_manual`);
+  extra → um por lançamento do período (`presente = true`, `pontos` do lançamento); snapshot sem id → `[]` (usa `item.pontos`).
+- Fechamento de outra empresa / leitura → `Sem permissão`; inexistente → `Fechamento não encontrado`.
+- `ingestao_fechamento_exportar` (N8N) passa a devolver também `"dias"` (linhas de `comissao_rateio_dias`, por data) e os itens com as
+  colunas novas (`tipo`, `extra_id`, `dias_presentes`, `pontos_manual`); itens por `funcionario_nome`, `tipo`, id.
+
+**Para o front replicar** (`web/src/lib/comissao.ts`): modo período = algoritmo atual (sem `pontosExtras`; extras com
+`pe6 = dividirArredondando(Σpontos6, diasPeriodo)`); modo diário = E.3.2 com aritmética inteira (pontos em escala 10², que é
+exata para `numeric(8,2)`), usando `servico_dias`, `itens[].entrada`, `incluido`, `pontos_manual`/`pontos`. Vetores V1–V6.
+
+### E.4 CSV de comissão (§13 — front e N8N geram **idêntico**)
+Preâmbulo (nesta ordem; `chave;valor`):
+`Período;dd/mm/aaaa a dd/mm/aaaa` · `Modo de rateio;Diário` ou `Modo de rateio;Por período` · `Serviço Zig (R$)` · `Ajuste (R$)` ·
+`Serviço bruto (R$)` · `Retenção (%)` · `Retenção (R$)` · `Base distribuível (R$)` · `Valor do ponto (R$)` · `Status;Fechado|Rascunho` ·
+**só no modo diário**: `Dias sem presença registrada;<dias_sem_presenca>` (inteiro) · linha em branco.
+Colunas: **`Participante;Tipo;Cargo;Incluído;Pontos;Dias presentes;Valor (R$)`**
+- uma linha por item, na ordem recebida (`ingestao_fechamento_exportar` / `comissao_detalhe` já ordenam);
+- `Participante` = `funcionario_nome` (snapshot); `Tipo` = `Funcionário` ou `Extra`; `Cargo` = `cargo` ou vazio; `Incluído` = `Sim`/`Não`;
+  `Pontos` = `numeroCsv(pontos, 2)`; `Dias presentes` = `dias_presentes` (inteiro); `Valor (R$)` = `centavosCsv(valor_centavos)`.
+- linha final: **`Total;;;;<Σ pontos dos incluídos, numeroCsv 2>;<Σ dias presentes dos incluídos>;<centavosCsv(Σ valor_centavos de todos os itens)>`**.
+- Escape, BOM, `\r\n`, `numeroCsv`/`centavosCsv` e nome do arquivo: §13 sem mudança. Sem a coluna "Pontos extras" e sem "Pontos efetivos".
+
+### E.5 Gastos do período — `gastos_periodo(p_inicio date, p_fim date, p_empresa uuid default null) returns jsonb`
 `[api]` G A M. Máx. **366 dias** (`Período máximo de 366 dias`). Formato exato:
 ```json
 {
-  "empresa_id": "uuid", "inicio": "2026-11-01", "fim": "2026-11-30",
+  "empresa_id": "uuid", "inicio": "2026-09-01", "fim": "2026-09-30",
   "totais": { "diarias_pagas": 30000, "diarias_a_pagar": 15000, "diarias": 45000, "diarias_qtd": 3,
-              "comissoes_fechadas": 796000, "comissoes_previstas": 120000,
-              "total": 841000, "total_com_previsto": 961000 },
-  "por_pessoa": [ { "chave": "f:<uuid>", "funcionario_id": "uuid|null", "nome": "Ana Souza", "avulso": false,
-                    "diarias_qtd": 1, "diarias_pagas": 15000, "diarias_a_pagar": 0,
-                    "comissoes_fechadas": 209474, "comissoes_previstas": 0, "total": 224474 } ],
-  "por_dia": [ { "data": "2026-11-01", "diarias_pagas": 0, "diarias_a_pagar": 0,
+              "diarias_extras": 33000, "diarias_funcionarios": 12000,
+              "comissoes_fechadas": 144001, "comissoes_previstas": 120000,
+              "total": 189001, "total_com_previsto": 309001 },
+  "por_pessoa": [ { "chave": "x:<uuid>", "tipo": "extra", "funcionario_id": null, "extra_id": "uuid", "nome": "Marcos Freitas",
+                    "diarias_qtd": 2, "diarias_pagas": 18000, "diarias_a_pagar": 18000,
+                    "comissoes_fechadas": 25669, "comissoes_previstas": 0, "total": 61669 } ],
+  "por_dia": [ { "data": "2026-09-01", "diarias_pagas": 0, "diarias_a_pagar": 0,
                  "comissoes_fechadas": 0, "comissoes_previstas": 0, "total": 0 } ],
-  "fechamentos": [ { "id": "uuid", "titulo": "Comissão 01/11 a 30/11/2026", "status": "fechado",
-                     "data_inicio": "2026-11-01", "data_fim": "2026-11-30", "base_distribuivel_centavos": 796000 } ]
+  "fechamentos": [ { "id": "uuid", "titulo": "Comissão 01/09 a 03/09/2026", "status": "fechado", "modo_rateio": "diario",
+                     "data_inicio": "2026-09-01", "data_fim": "2026-09-03", "base_distribuivel_centavos": 144001,
+                     "valor_no_periodo_centavos": 144001 } ]
 }
 ```
-- Diárias: por `data ∈ [inicio, fim]`; `pagas` = `pago = true`, `a_pagar` = `pago = false`.
-- Comissões: fechamentos com `data_fim ∈ [inicio, fim]` (qualquer loja); `fechado` → `comissoes_fechadas` (Σ `valor_centavos` dos itens);
-  `rascunho` → `comissoes_previstas`. No `por_dia` a comissão cai no dia `data_fim` do fechamento.
+- Diárias (extras e funcionários) por `data ∈ [inicio, fim]`; `pagas` = `pago`, `a_pagar` = não pago; `diarias_extras`/`diarias_funcionarios` = por tipo.
+- Comissões — **modo diário: pelo detalhe diário**: cada `comissao_rateio_itens_dia.valor_centavos` cai **no próprio dia** e só conta se
+  o dia estiver em `[inicio, fim]` (fechamento que cruza o período conta só a parte de dentro). **Modo período**: o valor inteiro do item
+  cai em `data_fim` e conta se `data_fim ∈ [inicio, fim]` (como na v1). `fechado` → `comissoes_fechadas`; `rascunho` → `comissoes_previstas`.
 - `total = diarias + comissoes_fechadas`; `total_com_previsto = total + comissoes_previstas`. Em `por_pessoa`/`por_dia`,
   `total = diarias_pagas + diarias_a_pagar + comissoes_fechadas` (previsto à parte).
-- `por_pessoa`: `chave` = `'f:' || funcionario_id` (diária de funcionário ou item com funcionário) ou `'a:' || lower(btrim(nome))`
-  (avulso, ou item cujo funcionário foi excluído); `nome` = nome atual do funcionário (ou o snapshot); ordem `total desc, nome`.
+- `por_pessoa`: `chave` = `'f:' || funcionario_id`, `'x:' || extra_id`, ou `'n:' || lower(btrim(nome))` (item snapshot sem id);
+  `tipo` `funcionario`/`extra`; `nome` = nome atual do cadastro (ou o snapshot); ordem `total desc, nome collate "C", chave`.
   Só aparecem pessoas com algum valor (> 0 em qualquer coluna) ou diária no período.
-- `por_dia`: **um registro por dia** do período (zeros incluídos), em ordem. `fechamentos`: ordem `data_fim, titulo`.
+- `por_dia`: **um registro por dia** do período (zeros incluídos), em ordem. `fechamentos`: os que contribuem (diário que cruza o
+  período; período com `data_fim` dentro), `valor_no_periodo_centavos` = quanto dele caiu no período; ordem `data_fim, titulo, id`.
+  Rascunhos sobrepostos somam todos em `comissoes_previstas` (é uma previsão).
+
+### E.6 Mensagens novas (v2)
+`Extra não encontrado` · `Extra inativo` · `Extra de outra empresa` · `Extra com dias lançados: desative em vez de excluir` ·
+`Informe o extra ou o funcionário` · `Extra já tem dia lançado em DD/MM/AAAA` · `Diária de funcionário não tem pontos` · `Tipo inválido` ·
+`Modo de rateio inválido` · `Extra sem dias lançados no período` · `Há dias com serviço sem participantes para ratear`.
+Removidas: `Pontos extras inválidos`, `Informe o funcionário ou o nome`. Reaproveitadas: `Pontos inválidos`, `Valor inválido`,
+`Informe o nome`, `Informe o valor da diária`, `Data fora do limite`, `Diária não encontrada`, `Período de comissão já fechado`.
 
 ---
 
@@ -375,7 +562,7 @@ Item (o N8N já traduz a resposta da Tagme para este formato):
 `Data no futuro` · `Tipo de ocorrência inválido` · `Ocorrência não encontrada` · `Dias de suspensão inválidos (1 a 30)` ·
 `Início da suspensão inválido` · `Já existe abono para o funcionário em DD/MM/AAAA` · `Dia com suspensão: altere pela ocorrência` ·
 `Limite de 10 anexos por ocorrência` · `Anexo inválido` · `Anexo não encontrado no armazenamento` · `Anexo já registrado` ·
-`Anexo não encontrado` · `Pontos extras inválidos` · `Período de comissão já fechado` · `Informe o funcionário ou o nome` ·
+`Anexo não encontrado` · `Período de comissão já fechado` · as de extras v2 (§E.6) ·
 `Informe o valor da diária` · `Valor inválido` · `Data fora do limite` · `Diária não encontrada` · `Informe o nome do cliente` ·
 `Número de pessoas inválido` · `Status de reserva inválido` · `Reserva não encontrada` ·
 `Reserva da Tagme: só o status pode ser alterado` · `Reserva da Tagme não pode ser excluída`.
@@ -387,6 +574,7 @@ Reaproveitadas: `Sem permissão`, `Informe a empresa`, `Informe o motivo`, `Info
 | tabela | etiqueta | select | escrita |
 |---|---|---|---|
 | funcionario_ocorrencias, funcionario_ocorrencia_anexos | `[api:leitura]` | G A M | RPC (G A M) |
-| comissao_pontos_extras | `[api:leitura]` | G A M | RPC (G A M) |
+| extras | `[api:leitura]` | G A M (L não vê valores nem dados pessoais) | RPC (G A M) |
+| comissao_rateio_dias, comissao_rateio_itens_dia | `[api:leitura]` | G A M | só o cálculo (gatilho: fechado = imutável) |
 | funcionario_valores_diaria, diarias | `[api:leitura]` | G A M | RPC (G A M) |
 | reservas | `[api:leitura]` | G A M (L via `reservas_listar`, sem telefone/e-mail) | RPC (G A M) / ingestão |

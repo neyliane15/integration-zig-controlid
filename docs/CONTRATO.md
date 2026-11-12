@@ -960,7 +960,15 @@ Funcionário inativo (`ativo = false`) **continua** sendo apurado dentro do vín
 
 **Regra do cliente**: "pegar o serviço menos 20% e fazer os cálculos em cima dos pontos de comissão de cada funcionário".
 
-Para um fechamento de `[data_inicio, data_fim]` (loja opcional):
+> *(Adendo extras v2 — `docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md` §E.3)* O fechamento tem `modo_rateio`:
+> **`'diario'` (padrão de fechamentos novos)** — o serviço de **cada dia** (menos a retenção do dia) é rateado por pontos entre quem
+> **esteve presente naquele dia** (funcionários com batida válida, com os pontos vigentes na data, e extras/freelas lançados no dia,
+> com os pontos do lançamento); dia com serviço e ninguém presente cai no fallback (todos os funcionários incluídos, `sem_presenca`);
+> o ajuste manual é repartido entre os dias pelo maior resto; valor do participante = soma dos dias; detalhe por dia em
+> `comissao_rateio_dias`/`comissao_rateio_itens_dia` e na RPC `comissao_detalhe`. **`'periodo'`** — a regra abaixo (passos 1–9),
+> mantida para quem não tem ponto integrado e para os fechamentos existentes. Os "pontos extras" da v1 foram removidos.
+
+Para um fechamento de `[data_inicio, data_fim]` (loja opcional) no **modo período**:
 1. `servico_zig = Σ valor_total` dos itens `Tip` no período (e loja, se definida).
 2. `servico_bruto = max(0, servico_zig + servico_ajuste)` — o ajuste manual (±) cobre serviço pago fora da Zig, estornos etc.
 3. `retencao = round(servico_bruto × percentual_retencao / 100)`; `base = servico_bruto − retencao`.
@@ -968,11 +976,9 @@ Para um fechamento de `[data_inicio, data_fim]` (loja opcional):
 4. Participantes = itens com `incluido = true`. `pontos` do item: ao criar, `pontos_vigentes(funcionario, data_fim)`; editável no rascunho.
 5. `dias_periodo = data_fim − data_inicio + 1`. `dias_trabalhados` = nº de dias de trabalho no período com ao menos uma batida válida
    (`ponto_dias.batidas_validas > 0`).
-6. `pontos_efetivos = pontos` (padrão) ou, com `proporcional_dias = true`, `round(pontos × dias_trabalhados / dias_periodo, 6)`,
-   **mais `pontos_extras`** *(adendo extras, E.1)*: `pontos_extras` = Σ de `comissao_pontos_extras` do funcionário com data no período
-   (somados **depois** da proporção, nunca proporcionalizados); quem tem extras e não tem item entra com `pontos = 0`.
-   Item não incluído → `pontos_efetivos = 0`, `valor = 0`. Lançar/excluir extra em período de fechamento **fechado** é recusado
-   (`Período de comissão já fechado`). Vetores com extras: adendo E.1.
+6. `pontos_efetivos = pontos` (padrão) ou, com `proporcional_dias = true`, `round(pontos × dias_trabalhados / dias_periodo, 6)`.
+   *(Adendo extras v2, E.3)* extras (freelas) no modo período: `pontos_efetivos = round(Σ pontos dos dias lançados / dias_periodo, 6)`.
+   Item não incluído → `pontos_efetivos = 0`, `valor = 0`.
 7. `soma = Σ pontos_efetivos`. Se `soma = 0` → todos os valores 0 e `valor_ponto_centavos = null` (fechar é recusado: `Fechamento sem participantes`).
 8. `valor_ponto = base / soma` (numeric, 6 casas, só para exibir).
 9. **Arredondamento (maior resto, determinístico)**: `exato_i = base × pe_i / soma` (numeric sem arredondar);
@@ -1089,10 +1095,12 @@ Todas `[api]` L G A M, período máx. 366 dias, `p_loja text default null` (null
 ### 10.6 Comissões (backend-2)
 | assinatura | quem | regra |
 |---|---|---|
-| `comissao_criar_fechamento(p_data_inicio date, p_data_fim date, p_titulo text default null, p_loja text default null, p_proporcional_dias boolean default false, p_empresa uuid default null) returns uuid` | G A M | cria rascunho com itens de todos os funcionários `ativo`, `participa_comissao`, no vínculo em algum dia do período e com `pontos_vigentes > 0`; calcula |
-| `comissao_atualizar_fechamento(p_fechamento uuid, p_titulo text, p_servico_ajuste_centavos bigint, p_percentual_retencao numeric, p_proporcional_dias boolean, p_observacoes text) returns void` | G A M | só rascunho; recalcula |
-| `comissao_definir_item(p_fechamento uuid, p_funcionario uuid, p_pontos numeric, p_incluido boolean default true) returns void` | G A M | *upsert* do item (snapshot de nome/cargo); recalcula |
+| `comissao_criar_fechamento(p_data_inicio date, p_data_fim date, p_titulo text default null, p_loja text default null, p_proporcional_dias boolean default false, p_empresa uuid default null, p_modo_rateio text default 'diario') returns uuid` | G A M | cria rascunho com itens de todos os funcionários `ativo`, `participa_comissao`, no vínculo em algum dia do período e com `pontos_vigentes > 0`, mais os extras lançados no período (adendo E.3); calcula |
+| `comissao_atualizar_fechamento(p_fechamento uuid, p_titulo text, p_servico_ajuste_centavos bigint, p_percentual_retencao numeric, p_proporcional_dias boolean, p_observacoes text, p_modo_rateio text default null) returns void` | G A M | só rascunho; recalcula |
+| `comissao_definir_item(p_fechamento uuid, p_funcionario uuid, p_pontos numeric, p_incluido boolean default true) returns void` | G A M | *upsert* do item (snapshot de nome/cargo); `p_pontos null` = pontos automáticos (vigentes), número = manual; recalcula |
+| `comissao_definir_extra(p_fechamento uuid, p_extra uuid, p_incluido boolean) returns void` | G A M | inclui/tira um extra (adendo E.3.4); recalcula |
 | `comissao_remover_item(p_fechamento uuid, p_funcionario uuid) returns void` | G A M | recalcula |
+| `comissao_detalhe(p_fechamento uuid) returns jsonb` | G A M | detalhe por dia e entradas da prévia (adendo E.3.4) |
 | `comissao_recalcular(p_fechamento uuid) returns void` | G A M | relê serviço e presença; §9 |
 | `comissao_fechar(p_fechamento uuid) returns void` | A M | recalcula e fecha |
 | `comissao_excluir_rascunho(p_fechamento uuid) returns void` | G A M | |
@@ -1145,7 +1153,8 @@ Leitura: `comissao_fechamentos` e `comissao_itens` direto (RLS G A M).
   `Batida inválida para a origem <origem>` · `Abono não encontrado` · `Tipo de abono inválido` · `Tipo de lançamento inválido` ·
   `Informe os minutos` · `Já existe saldo inicial nesta data` · `Lançamento não encontrado` ·
   *(revisão 2)* `Horário muito antigo (máximo 1 ano)` · `Minutos fora do limite (máximo 100.000)`;
-- comissão: `Percentual de retenção inválido` · `Pontos inválidos` · `Item não pode mudar de fechamento`;
+- comissão: `Percentual de retenção inválido` · `Pontos inválidos` · `Item não pode mudar de fechamento` ·
+  *(adendo extras v2)* `Modo de rateio inválido` · `Há dias com serviço sem participantes para ratear` · demais em E.6 do adendo;
 - envio ao Control iD: as do adendo (A.6).
 *(Revisão 2)* Erros do próprio Postgres/PostgREST (tipo inválido, estouro numérico, chave duplicada, FK, check, timeout, `permission denied`)
 são traduzidos no front (`web/src/lib/supabase.ts`, `mensagemDeErro`) para `Data inválida`, `Número inválido`, `Número fora do limite permitido`,
@@ -1342,7 +1351,7 @@ Nome do arquivo: `<tipo>_<empresa-slug>_<aaaa-mm-dd>[_<aaaa-mm-dd>].csv`.
 
 | arquivo | colunas |
 |---|---|
-| `comissao_…` | `Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos extras;Pontos efetivos;Valor (R$)` *(adendo extras: coluna "Pontos extras")* + linha final `Total;;;<soma pontos>;;<soma extras>;<soma pe>;<base>` + bloco de cabeçalho antes das colunas: `Período;dd/mm/aaaa a dd/mm/aaaa`, `Serviço Zig (R$)`, `Ajuste (R$)`, `Serviço bruto (R$)`, `Retenção (%)`, `Retenção (R$)`, `Base distribuível (R$)`, `Valor do ponto (R$)`, `Status`, linha em branco |
+| `comissao_…` | *(adendo extras v2, E.4 — vale o adendo)* `Participante;Tipo;Cargo;Incluído;Pontos;Dias presentes;Valor (R$)` + linha final `Total;;;;<Σ pontos incluídos>;<Σ dias presentes incluídos>;<Σ valores>` + bloco de cabeçalho antes das colunas: `Período;dd/mm/aaaa a dd/mm/aaaa`, `Modo de rateio`, `Serviço Zig (R$)`, `Ajuste (R$)`, `Serviço bruto (R$)`, `Retenção (%)`, `Retenção (R$)`, `Base distribuível (R$)`, `Valor do ponto (R$)`, `Status`, (modo diário) `Dias sem presença registrada`, linha em branco |
 | `ponto_…` (espelho) | `Data;Dia;Batidas;Previsto;Trabalhado;Saldo;Situação;Alarmes` (batidas `hh:mm` separadas por espaço) |
 | `banco-horas_…` | `Funcionário;Cargo;Saldo (hh:mm);Saldo do mês (hh:mm)` |
 | `vendas-garcom_…` | `Garçom;Funcionário;Quantidade;Vendas (R$);Serviço (R$);Transações` |
