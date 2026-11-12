@@ -54,6 +54,14 @@ begin
   perform public.ponto_abonar(public.dia_de_trabalho_atual(a) - 3, public.dia_de_trabalho_atual(a) - 3, 'folga', 'iso', ana, a);
   perform public.banco_horas_lancar(ana, public.dia_de_trabalho_atual(a) - 3, 'ajuste', 30, 'iso');
   perform public.tarefas_gerar_do_dia(null, a);
+  -- anexos de ocorrência (adendo extras/ocorrências/reservas): o Storage não existe na carga demo
+  insert into storage.buckets (id, name) values ('funcionarios-documentos', 'funcionarios-documentos') on conflict do nothing;
+  h := public.ocorrencia_criar(ana, 'advertencia', public.dia_de_trabalho_atual(a) - 1, 'iso');
+  insert into storage.objects (bucket_id, name) values ('funcionarios-documentos', a || '/ocorrencias/' || h || '/d.jpg');
+  perform public.ocorrencia_adicionar_anexo(h, a || '/ocorrencias/' || h || '/d.jpg');
+  h := public.ocorrencia_criar(paolo, 'advertencia', public.dia_de_trabalho_atual(b) - 1, 'iso');
+  insert into storage.objects (bucket_id, name) values ('funcionarios-documentos', b || '/ocorrencias/' || h || '/d.pdf');
+  perform public.ocorrencia_adicionar_anexo(h, b || '/ocorrencias/' || h || '/d.pdf');
   insert into public.jornadas (empresa_id, nome) values (b, 'Iso B') returning id into h;
   insert into public.jornada_dias (jornada_id, dia_semana, entrada, saida) values (h, 1, '08:00', '17:00');
   insert into public.funcionario_jornadas (funcionario_id, jornada_id, vigente_desde) values (paolo, h, '2025-01-02');

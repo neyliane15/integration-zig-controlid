@@ -113,7 +113,7 @@ describe('conversão de valores', () => {
     const r = converterReservas(dados, reconhecerColunas(cab!))
     expect(r.reservas.map((x) => [x.nome, x.hora, x.pessoas])).toEqual([
       ['Ana', '20:00', 4],
-      ['Ed', '19:30', 2],
+      ['Ed', '19:30', null],
     ])
     expect(r.erros.map((e) => e.linha)).toEqual([3, 4, 5, 6])
   })

@@ -88,7 +88,10 @@ update public.integracoes set ultimo_status = 'erro', ultimo_erro = 'Equipamento
 select teste.como('b2.lei.a@teste.local');
 create temp table p on commit drop as select public.painel_do_dia() as j;
 select teste.ok('chaves de primeiro nível exatas', (select array_agg(k order by k) from p, jsonb_object_keys(j) k)
-  = array['dia_trabalho', 'empresa_id', 'faturamento', 'ontem', 'ponto', 'servico', 'sincronizacao', 'tarefas']);
+  = array['dia_trabalho', 'empresa_id', 'faturamento', 'ocorrencias', 'ontem', 'ponto', 'reservas', 'servico', 'sincronizacao', 'tarefas']);
+select teste.ok('leitura: ocorrências null (dado sensível)', (select j -> 'ocorrencias' = 'null'::jsonb from p));
+select teste.ok('reservas: chaves exatas', (select array_agg(k order by k) from p, jsonb_object_keys(j -> 'reservas') k)
+  = array['canceladas', 'nao_compareceu', 'pessoas', 'proximas', 'sentadas', 'tem_tagme', 'total']);
 select teste.ok('empresa e datas', (select (j ->> 'empresa_id', j ->> 'dia_trabalho', j ->> 'ontem')
   = ('e2000000-0000-4000-8000-00000000000a'::text, '2026-10-06'::text, '2026-10-05'::text) from p));
 select teste.ok('faturamento hoje/ontem/mês e tem_zig', (select j -> 'faturamento' from p)

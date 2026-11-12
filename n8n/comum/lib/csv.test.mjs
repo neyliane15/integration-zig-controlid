@@ -14,7 +14,7 @@ const FECHAMENTO = {
   itens: [
     { funcionario_nome: 'Ana Souza', cargo: 'Garçom', incluido: true, pontos: 10, dias_trabalhados: 30, pontos_efetivos: 10, valor_centavos: 209474 },
     { funcionario_nome: 'Bruno Lima', cargo: 'Garçom', incluido: true, pontos: 10, dias_trabalhados: 30, pontos_efetivos: 10, valor_centavos: 209474 },
-    { funcionario_nome: 'Carla Dias', cargo: 'Cumim', incluido: true, pontos: 6, dias_trabalhados: 30, pontos_efetivos: 6, valor_centavos: 125684 },
+    { funcionario_nome: 'Carla Dias', cargo: 'Cumim', incluido: true, pontos: 6, dias_trabalhados: 30, pontos_extras: 0, pontos_efetivos: 6, valor_centavos: 125684 },
     { funcionario_nome: 'Davi Rocha', cargo: 'Bartender', incluido: true, pontos: 8, dias_trabalhados: 30, pontos_efetivos: 8, valor_centavos: 167579 },
     { funcionario_nome: 'Eva Martins', cargo: 'Cozinha', incluido: true, pontos: 4, dias_trabalhados: 15, pontos_efetivos: 4, valor_centavos: 83789 },
     { funcionario_nome: 'Fulano "Zé"; Silva', cargo: null, incluido: false, pontos: 2.5, dias_trabalhados: 0, pontos_efetivos: 0, valor_centavos: 0 },
@@ -66,14 +66,29 @@ test('csvComissao: vetor do §9', () => {
     'Serviço Zig (R$);10000,00', 'Ajuste (R$);-50,00', 'Serviço bruto (R$);9950,00', 'Retenção (%);20', 'Retenção (R$);1990,00',
     'Base distribuível (R$);7960,00', 'Valor do ponto (R$);209,47', 'Status;Fechado', '',
   ])
-  assert.equal(linhas[10], 'Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos efetivos;Valor (R$)')
-  assert.equal(linhas[11], 'Ana Souza;Garçom;Sim;10;30;10;2094,74')
-  assert.equal(linhas[14], 'Davi Rocha;Bartender;Sim;8;30;8;1675,79')
-  assert.equal(linhas[16], '"Fulano ""Zé""; Silva";;Não;2,5;0;0;0,00')
-  assert.equal(linhas[17], 'Total;;;38;;38;7960,00')
+  assert.equal(linhas[10], 'Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos extras;Pontos efetivos;Valor (R$)')
+  assert.equal(linhas[11], 'Ana Souza;Garçom;Sim;10;30;0;10;2094,74')
+  assert.equal(linhas[13], 'Carla Dias;Cumim;Sim;6;30;0;6;1256,84')
+  assert.equal(linhas[14], 'Davi Rocha;Bartender;Sim;8;30;0;8;1675,79')
+  assert.equal(linhas[16], '"Fulano ""Zé""; Silva";;Não;2,5;0;0;0;0,00')
+  assert.equal(linhas[17], 'Total;;;38;;0;38;7960,00')
   // Σ valores = base
   const soma = FECHAMENTO.itens.reduce((s, i) => s + i.valor_centavos, 0)
   assert.equal(soma, 796000)
+})
+
+test('csvComissao: pontos extras (adendo E.1) — coluna própria; Σ só dos incluídos', () => {
+  const itens = [
+    { funcionario_nome: 'Ana Souza', cargo: 'Garçom', incluido: true, pontos: 10, dias_trabalhados: 30, pontos_extras: 0, pontos_efetivos: 10, valor_centavos: 212267 },
+    { funcionario_nome: 'Carla Dias', cargo: 'Cumim', incluido: true, pontos: 6, dias_trabalhados: 30, pontos_extras: 1.5, pontos_efetivos: 7.5, valor_centavos: 159200 },
+    { funcionario_nome: 'Fábio Nunes', cargo: 'Garçom', incluido: true, pontos: 0, dias_trabalhados: 4, pontos_extras: '3.00', pontos_efetivos: 3, valor_centavos: 56857 },
+    { funcionario_nome: 'Gil Prado', cargo: 'Garçom', incluido: false, pontos: 4, dias_trabalhados: 10, pontos_extras: 2, pontos_efetivos: 0, valor_centavos: 0 },
+  ]
+  const linhas = csvComissao({ fechamento: FECHAMENTO.fechamento, itens }).conteudo.split('\r\n')
+  assert.equal(linhas[12], 'Carla Dias;Cumim;Sim;6;30;1,5;7,5;1592,00')
+  assert.equal(linhas[13], 'Fábio Nunes;Garçom;Sim;0;4;3;3;568,57')
+  assert.equal(linhas[14], 'Gil Prado;Garçom;Não;4;10;2;0;0,00')
+  assert.equal(linhas[15], 'Total;;;16;;4,5;20,5;7960,00')
 })
 
 test('csvComissao: sem participantes → valor do ponto vazio', () => {

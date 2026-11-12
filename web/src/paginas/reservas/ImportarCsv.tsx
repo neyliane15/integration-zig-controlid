@@ -206,7 +206,7 @@ export function ImportarCsv({
                         <td className="px-3 py-2 text-creme">{r.nome}</td>
                         <td className="numero px-3 py-2">{formatarData(r.data)}</td>
                         <td className="numero px-3 py-2">{r.hora ?? '—'}</td>
-                        <td className="numero px-3 py-2 text-right">{r.pessoas}</td>
+                        <td className="numero px-3 py-2 text-right">{r.pessoas ?? 1}</td>
                         <td className="px-3 py-2">{rotuloStatusReserva[r.status]}</td>
                       </tr>
                     ))}

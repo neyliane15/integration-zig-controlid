@@ -1,6 +1,7 @@
 -- =====================================================================================================
 -- 20261006000240_painel.sql — backend-2
 -- painel_do_dia: resumo do dia de trabalho (faturamento, serviço, ponto, tarefas, sincronização). Contrato §10.7.
+-- + blocos reservas e ocorrencias (docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md, R.4).
 -- =====================================================================================================
 
 create or replace function public.painel_do_dia(p_empresa uuid default null)
@@ -19,6 +20,7 @@ declare
   v_virada    time;
   v_presentes int := 0;
   v_escalados int := 0;
+  v_operar    boolean;
 begin
   v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
   select e.fuso, e.virada_dia into v_fuso, v_virada from public.empresas e where e.id = v_empresa;
@@ -95,8 +97,13 @@ begin
     from public.integracoes i
    where i.empresa_id = v_empresa;
 
+  -- reservas e ocorrências (adendo extras/ocorrências/reservas R.4 / O.4): telefone e ocorrências só para G A M
+  v_operar := public.pode_operar(v_empresa) is true;
+
   return jsonb_build_object(
     'empresa_id', v_empresa, 'dia_trabalho', v_hoje, 'ontem', v_ontem,
-    'faturamento', v_fat, 'servico', v_serv, 'ponto', v_ponto, 'tarefas', v_tarefas, 'sincronizacao', v_sync);
+    'faturamento', v_fat, 'servico', v_serv, 'ponto', v_ponto, 'tarefas', v_tarefas, 'sincronizacao', v_sync,
+    'reservas', public.reservas_painel(v_empresa, v_hoje, v_operar),
+    'ocorrencias', case when v_operar then public.ocorrencias_resumo_empresa(v_empresa, 30) end);
 end $$;
 comment on function public.painel_do_dia(uuid) is '[api] Painel do dia de trabalho (§10.7).';

@@ -41,6 +41,8 @@ function caso(rnd: () => number, i: number, proporcionalPermitido = true): Entra
       incluido: rnd() > 0.1,
       pontos: pontosPossiveis[inteiro(0, pontosPossiveis.length - 1)]!,
       diasTrabalhados: inteiro(0, dias),
+      // adendo E.1: pontos extras (2 casas, 0 < x ≤ 9999,99) em ~35% dos participantes
+      pontosExtras: rnd() < 0.35 ? [0.5, 1, 1.5, 3, 0.01, 9999.99, inteiro(1, 99999) / 100][inteiro(0, 6)]! : 0,
     })
   }
   const escalaBase = [0, 1, 7, 99, 100, 12345, 995000, 99999999, 999999999999][inteiro(0, 8)]!
@@ -74,7 +76,8 @@ function referencia(e: EntradaComissao) {
   const pe = e.participantes.map((p) => {
     if (!p.incluido) return 0n
     const p6 = centesimos(p.pontos) * 10_000n
-    return e.proporcionalDias ? arred(p6 * BigInt(p.diasTrabalhados), diasPeriodo) : p6
+    const x6 = centesimos(p.pontosExtras ?? 0) * 10_000n
+    return (e.proporcionalDias ? arred(p6 * BigInt(p.diasTrabalhados), diasPeriodo) : p6) + x6
   })
   const soma = pe.reduce((s, v) => s + v, 0n)
   if (soma === 0n) return { retencao, base, valores: pe.map(() => 0n) }
@@ -130,7 +133,7 @@ describe('comissão — propriedades (fuzz, 3.000 casos)', () => {
       const r = calcularComissao(e)
       e.participantes.forEach((a, ia) =>
         e.participantes.forEach((b, ib) => {
-          if (a.incluido && b.incluido && a.pontos > b.pontos) {
+          if (a.incluido && b.incluido && a.pontos + (a.pontosExtras ?? 0) > b.pontos + (b.pontosExtras ?? 0)) {
             expect(r.itens[ia]!.valorCentavos, JSON.stringify(e)).toBeGreaterThanOrEqual(r.itens[ib]!.valorCentavos)
           }
         }),
@@ -160,10 +163,12 @@ describe.skipIf(!BANCO_ATIVO)('comissão — front × banco (fuzz, 200 casos; MD
       })
       casos.push(e)
     }
-    const empresa = 'e9900000-0000-4000-8000-00000000000a'
+    // uma empresa por caso: os pontos extras entram em qualquer fechamento da empresa que cubra a data (adendo E.1)
+    const empresaDe = (i: number) => `e99${String(i).padStart(5, '0')}-0000-4000-8000-00000000eeee`
     let sql = `begin;\nset local client_min_messages = warning;\n`
-    sql += `insert into public.empresas (id, nome) values ('${empresa}', 'Fuzz comissão');\n`
     casos.forEach((e, i) => {
+      const empresa = empresaDe(i)
+      sql += `insert into public.empresas (id, nome) values ('${empresa}', 'Fuzz comissão ${i}');\n`
       const fid = `e99${String(i).padStart(5, '0')}-0000-4000-8000-000000000000`
       sql += `insert into public.comissao_fechamentos (id, empresa_id, titulo, data_inicio, data_fim, percentual_retencao, servico_ajuste_centavos, proporcional_dias)
         values ('${fid}', '${empresa}', 'f${i}', '${e.dataInicio}', '${e.dataFim}', ${e.percentualRetencao}, ${e.servicoZigCentavos + e.servicoAjusteCentavos}, ${e.proporcionalDias});\n`
@@ -175,8 +180,12 @@ describe.skipIf(!BANCO_ATIVO)('comissão — front × banco (fuzz, 200 casos; MD
           fun = `'${id}'`
           sql += `insert into public.funcionarios (id, empresa_id, nome) values (${fun}, '${empresa}', ${sqlTexto(p.nome)});\n`
         }
-        sql += `insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, incluido, pontos, dias_trabalhados)
-          values ('${empresa}', '${fid}', ${fun}, ${sqlTexto(p.nome)}, ${p.incluido}, ${p.pontos}, ${p.diasTrabalhados});\n`
+        sql += `insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, incluido, pontos, dias_trabalhados, pontos_extras)
+          values ('${empresa}', '${fid}', ${fun}, ${sqlTexto(p.nome)}, ${p.incluido}, ${p.pontos}, ${p.diasTrabalhados}, ${p.funcionarioId ? 0 : (p.pontosExtras ?? 0)});\n`
+        // com funcionário o banco relê os extras de comissao_pontos_extras; sem funcionário (snapshot) mantém a coluna
+        if (p.funcionarioId && (p.pontosExtras ?? 0) > 0)
+          sql += `insert into public.comissao_pontos_extras (empresa_id, funcionario_id, data, pontos, motivo, criado_por_nome)
+            values ('${empresa}', ${fun}, '${e.dataInicio}', ${p.pontosExtras}, 'fuzz', 'Fuzz');\n`
       })
       // o ajuste já contém o "serviço da Zig" do caso (não há vendas nesta empresa)
       e.servicoAjusteCentavos += e.servicoZigCentavos
@@ -185,7 +194,7 @@ describe.skipIf(!BANCO_ATIVO)('comissão — front × banco (fuzz, 200 casos; MD
     })
     sql += `select json_agg(json_build_object('f', f.titulo, 'base', f.base_distribuivel_centavos, 'ret', f.retencao_centavos,
               'itens', (select json_agg(json_build_object('id', i.funcionario_id, 'nome', i.funcionario_nome, 'v', i.valor_centavos)) from public.comissao_itens i where i.fechamento_id = f.id)))
-            from public.comissao_fechamentos f where f.empresa_id = '${empresa}';\nrollback;\n`
+            from public.comissao_fechamentos f where f.empresa_id::text like 'e99%-0000-4000-8000-00000000eeee';\nrollback;\n`
     const base = process.env.MDG_PG_DIR ?? `${process.env.TMPDIR ?? '/tmp'}/mdg-postgres`
     const r = spawnSync('psql', ['-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1', '-d', process.env.MDG_PG_BANCO ?? 'mdg_local'], {
       input: sql,

@@ -229,7 +229,8 @@ export interface ReservaLida {
   nome: string
   data: string
   hora: string | null
-  pessoas: number
+  /** null = vazio no arquivo (o banco grava 1) */
+  pessoas: number | null
   status: StatusReservaCsv
   telefone: string | null
   email: string | null
@@ -253,7 +254,7 @@ function valor(l: string[], i: number | null): string {
 }
 const ouNull = (s: string) => (s === '' ? null : s)
 
-/** Converte as linhas de dados (sem o cabeçalho) usando o mapeamento. `pessoas` vazio → 2. */
+/** Converte as linhas de dados (sem o cabeçalho) usando o mapeamento. `pessoas` vazio → null (o banco grava 1). */
 export function converterReservas(dados: string[][], m: Mapeamento): ResultadoConversao {
   const reservas: ReservaLida[] = []
   const erros: ErroLinha[] = []
@@ -276,7 +277,7 @@ export function converterReservas(dados: string[][], m: Mapeamento): ResultadoCo
       nome: nome.slice(0, 200),
       data,
       hora,
-      pessoas: pessoasLidas ?? 2,
+      pessoas: pessoasLidas,
       status: lerStatusReserva(valor(l, m.status)),
       telefone: ouNull(valor(l, m.telefone)),
       email: ouNull(valor(l, m.email)),
@@ -292,10 +293,10 @@ export function converterReservas(dados: string[][], m: Mapeamento): ResultadoCo
 export const MODELO_CSV_RESERVAS =
   '﻿' +
   [
-    'Código;Nome;Data;Hora;Pessoas;Status;Telefone;E-mail;Mesa;Área;Observação',
-    'T-1001;Maria Oliveira;20/11/2026;20:00;4;Confirmada;(11) 98888-7777;maria@exemplo.com;12;Varanda;Aniversário',
-    'T-1002;João Pereira;20/11/2026;21:30;2;Pendente;(11) 97777-6666;;;Salão;',
-    'T-1003;Ana Costa;21/11/2026;19:00;6;Cancelada;;;;;Cancelou por telefone',
+    'Data;Horário;Nome;Pessoas;Telefone;E-mail;Status;Área;Mesa;Observação;Código',
+    '20/11/2026;20:00;Maria Oliveira;4;(11) 98888-7777;maria@exemplo.com;Confirmada;Varanda;12;Aniversário;T-1001',
+    '20/11/2026;21:30;João Pereira;2;(11) 97777-6666;;Pendente;Salão;;;T-1002',
+    '21/11/2026;19:00;Ana Costa;6;;;Cancelada;;;Cancelou por telefone;T-1003',
   ]
     .map((l) => l + '\r\n')
     .join('')

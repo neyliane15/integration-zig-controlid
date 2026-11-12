@@ -27,6 +27,14 @@ export const chaves = {
   sync: (empresaId: Id) => ['sync', empresaId ?? null] as const,
   usuarios: (empresaId: Id) => ['usuarios', empresaId ?? null] as const,
   empresas: () => ['empresas'] as const,
+  // adendo extras / ocorrências / reservas
+  ocorrencias: (funcionarioId: Id) => ['ocorrencias', funcionarioId ?? null] as const,
+  ocorrenciasContagem: (empresaId: Id) => ['ocorrencias-contagem', empresaId ?? null] as const,
+  pontosExtras: (empresaId: Id, inicio: string, fim: string) => ['pontos-extras', empresaId ?? null, inicio, fim] as const,
+  diarias: (empresaId: Id, inicio: string, fim: string) => ['diarias', empresaId ?? null, inicio, fim] as const,
+  valoresDiaria: (empresaId: Id) => ['valores-diaria', empresaId ?? null] as const,
+  gastos: (empresaId: Id, inicio: string, fim: string) => ['gastos', empresaId ?? null, inicio, fim] as const,
+  reservas: (empresaId: Id, inicio: string, fim: string) => ['reservas', empresaId ?? null, inicio, fim] as const,
 } as const
 
 /** Prefixos (1º elemento) para invalidar todas as variações de uma família. */
@@ -50,6 +58,13 @@ export type FamiliaConsulta =
   | 'sync'
   | 'usuarios'
   | 'empresas'
+  | 'ocorrencias'
+  | 'ocorrencias-contagem'
+  | 'pontos-extras'
+  | 'diarias'
+  | 'valores-diaria'
+  | 'gastos'
+  | 'reservas'
 
 /** Invalida famílias inteiras (qualquer empresa/parâmetro). */
 export function invalidar(qc: QueryClient, ...familias: FamiliaConsulta[]): Promise<void> {

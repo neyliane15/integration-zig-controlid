@@ -87,7 +87,7 @@ export function nomeArquivoCsv(tipo, empresa, inicio, fim) {
   return `${tipo}_${slug(empresa)}_${inicio}${fim && fim !== inicio ? `_${fim}` : ''}.csv`
 }
 
-export const COLUNAS_COMISSAO = ['Funcionário', 'Cargo', 'Incluído', 'Pontos', 'Dias trabalhados', 'Pontos efetivos', 'Valor (R$)']
+export const COLUNAS_COMISSAO = ['Funcionário', 'Cargo', 'Incluído', 'Pontos', 'Dias trabalhados', 'Pontos extras', 'Pontos efetivos', 'Valor (R$)']
 
 const ROTULO_STATUS_FECHAMENTO = { rascunho: 'Rascunho', fechado: 'Fechado' }
 
@@ -97,8 +97,9 @@ const ROTULO_STATUS_FECHAMENTO = { rascunho: 'Rascunho', fechado: 'Fechado' }
  * Retorna `{ nome, conteudo, linhas }`.
  *  - preâmbulo: Período; Serviço Zig (R$); Ajuste (R$); Serviço bruto (R$); Retenção (%); Retenção (R$);
  *    Base distribuível (R$); Valor do ponto (R$) (centavos arredondados); Status — e uma linha em branco;
- *  - itens na ordem recebida (o banco ordena por nome); `Incluído` Sim/Não;
- *  - linha final `Total;;;<Σ pontos dos incluídos>;;<Σ pontos efetivos>;<base distribuível>`.
+ *  - itens na ordem recebida (o banco ordena por nome); `Incluído` Sim/Não; `Pontos extras` = numeroCsv(pontos_extras ?? 0, 2)
+ *    (adendo extras/ocorrências/reservas, E.1);
+ *  - linha final `Total;;;<Σ pontos dos incluídos>;;<Σ pontos extras dos incluídos>;<Σ pontos efetivos>;<base distribuível>`.
  */
 export function csvComissao(dados) {
   const f = (dados && dados.fechamento) || {}
@@ -117,10 +118,12 @@ export function csvComissao(dados) {
     ['Status', ROTULO_STATUS_FECHAMENTO[f.status] || f.status || ''],
   ]
   let somaPontos = 0
+  let somaExtras = 0
   let somaPe = 0
   const linhas = itens.map((i) => {
     const incluido = i.incluido !== false
     if (incluido) somaPontos += Number(i.pontos) || 0
+    if (incluido) somaExtras += Number(i.pontos_extras) || 0
     somaPe += Number(i.pontos_efetivos) || 0
     return [
       i.funcionario_nome ?? '',
@@ -128,11 +131,12 @@ export function csvComissao(dados) {
       incluido,
       numeroCsv(i.pontos, 2),
       i.dias_trabalhados ?? 0,
+      numeroCsv(i.pontos_extras ?? 0, 2),
       numeroCsv(i.pontos_efetivos, 6),
       centavosCsv(i.valor_centavos ?? 0),
     ]
   })
-  linhas.push(['Total', '', '', numeroCsv(somaPontos, 2), '', numeroCsv(somaPe, 6), centavosCsv(f.base_distribuivel_centavos ?? 0)])
+  linhas.push(['Total', '', '', numeroCsv(somaPontos, 2), '', numeroCsv(somaExtras, 2), numeroCsv(somaPe, 6), centavosCsv(f.base_distribuivel_centavos ?? 0)])
   return {
     nome: nomeArquivoCsv('comissao', f.empresa_nome || 'empresa', f.data_inicio, f.data_fim),
     conteudo: gerarCsv(COLUNAS_COMISSAO, linhas, preambulo),

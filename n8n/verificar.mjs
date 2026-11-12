@@ -84,9 +84,38 @@ function libTransformada(rel) {
 }
 
 /** Confere (e opcionalmente corrige) as cópias `// @lib` de um código. Retorna { codigo, problemas[] }. */
+const MARCA_USO = '\n// ---------------------------------------------------------------- uso neste nó'
+
+/** Declarações de topo repetidas (sinal de cópia de lib duplicada: `const` repetido nem compila no N8N). */
+function declaracoesRepetidas(codigo) {
+  const vistos = new Map()
+  for (const m of codigo.matchAll(/^(?:async )?(?:function\*? |const |let |class )([A-Za-z_$][\w$]*)/gm)) vistos.set(m[1], (vistos.get(m[1]) || 0) + 1)
+  return [...vistos].filter(([, n]) => n > 1).map(([nome]) => nome)
+}
+
 function conferirLibs(codigo) {
   const problemas = []
   const texto = codigo.replace(/\r\n/g, '\n')
+  // Formato do n8n-2 (libs em sequência + "uso neste nó"): reconstrói a partir das marcas — robusto mesmo com cópia duplicada.
+  const uso = texto.indexOf(MARCA_USO)
+  if (uso > 0) {
+    const cabeca = texto.slice(0, uso)
+    const rels = [...cabeca.matchAll(/^\/\/ @lib (\S+)[ \t]*$/gm)].map((m) => m[1])
+    if (rels.length && cabeca.startsWith('// @lib ')) {
+      let novo = ''
+      for (const rel of rels) {
+        const lib = libTransformada(rel)
+        if (lib === null) { problemas.push(`lib "${rel}" não existe`); return { codigo, problemas, alterado: false } }
+        novo += `// @lib ${rel}\n${lib}\n\n`
+      }
+      novo = novo.replace(/\n+$/, '\n') + texto.slice(uso)
+      if (novo !== texto) {
+        const dup = declaracoesRepetidas(cabeca)
+        problemas.push(dup.length ? `cópias de lib duplicadas (${dup.slice(0, 3).join(', ')}…) — rode a cópia de novo` : `cópia de "${rels.join('", "')}" diferente da lib — rode a cópia de novo`)
+      }
+      return { codigo: novo, problemas, alterado: novo !== texto }
+    }
+  }
   const re = /^\/\/ @lib (\S+)[ \t]*$/gm
   const marcas = [...texto.matchAll(re)]
   if (!marcas.length) return { codigo, problemas, alterado: false }
@@ -198,6 +227,8 @@ function verificarArquivo(p, nomesVistos) {
       if (!campo) { if (n.parameters?.language !== 'python') erro(arq, `${onde}: nó Code sem jsCode`); continue }
       const r = conferirLibs(n.parameters.jsCode)
       for (const prob of r.problemas) erro(arq, `${onde}: ${prob}`)
+      const dup = declaracoesRepetidas(n.parameters.jsCode)
+      if (dup.length && !r.problemas.length) erro(arq, `${onde}: declarações repetidas no código (${dup.slice(0, 5).join(', ')})`)
       if (r.alterado && ATUALIZAR && DONO_N2(arq)) n.parameters.jsCode = r.codigo
     }
   }
