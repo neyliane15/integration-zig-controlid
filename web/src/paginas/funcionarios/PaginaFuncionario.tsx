@@ -12,6 +12,7 @@ import {
   Cartao,
   Entrada,
   EntradaData,
+  EntradaMoeda,
   ErroCarga,
   Interruptor,
   Selecao,
@@ -23,6 +24,9 @@ import { useAvisos } from '@/componentes/avisos'
 import { BotaoLink } from '@/componentes/dominio/BotaoLink'
 import { VinculoControlId } from '@/componentes/dominio/VinculoControlId'
 import { CredenciaisControlId, EstadoEnvioControlId } from '@/componentes/dominio/EnvioControlId'
+import { ListaOcorrencias } from '@/componentes/dominio/Ocorrencias'
+import { textoContagem, useContagemOcorrencias } from '@/consultas/ocorrencias'
+import { useDefinirValorDiaria, useValoresDiaria } from '@/consultas/extras'
 import {
   useContextoEmpresa,
   useDefinirJornadaFuncionario,
@@ -45,7 +49,7 @@ import { podeAdministrar, podeOperar } from '@/lib/permissoes'
 import { formatarData, formatarDataHora, normalizar } from '@/lib/formato'
 import { descreverFaixasHorario } from './horariosAcesso'
 
-type Aba = 'dados' | 'vinculos' | 'comissao' | 'jornada' | 'controlid'
+type Aba = 'dados' | 'vinculos' | 'comissao' | 'jornada' | 'ocorrencias' | 'controlid'
 
 interface Formulario {
   nome: string
@@ -174,16 +178,26 @@ function Ficha({ funcionario }: { funcionario: Funcionario | null }) {
   const [form, setForm] = useState<Formulario>(() => (funcionario ? paraFormulario(funcionario) : VAZIO))
   const [tentou, setTentou] = useState(false)
   const idForm = useId()
+  // valor padrão da diária (adendo E.2): tabela própria, só G A M
+  const valores = useValoresDiaria(operar)
+  const definirDiaria = useDefinirValorDiaria()
+  const diariaSalva = funcionario ? (valores.data?.get(funcionario.id) ?? null) : null
+  const [diariaEditada, setDiariaEditada] = useState<number | null | undefined>(undefined)
+  const diaria = diariaEditada === undefined ? diariaSalva : diariaEditada
+  const diariaAlterada = operar && diaria !== diariaSalva
+  const contagem = useContagemOcorrencias(operar && !!funcionario)
+  const minhas = funcionario ? contagem.data?.get(funcionario.id) : undefined
 
   useEffect(() => {
     if (funcionario) setForm(paraFormulario(funcionario))
   }, [funcionario])
 
   const erros = tentou ? validar(form) : {}
-  const alterado = useMemo(
-    () => JSON.stringify(paraDados(form)) !== JSON.stringify(funcionario ? paraDados(paraFormulario(funcionario)) : paraDados(VAZIO)),
-    [form, funcionario],
-  )
+  const alterado =
+    useMemo(
+      () => JSON.stringify(paraDados(form)) !== JSON.stringify(funcionario ? paraDados(paraFormulario(funcionario)) : paraDados(VAZIO)),
+      [form, funcionario],
+    ) || diariaAlterada
   const cargos = useMemo(
     () => [...new Set((todos.data ?? []).map((f) => f.cargo?.trim()).filter((c): c is string => !!c))].sort(),
     [todos.data],
@@ -205,6 +219,10 @@ function Ficha({ funcionario }: { funcionario: Funcionario | null }) {
     }
     try {
       const novoId = await salvar.mutateAsync({ id: funcionario?.id, dados: paraDados(form) })
+      if (diariaAlterada) {
+        await definirDiaria.mutateAsync({ funcionarioId: novoId, centavos: diaria })
+        setDiariaEditada(undefined)
+      }
       avisos.sucesso(funcionario ? 'Funcionário salvo' : 'Funcionário cadastrado')
       setTentou(false)
       if (!funcionario) navegar(`/funcionarios/${novoId}`, { replace: true })
@@ -263,13 +281,18 @@ function Ficha({ funcionario }: { funcionario: Funcionario | null }) {
     }
   }
 
-  const abas: { id: Aba; rotulo: ReactNode }[] = funcionario
+  const abas: { id: Aba; rotulo: ReactNode; contador?: number }[] = funcionario
     ? [
         { id: 'dados', rotulo: 'Dados' },
         { id: 'vinculos', rotulo: 'Vínculos' },
         { id: 'comissao', rotulo: 'Comissão' },
         { id: 'jornada', rotulo: 'Jornada' },
-        ...(operar ? [{ id: 'controlid' as const, rotulo: 'Control iD' }] : []),
+        ...(operar
+          ? [
+              { id: 'ocorrencias' as const, rotulo: 'Ocorrências', contador: (minhas?.advertencias ?? 0) + (minhas?.suspensoes ?? 0) || undefined },
+              { id: 'controlid' as const, rotulo: 'Control iD' },
+            ]
+          : []),
       ]
     : [
         { id: 'dados', rotulo: 'Dados' },
@@ -293,6 +316,16 @@ function Ficha({ funcionario }: { funcionario: Funcionario | null }) {
               {funcionario.ativo ? <Selo tom="sucesso">Ativo</Selo> : <Selo>Inativo</Selo>}
               {funcionario.matricula && <span className="numero">matrícula {funcionario.matricula}</span>}
               {funcionario.data_desligamento && <span>desligado em {formatarData(funcionario.data_desligamento)}</span>}
+              {minhas && (minhas.advertencias > 0 || minhas.suspensoes > 0) && (
+                <button
+                  type="button"
+                  onClick={() => setAba('ocorrencias')}
+                  className="rounded-pilula focus-visible:outline-2 focus-visible:outline-ouro"
+                  aria-label={`Ocorrências: ${textoContagem(minhas.advertencias, minhas.suspensoes)}`}
+                >
+                  <Selo tom={minhas.suspensoes > 0 ? 'perigo' : 'alerta'}>{textoContagem(minhas.advertencias, minhas.suspensoes)}</Selo>
+                </button>
+              )}
             </span>
           ) : (
             'A matrícula em branco é gerada automaticamente (é o “registration” no Control iD).'
@@ -341,12 +374,22 @@ function Ficha({ funcionario }: { funcionario: Funcionario | null }) {
                   )}
                 </div>
               )}
-              {aba === 'comissao' && <AbaComissao form={form} mudar={mudar} erros={erros} funcionarioId={funcionario?.id ?? null} operar={operar} />}
+              {aba === 'comissao' && (
+                <AbaComissao
+                  form={form}
+                  mudar={mudar}
+                  erros={erros}
+                  funcionarioId={funcionario?.id ?? null}
+                  operar={operar}
+                  diaria={diaria}
+                  aoMudarDiaria={setDiariaEditada}
+                />
+              )}
             </fieldset>
             {operar && (
               <div className="sticky bottom-0 z-10 -mx-4 mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-borda bg-noite/90 px-4 py-3 backdrop-blur sm:mx-0 sm:rounded-entrada sm:border">
                 {alterado && <span className="mr-auto text-sm text-ouro-claro">Alterações não salvas</span>}
-                <Botao type="submit" carregando={salvar.isPending} icone={<Save aria-hidden className="size-4" />} disabled={!alterado && !!funcionario}>
+                <Botao type="submit" carregando={salvar.isPending || definirDiaria.isPending} icone={<Save aria-hidden className="size-4" />} disabled={!alterado && !!funcionario}>
                   {funcionario ? 'Salvar' : 'Cadastrar'}
                 </Botao>
               </div>
@@ -354,6 +397,7 @@ function Ficha({ funcionario }: { funcionario: Funcionario | null }) {
           </form>
         )}
         {aba === 'jornada' && funcionario && <AbaJornada funcionario={funcionario} operar={operar} />}
+        {aba === 'ocorrencias' && funcionario && operar && <ListaOcorrencias funcionarioId={funcionario.id} funcionarioNome={funcionario.nome} />}
         {aba === 'controlid' && funcionario && operar && <AbaControlId funcionario={funcionario} />}
       </div>
     </div>
@@ -506,12 +550,16 @@ function AbaComissao({
   erros,
   funcionarioId,
   operar,
+  diaria,
+  aoMudarDiaria,
 }: {
   form: Formulario
   mudar: Mudar
   erros: Partial<Record<keyof Formulario, string>>
   funcionarioId: string | null
   operar: boolean
+  diaria: number | null
+  aoMudarDiaria(c: number | null): void
 }) {
   const id = useId()
   const historico = usePontosFuncionario(operar ? funcionarioId : null)
@@ -537,6 +585,17 @@ function AbaComissao({
           <Interruptor rotulo="Participa da comissão" marcado={form.participa_comissao} aoMudar={(v) => mudar('participa_comissao', v)} />
         </div>
       </Cartao>
+      {operar && (
+        <Cartao titulo="Diária" sobrancelha="Valor padrão">
+          <Campo
+            rotulo="Valor padrão da diária"
+            htmlFor={`${id}-diaria`}
+            ajuda="Pré-preenche o valor ao lançar uma diária em Extras. Em branco: sem valor padrão."
+          >
+            <EntradaMoeda id={`${id}-diaria`} centavos={diaria} aoMudar={aoMudarDiaria} />
+          </Campo>
+        </Cartao>
+      )}
       {funcionarioId && operar && (
         <Cartao titulo="Histórico de pontos" sobrancelha="Vigências">
           {historico.error ? (

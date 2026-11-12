@@ -319,7 +319,7 @@ Dá para descobri-lo pelo navegador e passar ao técnico:
 6. Passe **só isso** ao técnico. **Nunca envie token, cookie ou senha** por e-mail/WhatsApp; o valor é colado por você diretamente
    no campo **Credenciais → Token** da integração.
 
-> ⚠️ **Avisos**: usar o endereço interno do painel **não é oficial**, pode **mudar sem aviso** (a sincronização para de funcionar),
+> **Atenção**: usar o endereço interno do painel **não é oficial**, pode **mudar sem aviso** (a sincronização para de funcionar),
 > o cookie/token de sessão **expira** (precisa ser colado de novo) e o uso depende dos **termos de uso da Tagme** — confira antes. O
 > caminho certo continua sendo o acesso de parceiro (§7.1). Os dados de clientes (nome, telefone, e-mail) são pessoais (LGPD): o
 > sistema só guarda o necessário e esconde telefone/e-mail de quem só tem leitura.

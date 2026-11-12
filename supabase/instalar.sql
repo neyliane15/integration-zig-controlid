@@ -1019,7 +1019,7 @@ end $$;
 create table if not exists public.integracoes (
   id                   uuid primary key default gen_random_uuid(),
   empresa_id           uuid not null references public.empresas (id) on delete cascade,
-  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep')),
+  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')),
   nome                 text not null check (btrim(nome) <> ''),
   ativa                boolean not null default true,
   parametros           jsonb not null default '{}'::jsonb,
@@ -1034,7 +1034,11 @@ create table if not exists public.integracoes (
 );
 create index if not exists integracoes_empresa_idx on public.integracoes (empresa_id);
 create unique index if not exists integracoes_zig_uk on public.integracoes (empresa_id) where tipo = 'zig';
-comment on table public.integracoes is '[api:crud] Integrações (Zig, Control iD acesso/REP). Segredos ficam em integracoes_segredos.';
+comment on table public.integracoes is '[api:crud] Integrações (Zig, Control iD acesso/REP, Tagme). Segredos ficam em integracoes_segredos.';
+-- (adendo extras/ocorrências/reservas) bancos já instalados: check do tipo com 'tagme'.
+alter table public.integracoes drop constraint if exists integracoes_tipo_check;
+alter table public.integracoes add constraint integracoes_tipo_check
+  check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme'));
 
 create table if not exists public.integracoes_segredos (
   integracao_id  uuid primary key references public.integracoes (id) on delete cascade,
@@ -1073,7 +1077,7 @@ create table if not exists public.sync_solicitacoes (
   id              uuid primary key default gen_random_uuid(),
   empresa_id      uuid not null references public.empresas (id) on delete cascade,
   integracao_id   uuid references public.integracoes (id) on delete cascade,
-  escopo          text not null check (escopo in ('tudo', 'funcionarios', 'batidas', 'vendas',
+  escopo          text not null check (escopo in ('tudo', 'funcionarios', 'batidas', 'vendas', 'reservas',
                                                   'exportar_funcionarios', 'apurar_ponto', 'exportar_fechamento')),
   data_inicio     date,
   data_fim        date,
@@ -1093,6 +1097,10 @@ create index if not exists sync_solicitacoes_integracao_idx on public.sync_solic
 create index if not exists sync_solicitacoes_fila_idx on public.sync_solicitacoes (solicitado_em) where status = 'pendente';
 create index if not exists sync_solicitacoes_solicitado_por_idx on public.sync_solicitacoes (solicitado_por);
 comment on table public.sync_solicitacoes is '[api:leitura] Fila do "Sincronizar agora" (escrita por sync_solicitar).';
+alter table public.sync_solicitacoes drop constraint if exists sync_solicitacoes_escopo_check;
+alter table public.sync_solicitacoes add constraint sync_solicitacoes_escopo_check
+  check (escopo in ('tudo', 'funcionarios', 'batidas', 'vendas', 'reservas',
+                    'exportar_funcionarios', 'apurar_ponto', 'exportar_fechamento'));
 
 -- ================================================================================= sync_execucoes
 create table if not exists public.sync_execucoes (
@@ -1102,7 +1110,7 @@ create table if not exists public.sync_execucoes (
   solicitacao_id       uuid references public.sync_solicitacoes (id) on delete set null,
   tipo                 text not null check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                          'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
-                         'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento')),
+                         'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar')),
   gatilho              text not null check (gatilho in ('agendado', 'manual', 'webhook')),
   workflow             text not null,
   n8n_execution_id     text,
@@ -1122,6 +1130,11 @@ create index if not exists sync_execucoes_empresa_idx on public.sync_execucoes (
 create index if not exists sync_execucoes_integracao_idx on public.sync_execucoes (integracao_id, iniciado_em desc);
 create index if not exists sync_execucoes_solicitacao_idx on public.sync_execucoes (solicitacao_id);
 comment on table public.sync_execucoes is '[api:leitura] Execuções dos workflows N8N (escritas pelo serviço).';
+alter table public.sync_execucoes drop constraint if exists sync_execucoes_tipo_check;
+alter table public.sync_execucoes add constraint sync_execucoes_tipo_check
+  check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
+                  'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
+                  'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar'));
 
 -- ====================================================================================== gatilhos
 -- Parâmetros padrão por tipo (§11.1); as chaves informadas prevalecem.
@@ -1134,6 +1147,7 @@ as $$
     when 'controlid_acesso' then
       '{"modelo": "iDFace", "dias_retroativos": 2, "eventos_validos": [7], "relogio_em_hora_local": true}'::jsonb
     when 'controlid_rep' then '{"modelo": "iDClass", "dias_retroativos": 2, "identificador": "cpf"}'::jsonb
+    when 'tagme' then '{"url_base": "", "restaurante_id": "", "dias_retroativos": 1, "dias_a_frente": 7}'::jsonb
     else '{}'::jsonb
   end
 $$;
@@ -1344,6 +1358,7 @@ as $$
     when 'zig' then array['token']
     when 'controlid_acesso' then array['url', 'login', 'senha']
     when 'controlid_rep' then array['url', 'login', 'senha']
+    when 'tagme' then array['token', 'cliente_id', 'cliente_segredo']
     else array[]::text[]
   end
 $$;
@@ -1418,10 +1433,11 @@ language sql immutable
 set search_path = public, extensions, pg_temp
 as $$
   select case p_escopo
-    when 'tudo' then p_tipo in ('zig', 'controlid_acesso', 'controlid_rep')
+    when 'tudo' then p_tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')
     when 'funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep')
     when 'batidas' then p_tipo in ('controlid_acesso', 'controlid_rep')
     when 'vendas' then p_tipo = 'zig'
+    when 'reservas' then p_tipo = 'tagme'
     when 'exportar_funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep')
     else false
   end
@@ -1445,7 +1461,7 @@ declare
   v_existe boolean;
   r record;
 begin
-  if p_escopo is null or p_escopo not in ('tudo', 'funcionarios', 'batidas', 'vendas', 'exportar_funcionarios',
+  if p_escopo is null or p_escopo not in ('tudo', 'funcionarios', 'batidas', 'vendas', 'reservas', 'exportar_funcionarios',
                                          'apurar_ponto', 'exportar_fechamento') then
     raise exception 'Escopo inválido' using errcode = '22023';
   end if;
@@ -3301,7 +3317,7 @@ create table if not exists public.ponto_dias (
   primeira_batida     timestamptz,
   ultima_batida       timestamptz,
   situacao            text not null check (situacao in ('completo', 'incompleto', 'ausente', 'folga',
-                                                        'sem_escala', 'abonado', 'em_andamento')),
+                                                        'sem_escala', 'abonado', 'suspenso', 'em_andamento')),
   encerrado           boolean not null,
   alarmes_abertos     smallint not null default 0,
   apurado_em          timestamptz not null default now(),
@@ -3363,8 +3379,10 @@ create table if not exists public.ponto_abonos (
   empresa_id      uuid not null references public.empresas (id) on delete cascade,
   funcionario_id  uuid references public.funcionarios (id) on delete cascade,
   data            date not null,
-  tipo            text not null check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro')),
+  tipo            text not null check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro',
+                                                'suspensao')),
   motivo          text,
+  ocorrencia_id   uuid,          -- abono gerado por suspensão (FK para funcionario_ocorrencias criada em …0250)
   criado_por      uuid references public.perfis (id) on delete set null,
   criado_em       timestamptz not null default now(),
   constraint ponto_abonos_uk unique nulls not distinct (empresa_id, funcionario_id, data)
@@ -3372,6 +3390,15 @@ create table if not exists public.ponto_abonos (
 create index if not exists ponto_abonos_funcionario_idx on public.ponto_abonos (funcionario_id, data);
 create index if not exists ponto_abonos_criado_por_idx on public.ponto_abonos (criado_por);
 comment on table public.ponto_abonos is '[api:leitura] Abonos (folga, feriado, férias, atestado...). funcionario_id null = empresa toda.';
+-- (adendo extras/ocorrências/reservas) suspensão: abono 'suspensao' gerado pela ocorrência; situação 'suspenso'.
+alter table public.ponto_abonos add column if not exists ocorrencia_id uuid;
+create index if not exists ponto_abonos_ocorrencia_idx on public.ponto_abonos (ocorrencia_id);
+alter table public.ponto_abonos drop constraint if exists ponto_abonos_tipo_check;
+alter table public.ponto_abonos add constraint ponto_abonos_tipo_check
+  check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro', 'suspensao'));
+alter table public.ponto_dias drop constraint if exists ponto_dias_situacao_check;
+alter table public.ponto_dias add constraint ponto_dias_situacao_check
+  check (situacao in ('completo', 'incompleto', 'ausente', 'folga', 'sem_escala', 'abonado', 'suspenso', 'em_andamento'));
 
 -- ======================================================= banco_horas_lancamentos
 create table if not exists public.banco_horas_lancamentos (
@@ -3765,6 +3792,7 @@ begin
 
   -- 7. Situação
   if not v_encerrado then v_situacao := 'em_andamento';
+  elsif v_abono = 'suspensao' then v_situacao := 'suspenso';
   elsif v_abono is not null then v_situacao := 'abonado';
   elsif v_k = 0 and v_n = 0 then v_situacao := case when j.id is null then 'sem_escala' else 'folga' end;
   elsif v_n = 0 then v_situacao := 'ausente';
@@ -4327,6 +4355,11 @@ begin
   if p_tipo is null or p_tipo not in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro') then
     raise exception 'Tipo de abono inválido' using errcode = '22023';
   end if;
+  if p_funcionario is not null and exists (
+       select 1 from public.ponto_abonos a
+        where a.funcionario_id = p_funcionario and a.data between p_inicio and p_fim and a.ocorrencia_id is not null) then
+    raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
 
   insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por)
   select v_empresa, p_funcionario, g::date, p_tipo, nullif(btrim(p_motivo), ''), auth.uid()
@@ -4351,6 +4384,9 @@ begin
   select * into a from public.ponto_abonos where id = p_abono;
   if not found then raise exception 'Abono não encontrado' using errcode = 'P0002'; end if;
   if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if a.ocorrencia_id is not null then
+    raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
   delete from public.ponto_abonos where id = p_abono;
   if a.funcionario_id is not null then
     perform public.ponto_apurar(a.funcionario_id, a.data, a.data);
@@ -4426,7 +4462,7 @@ declare
   v_saldo   bigint;
   r         record;
   v_rotulos constant jsonb := '{"completo":"Completo","incompleto":"Incompleto","ausente":"Ausente","folga":"Folga",
-     "sem_escala":"Sem escala","abonado":"Abonado","em_andamento":"Em andamento"}'::jsonb;
+     "sem_escala":"Sem escala","abonado":"Abonado","suspenso":"Suspenso","em_andamento":"Em andamento"}'::jsonb;
 begin
   select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
   if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
@@ -4815,6 +4851,25 @@ create table if not exists public.comissao_itens (
 create index if not exists comissao_itens_empresa_idx on public.comissao_itens (empresa_id);
 create index if not exists comissao_itens_funcionario_idx on public.comissao_itens (funcionario_id);
 comment on table public.comissao_itens is '[api:leitura] Itens (participantes) de um fechamento de comissão.';
+-- (adendo extras) pontos extras somados aos pontos efetivos (não proporcionalizados).
+alter table public.comissao_itens add column if not exists pontos_extras numeric(10,2) not null default 0;
+
+-- ================================================================ pontos extras (adendo E.1)
+create table if not exists public.comissao_pontos_extras (
+  id               uuid primary key default gen_random_uuid(),
+  empresa_id       uuid not null references public.empresas (id) on delete cascade,
+  funcionario_id   uuid not null references public.funcionarios (id) on delete cascade,
+  data             date not null,
+  pontos           numeric(8,2) not null check (pontos > 0 and pontos <= 9999.99),
+  motivo           text not null check (btrim(motivo) <> ''),
+  criado_por       uuid references public.perfis (id) on delete set null,
+  criado_por_nome  text not null,
+  criado_em        timestamptz not null default now()
+);
+create index if not exists comissao_pontos_extras_empresa_idx on public.comissao_pontos_extras (empresa_id, data);
+create index if not exists comissao_pontos_extras_funcionario_idx on public.comissao_pontos_extras (funcionario_id, data);
+create index if not exists comissao_pontos_extras_criado_por_idx on public.comissao_pontos_extras (criado_por);
+comment on table public.comissao_pontos_extras is '[api:leitura] Pontos extras de comissão por funcionário e data (entram no fechamento do período).';
 
 alter table public.comissao_fechamentos enable row level security;
 alter table public.comissao_itens enable row level security;
@@ -4823,6 +4878,10 @@ create policy comissao_fechamentos_ler on public.comissao_fechamentos for select
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
 drop policy if exists comissao_itens_ler on public.comissao_itens;
 create policy comissao_itens_ler on public.comissao_itens for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+alter table public.comissao_pontos_extras enable row level security;
+drop policy if exists comissao_pontos_extras_ler on public.comissao_pontos_extras;
+create policy comissao_pontos_extras_ler on public.comissao_pontos_extras for select to authenticated
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
 
 -- ================================================================ gatilhos
@@ -4941,7 +5000,21 @@ begin
   v_base := v_bruto - v_ret;
   v_dias := fc.data_fim - fc.data_inicio + 1;
 
-  -- 5–6. dias trabalhados e pontos efetivos
+  -- 4b. (adendo E.1) quem tem pontos extras no período entra (pontos base 0) e os extras são relidos
+  insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, pontos)
+  select fc.empresa_id, p_fechamento, f.id, f.nome, f.cargo, 0
+    from public.funcionarios f
+   where f.empresa_id = fc.empresa_id
+     and exists (select 1 from public.comissao_pontos_extras x
+                  where x.funcionario_id = f.id and x.data between fc.data_inicio and fc.data_fim)
+     and not exists (select 1 from public.comissao_itens it where it.fechamento_id = p_fechamento and it.funcionario_id = f.id);
+  update public.comissao_itens it
+     set pontos_extras = coalesce((select sum(x.pontos) from public.comissao_pontos_extras x
+                                    where x.funcionario_id = it.funcionario_id
+                                      and x.data between fc.data_inicio and fc.data_fim), 0)
+   where it.fechamento_id = p_fechamento and it.funcionario_id is not null;
+
+  -- 5–6. dias trabalhados e pontos efetivos (extras somados depois da proporção, sem proporcionalizar)
   update public.comissao_itens it
      set dias_trabalhados = case when it.funcionario_id is null then it.dias_trabalhados
                                  else (select count(*) from public.ponto_dias d
@@ -4951,8 +5024,8 @@ begin
    where it.fechamento_id = p_fechamento;
   update public.comissao_itens it
      set pontos_efetivos = case when not it.incluido then 0
-                                when fc.proporcional_dias then round(it.pontos * it.dias_trabalhados / v_dias, 6)
-                                else it.pontos end
+                                when fc.proporcional_dias then round(it.pontos * it.dias_trabalhados / v_dias, 6) + it.pontos_extras
+                                else it.pontos + it.pontos_extras end
    where it.fechamento_id = p_fechamento;
 
   select coalesce(sum(it.pontos_efetivos), 0) into v_soma from public.comissao_itens it where it.fechamento_id = p_fechamento;
@@ -5096,10 +5169,16 @@ returns void language plpgsql security definer set search_path = public, extensi
 declare fc public.comissao_fechamentos;
 begin
   fc := public.comissao_rascunho_para_editar(p_fechamento);
-  delete from public.comissao_itens where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
+  if exists (select 1 from public.comissao_pontos_extras x
+              where x.funcionario_id = p_funcionario and x.data between fc.data_inicio and fc.data_fim) then
+    -- com extras no período ele voltaria no próximo cálculo: só desmarca (adendo E.1)
+    update public.comissao_itens set incluido = false where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
+  else
+    delete from public.comissao_itens where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
+  end if;
   perform public.comissao_calcular(p_fechamento);
 end $$;
-comment on function public.comissao_remover_item(uuid, uuid) is '[api] Remove participante do rascunho e recalcula.';
+comment on function public.comissao_remover_item(uuid, uuid) is '[api] Remove participante do rascunho (com extras no período: só desmarca) e recalcula.';
 
 create or replace function public.comissao_recalcular(p_fechamento uuid)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -5643,6 +5722,7 @@ comment on function public.ingestao_fechamento_exportar(uuid) is '[servico] Fech
 -- =====================================================================================================
 -- 20261006000240_painel.sql — backend-2
 -- painel_do_dia: resumo do dia de trabalho (faturamento, serviço, ponto, tarefas, sincronização). Contrato §10.7.
+-- + blocos reservas e ocorrencias (docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md, R.4).
 -- =====================================================================================================
 
 create or replace function public.painel_do_dia(p_empresa uuid default null)
@@ -5661,6 +5741,7 @@ declare
   v_virada    time;
   v_presentes int := 0;
   v_escalados int := 0;
+  v_operar    boolean;
 begin
   v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
   select e.fuso, e.virada_dia into v_fuso, v_virada from public.empresas e where e.id = v_empresa;
@@ -5737,13 +5818,1141 @@ begin
     from public.integracoes i
    where i.empresa_id = v_empresa;
 
+  -- reservas e ocorrências (adendo extras/ocorrências/reservas R.4 / O.4): telefone e ocorrências só para G A M
+  v_operar := public.pode_operar(v_empresa) is true;
+
   return jsonb_build_object(
     'empresa_id', v_empresa, 'dia_trabalho', v_hoje, 'ontem', v_ontem,
-    'faturamento', v_fat, 'servico', v_serv, 'ponto', v_ponto, 'tarefas', v_tarefas, 'sincronizacao', v_sync);
+    'faturamento', v_fat, 'servico', v_serv, 'ponto', v_ponto, 'tarefas', v_tarefas, 'sincronizacao', v_sync,
+    'reservas', public.reservas_painel(v_empresa, v_hoje, v_operar),
+    'ocorrencias', case when v_operar then public.ocorrencias_resumo_empresa(v_empresa, 30) end);
 end $$;
 comment on function public.painel_do_dia(uuid) is '[api] Painel do dia de trabalho (§10.7).';
 
 -- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000240_painel.sql
+
+-- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 20261006000250_ocorrencias.sql
+-- =====================================================================================================
+-- 20261006000250_ocorrencias.sql — backend (adendo extras/ocorrências/reservas, seção O)
+-- Ocorrências disciplinares do funcionário (advertência / suspensão) com anexos no Storage (bucket privado
+-- 'funcionarios-documentos'). Suspensão gera abonos 'suspensao' em ponto_abonos (situação 'suspenso', sem alarmes
+-- nem saldo negativo). Dado sensível: só G A M. Idempotente.
+-- =====================================================================================================
+
+create table if not exists public.funcionario_ocorrencias (
+  id                uuid primary key default gen_random_uuid(),
+  empresa_id        uuid not null references public.empresas (id) on delete cascade,
+  funcionario_id    uuid not null references public.funcionarios (id) on delete cascade,
+  tipo              text not null check (tipo in ('advertencia', 'suspensao')),
+  data              date not null,
+  motivo            text not null check (btrim(motivo) <> ''),
+  descricao         text,
+  dias_suspensao    int check (dias_suspensao between 1 and 30),
+  suspensao_inicio  date,
+  suspensao_fim     date,
+  criado_por        uuid references public.perfis (id) on delete set null,
+  criado_por_nome   text not null,
+  criado_em         timestamptz not null default now(),
+  atualizado_em     timestamptz not null default now(),
+  constraint funcionario_ocorrencias_suspensao check (
+    (tipo = 'advertencia' and dias_suspensao is null and suspensao_inicio is null and suspensao_fim is null)
+    or (tipo = 'suspensao' and dias_suspensao is not null and suspensao_inicio is not null
+        and suspensao_fim = suspensao_inicio + dias_suspensao - 1))
+);
+create index if not exists funcionario_ocorrencias_empresa_idx on public.funcionario_ocorrencias (empresa_id, data desc);
+create index if not exists funcionario_ocorrencias_funcionario_idx on public.funcionario_ocorrencias (funcionario_id, data desc);
+create index if not exists funcionario_ocorrencias_criado_por_idx on public.funcionario_ocorrencias (criado_por);
+comment on table public.funcionario_ocorrencias is
+  '[api:leitura] Ocorrências disciplinares (advertência/suspensão) do funcionário. Dado sensível: só G A M.';
+
+create table if not exists public.funcionario_ocorrencia_anexos (
+  id              uuid primary key default gen_random_uuid(),
+  empresa_id      uuid not null references public.empresas (id) on delete cascade,
+  ocorrencia_id   uuid not null references public.funcionario_ocorrencias (id) on delete cascade,
+  bucket          text not null default 'funcionarios-documentos',
+  caminho         text not null unique,
+  nome_arquivo    text,
+  criado_por      uuid references public.perfis (id) on delete set null,
+  criado_em       timestamptz not null default now()
+);
+create index if not exists funcionario_ocorrencia_anexos_empresa_idx on public.funcionario_ocorrencia_anexos (empresa_id);
+create index if not exists funcionario_ocorrencia_anexos_ocorrencia_idx on public.funcionario_ocorrencia_anexos (ocorrencia_id);
+create index if not exists funcionario_ocorrencia_anexos_criado_por_idx on public.funcionario_ocorrencia_anexos (criado_por);
+comment on table public.funcionario_ocorrencia_anexos is
+  '[api:leitura] Anexos (fotos/PDF no Storage, bucket privado funcionarios-documentos) das ocorrências. Só G A M.';
+
+-- abono gerado pela suspensão (coluna criada em …0200)
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'ponto_abonos_ocorrencia_fk') then
+    alter table public.ponto_abonos add constraint ponto_abonos_ocorrencia_fk
+      foreign key (ocorrencia_id) references public.funcionario_ocorrencias (id) on delete cascade;
+  end if;
+end $$;
+
+-- ================================================================ RLS
+alter table public.funcionario_ocorrencias enable row level security;
+alter table public.funcionario_ocorrencia_anexos enable row level security;
+drop policy if exists funcionario_ocorrencias_ler on public.funcionario_ocorrencias;
+create policy funcionario_ocorrencias_ler on public.funcionario_ocorrencias for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+drop policy if exists funcionario_ocorrencia_anexos_ler on public.funcionario_ocorrencia_anexos;
+create policy funcionario_ocorrencia_anexos_ler on public.funcionario_ocorrencia_anexos for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+
+-- ================================================================ gatilhos
+drop trigger if exists a_empresa on public.funcionario_ocorrencias;
+create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.funcionario_ocorrencias
+  for each row execute function public.ponto_empresa_do_funcionario();
+drop trigger if exists tocar_atualizado_em on public.funcionario_ocorrencias;
+create trigger tocar_atualizado_em before update on public.funcionario_ocorrencias
+  for each row execute function public.tocar_atualizado_em();
+
+create or replace function public.ocorrencia_anexo_empresa()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  select o.empresa_id into v_empresa from public.funcionario_ocorrencias o where o.id = new.ocorrencia_id;
+  if v_empresa is null then raise exception 'Ocorrência não encontrada' using errcode = 'P0002'; end if;
+  new.empresa_id := v_empresa;
+  return new;
+end $$;
+comment on function public.ocorrencia_anexo_empresa() is '[interno] Gatilho: empresa_id do anexo = da ocorrência.';
+drop trigger if exists a_empresa on public.funcionario_ocorrencia_anexos;
+create trigger a_empresa before insert or update of ocorrencia_id, empresa_id on public.funcionario_ocorrencia_anexos
+  for each row execute function public.ocorrencia_anexo_empresa();
+
+-- ================================================================ Storage (documentos)
+do $$
+begin
+  if to_regclass('storage.buckets') is not null then
+    insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+    values ('funcionarios-documentos', 'funcionarios-documentos', false, 5242880,
+            array['image/jpeg', 'image/png', 'image/webp', 'application/pdf'])
+    on conflict (id) do update
+      set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+  end if;
+  if to_regclass('storage.objects') is not null then
+    execute 'drop policy if exists mdg_docs_ler on storage.objects';
+    execute $p$create policy mdg_docs_ler on storage.objects for select to authenticated
+      using (bucket_id = 'funcionarios-documentos'
+             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
+    execute 'drop policy if exists mdg_docs_inserir on storage.objects';
+    execute $p$create policy mdg_docs_inserir on storage.objects for insert to authenticated
+      with check (bucket_id = 'funcionarios-documentos'
+             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
+    execute 'drop policy if exists mdg_docs_alterar on storage.objects';
+    execute $p$create policy mdg_docs_alterar on storage.objects for update to authenticated
+      using (bucket_id = 'funcionarios-documentos'
+             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))
+      with check (bucket_id = 'funcionarios-documentos'
+             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
+    execute 'drop policy if exists mdg_docs_excluir on storage.objects';
+    execute $p$create policy mdg_docs_excluir on storage.objects for delete to authenticated
+      using (bucket_id = 'funcionarios-documentos'
+             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
+  end if;
+end $$;
+
+-- ================================================================ auxiliares
+create or replace function public.ocorrencia_para_operar(p_ocorrencia uuid)
+returns public.funcionario_ocorrencias language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare o public.funcionario_ocorrencias;
+begin
+  select * into o from public.funcionario_ocorrencias where id = p_ocorrencia;
+  if not found then raise exception 'Ocorrência não encontrada' using errcode = 'P0002'; end if;
+  if public.pode_operar(o.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  return o;
+end $$;
+comment on function public.ocorrencia_para_operar(uuid) is '[interno] Ocorrência existente e operável (G A M).';
+
+-- Valida os campos e devolve (tipo, dias, início, fim) normalizados.
+create or replace function public.ocorrencia_validar(p_empresa uuid, p_tipo text, p_data date, p_motivo text,
+                                                     p_dias int, p_inicio date,
+                                                     out tipo text, out dias int, out inicio date, out fim date)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+begin
+  if p_tipo is null or p_tipo not in ('advertencia', 'suspensao') then
+    raise exception 'Tipo de ocorrência inválido' using errcode = '22023';
+  end if;
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  if p_data > public.dia_de_trabalho(public.agora(), p_empresa) then
+    raise exception 'Data no futuro' using errcode = '22023';
+  end if;
+  if nullif(btrim(coalesce(p_motivo, '')), '') is null then
+    raise exception 'Informe o motivo' using errcode = '22023';
+  end if;
+  tipo := p_tipo;
+  if p_tipo = 'advertencia' then
+    return;
+  end if;
+  if p_dias is null or p_dias < 1 or p_dias > 30 then
+    raise exception 'Dias de suspensão inválidos (1 a 30)' using errcode = '22023';
+  end if;
+  inicio := coalesce(p_inicio, p_data);
+  if inicio < p_data or inicio > p_data + 60 then
+    raise exception 'Início da suspensão inválido' using errcode = '22023';
+  end if;
+  dias := p_dias;
+  fim := inicio + p_dias - 1;
+end $$;
+comment on function public.ocorrencia_validar(uuid, text, date, text, int, date) is '[interno] Validação de ocorrência (adendo O.3).';
+
+-- Ressincroniza os abonos 'suspensao' de uma ocorrência e reapura os dias afetados (antigos e novos).
+create or replace function public.ocorrencia_sincronizar_abonos(p_ocorrencia uuid, p_antigo_inicio date, p_antigo_fim date)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare o public.funcionario_ocorrencias; v_existe boolean; v_conflito date; v_ini date; v_fim date;
+begin
+  select * into o from public.funcionario_ocorrencias where id = p_ocorrencia;
+  v_existe := found;
+  delete from public.ponto_abonos where ocorrencia_id = p_ocorrencia;
+  if v_existe and o.tipo = 'suspensao' then
+    select a.data into v_conflito
+      from public.ponto_abonos a
+     where a.funcionario_id = o.funcionario_id and a.data between o.suspensao_inicio and o.suspensao_fim
+     order by a.data limit 1;
+    if v_conflito is not null then
+      raise exception 'Já existe abono para o funcionário em %', to_char(v_conflito, 'DD/MM/YYYY') using errcode = '22023';
+    end if;
+    insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por, ocorrencia_id)
+    select o.empresa_id, o.funcionario_id, g::date, 'suspensao', left('Suspensão: ' || o.motivo, 500), public.meu_perfil_id(), o.id
+      from generate_series(o.suspensao_inicio, o.suspensao_fim, interval '1 day') g;
+  end if;
+  v_ini := least(p_antigo_inicio, case when o.tipo = 'suspensao' then o.suspensao_inicio end);
+  v_fim := greatest(p_antigo_fim, case when o.tipo = 'suspensao' then o.suspensao_fim end);
+  if v_ini is not null and o.funcionario_id is not null then
+    perform public.ponto_apurar(o.funcionario_id, v_ini, v_fim);
+  end if;
+end $$;
+comment on function public.ocorrencia_sincronizar_abonos(uuid, date, date) is
+  '[interno] Abonos ''suspensao'' da ocorrência (um por dia) + reapuração (adendo O.3).';
+
+-- ================================================================ RPCs
+create or replace function public.ocorrencia_criar(p_funcionario uuid, p_tipo text, p_data date, p_motivo text,
+                                                   p_descricao text default null, p_dias_suspensao int default null,
+                                                   p_suspensao_inicio date default null)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare f public.funcionarios; v record; v_id uuid;
+begin
+  f := public.funcionario_para_operar(p_funcionario);
+  select * into v from public.ocorrencia_validar(f.empresa_id, p_tipo, p_data, p_motivo, p_dias_suspensao, p_suspensao_inicio);
+  insert into public.funcionario_ocorrencias (empresa_id, funcionario_id, tipo, data, motivo, descricao, dias_suspensao,
+                                              suspensao_inicio, suspensao_fim, criado_por, criado_por_nome)
+  values (f.empresa_id, f.id, v.tipo, p_data, btrim(p_motivo), nullif(btrim(p_descricao), ''), v.dias, v.inicio, v.fim,
+          public.meu_perfil_id(), public.ponto_nome_autor())
+  returning id into v_id;
+  perform public.ocorrencia_sincronizar_abonos(v_id, null, null);
+  return v_id;
+end $$;
+comment on function public.ocorrencia_criar(uuid, text, date, text, text, int, date) is
+  '[api] Registra advertência/suspensão do funcionário (G A M). Suspensão gera abonos e reapura.';
+
+create or replace function public.ocorrencia_atualizar(p_ocorrencia uuid, p_tipo text, p_data date, p_motivo text,
+                                                       p_descricao text, p_dias_suspensao int default null,
+                                                       p_suspensao_inicio date default null)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare o public.funcionario_ocorrencias; v record;
+begin
+  o := public.ocorrencia_para_operar(p_ocorrencia);
+  select * into v from public.ocorrencia_validar(o.empresa_id, p_tipo, p_data, p_motivo, p_dias_suspensao, p_suspensao_inicio);
+  update public.funcionario_ocorrencias
+     set tipo = v.tipo, data = p_data, motivo = btrim(p_motivo), descricao = nullif(btrim(p_descricao), ''),
+         dias_suspensao = v.dias, suspensao_inicio = v.inicio, suspensao_fim = v.fim
+   where id = o.id;
+  perform public.ocorrencia_sincronizar_abonos(o.id, o.suspensao_inicio, o.suspensao_fim);
+end $$;
+comment on function public.ocorrencia_atualizar(uuid, text, date, text, text, int, date) is
+  '[api] Edita uma ocorrência (G A M); ressincroniza abonos de suspensão e reapura.';
+
+create or replace function public.ocorrencia_excluir(p_ocorrencia uuid)
+returns text[] language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare o public.funcionario_ocorrencias; v_caminhos text[];
+begin
+  o := public.ocorrencia_para_operar(p_ocorrencia);
+  select coalesce(array_agg(a.caminho order by a.criado_em, a.id), array[]::text[]) into v_caminhos
+    from public.funcionario_ocorrencia_anexos a where a.ocorrencia_id = o.id;
+  delete from public.funcionario_ocorrencias where id = o.id;     -- anexos e abonos em cascata
+  if o.tipo = 'suspensao' then
+    perform public.ponto_apurar(o.funcionario_id, o.suspensao_inicio, o.suspensao_fim);
+  end if;
+  return v_caminhos;
+end $$;
+comment on function public.ocorrencia_excluir(uuid) is
+  '[api] Exclui a ocorrência (G A M); devolve os caminhos dos anexos para remover do Storage.';
+
+create or replace function public.ocorrencia_adicionar_anexo(p_ocorrencia uuid, p_caminho text, p_nome_arquivo text default null)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare o public.funcionario_ocorrencias; v text := nullif(btrim(coalesce(p_caminho, '')), ''); v_existe boolean := true; v_id uuid;
+begin
+  o := public.ocorrencia_para_operar(p_ocorrencia);
+  if v is null or position(o.empresa_id::text || '/ocorrencias/' || o.id::text || '/' in v) <> 1
+     or v !~* ('^' || o.empresa_id::text || '/ocorrencias/' || o.id::text || '/[^/]+\.(jpg|jpeg|png|webp|pdf)$') then
+    raise exception 'Anexo inválido' using errcode = '22023';
+  end if;
+  if (select count(*) from public.funcionario_ocorrencia_anexos a where a.ocorrencia_id = o.id) >= 10 then
+    raise exception 'Limite de 10 anexos por ocorrência' using errcode = '22023';
+  end if;
+  if exists (select 1 from public.funcionario_ocorrencia_anexos a where a.caminho = v) then
+    raise exception 'Anexo já registrado' using errcode = '23505';
+  end if;
+  if to_regclass('storage.objects') is not null then
+    execute 'select exists (select 1 from storage.objects where bucket_id = $1 and name = $2)'
+      into v_existe using 'funcionarios-documentos', v;
+  end if;
+  if not v_existe then
+    raise exception 'Anexo não encontrado no armazenamento' using errcode = 'P0002';
+  end if;
+  insert into public.funcionario_ocorrencia_anexos (empresa_id, ocorrencia_id, caminho, nome_arquivo, criado_por)
+  values (o.empresa_id, o.id, v, nullif(btrim(p_nome_arquivo), ''), public.meu_perfil_id())
+  returning id into v_id;
+  return v_id;
+end $$;
+comment on function public.ocorrencia_adicionar_anexo(uuid, text, text) is
+  '[api] Registra um anexo já enviado ao Storage (bucket funcionarios-documentos) (G A M).';
+
+create or replace function public.ocorrencia_remover_anexo(p_anexo uuid)
+returns text language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare a public.funcionario_ocorrencia_anexos;
+begin
+  select * into a from public.funcionario_ocorrencia_anexos where id = p_anexo;
+  if not found then raise exception 'Anexo não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  delete from public.funcionario_ocorrencia_anexos where id = a.id;
+  return a.caminho;
+end $$;
+comment on function public.ocorrencia_remover_anexo(uuid) is '[api] Remove o registro do anexo e devolve o caminho no Storage (G A M).';
+
+create or replace function public.ocorrencias_listar(p_funcionario uuid)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare f public.funcionarios;
+begin
+  f := public.funcionario_para_operar(p_funcionario);
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'id', o.id, 'funcionario_id', o.funcionario_id, 'tipo', o.tipo, 'data', o.data, 'motivo', o.motivo,
+             'descricao', o.descricao, 'dias_suspensao', o.dias_suspensao, 'suspensao_inicio', o.suspensao_inicio,
+             'suspensao_fim', o.suspensao_fim, 'criado_por_nome', o.criado_por_nome, 'criado_em', o.criado_em,
+             'atualizado_em', o.atualizado_em,
+             'anexos', coalesce((select jsonb_agg(jsonb_build_object('id', a.id, 'caminho', a.caminho,
+                                                                     'nome_arquivo', a.nome_arquivo, 'criado_em', a.criado_em)
+                                                  order by a.criado_em, a.id)
+                                   from public.funcionario_ocorrencia_anexos a where a.ocorrencia_id = o.id), '[]'::jsonb))
+           order by o.data desc, o.criado_em desc, o.id)
+      from public.funcionario_ocorrencias o where o.funcionario_id = f.id), '[]'::jsonb);
+end $$;
+comment on function public.ocorrencias_listar(uuid) is '[api] Ocorrências do funcionário com anexos (G A M).';
+
+create or replace function public.ocorrencias_contagem(p_funcionario uuid default null, p_empresa uuid default null)
+returns table (funcionario_id uuid, advertencias int, suspensoes int, dias_suspensao int, ultima_data date)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  if p_funcionario is not null then
+    v_empresa := (public.funcionario_para_operar(p_funcionario)).empresa_id;
+  else
+    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  end if;
+  return query
+  select o.funcionario_id,
+         (count(*) filter (where o.tipo = 'advertencia'))::int,
+         (count(*) filter (where o.tipo = 'suspensao'))::int,
+         coalesce(sum(o.dias_suspensao), 0)::int,
+         max(o.data)
+    from public.funcionario_ocorrencias o
+   where o.empresa_id = v_empresa and (p_funcionario is null or o.funcionario_id = p_funcionario)
+   group by o.funcionario_id
+   order by o.funcionario_id;
+end $$;
+comment on function public.ocorrencias_contagem(uuid, uuid) is '[api] Contagem de ocorrências por funcionário (G A M).';
+
+-- Resumo sem checagem (usado pelo painel, que já resolveu a empresa).
+create or replace function public.ocorrencias_resumo_empresa(p_empresa uuid, p_dias int)
+returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  with h as (select public.dia_de_trabalho(public.agora(), p_empresa) as hoje),
+       o as (select x.*, f.nome as funcionario_nome
+               from public.funcionario_ocorrencias x
+               join public.funcionarios f on f.id = x.funcionario_id, h
+              where x.empresa_id = p_empresa and x.data between h.hoje - p_dias + 1 and h.hoje)
+  select jsonb_build_object(
+    'desde', h.hoje - p_dias + 1, 'ate', h.hoje,
+    'advertencias', (select count(*) from o where o.tipo = 'advertencia'),
+    'suspensoes', (select count(*) from o where o.tipo = 'suspensao'),
+    'suspensos_hoje', (select count(distinct s.funcionario_id) from public.funcionario_ocorrencias s
+                        where s.empresa_id = p_empresa and s.tipo = 'suspensao'
+                          and h.hoje between s.suspensao_inicio and s.suspensao_fim),
+    'recentes', coalesce((select jsonb_agg(jsonb_build_object(
+                    'id', r.id, 'funcionario_id', r.funcionario_id, 'funcionario_nome', r.funcionario_nome, 'tipo', r.tipo,
+                    'data', r.data, 'motivo', r.motivo, 'dias_suspensao', r.dias_suspensao,
+                    'suspensao_inicio', r.suspensao_inicio, 'suspensao_fim', r.suspensao_fim)
+                  order by r.data desc, r.criado_em desc, r.id)
+                  from (select * from o order by o.data desc, o.criado_em desc, o.id limit 10) r), '[]'::jsonb))
+  from h
+$$;
+comment on function public.ocorrencias_resumo_empresa(uuid, int) is '[interno] Resumo de ocorrências (adendo O.4), sem checagem.';
+
+create or replace function public.ocorrencias_resumo(p_dias int default 30, p_empresa uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  if p_dias is null or p_dias < 1 or p_dias > 366 then
+    raise exception 'Período máximo de 366 dias' using errcode = '22023';
+  end if;
+  return public.ocorrencias_resumo_empresa(v_empresa, p_dias);
+end $$;
+comment on function public.ocorrencias_resumo(int, uuid) is '[api] Resumo das ocorrências dos últimos N dias (G A M).';
+
+-- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000250_ocorrencias.sql
+
+-- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 20261006000260_extras.sql
+-- =====================================================================================================
+-- 20261006000260_extras.sql — backend (adendo extras/ocorrências/reservas, seção E)
+-- Aba Extras: pontos extras de comissão (tabela em …0220), valor padrão de diária, diárias (funcionário ou avulso)
+-- e gastos totais por período. Valores: só G A M. Idempotente.
+-- =====================================================================================================
+
+-- ================================================================ pontos extras (tabela em …0220)
+drop trigger if exists a_empresa on public.comissao_pontos_extras;
+create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.comissao_pontos_extras
+  for each row execute function public.ponto_empresa_do_funcionario();
+
+create or replace function public.comissao_periodo_fechado(p_empresa uuid, p_data date)
+returns boolean language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  select exists (select 1 from public.comissao_fechamentos f
+                  where f.empresa_id = p_empresa and f.status = 'fechado' and p_data between f.data_inicio and f.data_fim)
+$$;
+comment on function public.comissao_periodo_fechado(uuid, date) is '[interno] A data cai num fechamento de comissão fechado?';
+
+create or replace function public.comissao_extra_lancar(p_funcionario uuid, p_data date, p_pontos numeric, p_motivo text)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare f public.funcionarios; v_id uuid;
+begin
+  f := public.funcionario_para_operar(p_funcionario);
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  if p_pontos is null or p_pontos <= 0 or p_pontos > 9999.99 or p_pontos <> round(p_pontos, 2) then
+    raise exception 'Pontos extras inválidos' using errcode = '22023';
+  end if;
+  if nullif(btrim(coalesce(p_motivo, '')), '') is null then raise exception 'Informe o motivo' using errcode = '22023'; end if;
+  if public.comissao_periodo_fechado(f.empresa_id, p_data) then
+    raise exception 'Período de comissão já fechado' using errcode = '22023';
+  end if;
+  insert into public.comissao_pontos_extras (empresa_id, funcionario_id, data, pontos, motivo, criado_por, criado_por_nome)
+  values (f.empresa_id, f.id, p_data, p_pontos, btrim(p_motivo), public.meu_perfil_id(), public.ponto_nome_autor())
+  returning id into v_id;
+  return v_id;
+end $$;
+comment on function public.comissao_extra_lancar(uuid, date, numeric, text) is
+  '[api] Lança pontos extras de comissão para o funcionário numa data (G A M).';
+
+create or replace function public.comissao_extra_excluir(p_extra uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare x public.comissao_pontos_extras;
+begin
+  select * into x from public.comissao_pontos_extras where id = p_extra;
+  if not found then raise exception 'Lançamento não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(x.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if public.comissao_periodo_fechado(x.empresa_id, x.data) then
+    raise exception 'Período de comissão já fechado' using errcode = '22023';
+  end if;
+  delete from public.comissao_pontos_extras where id = x.id;
+end $$;
+comment on function public.comissao_extra_excluir(uuid) is '[api] Exclui um lançamento de pontos extras (G A M).';
+
+create or replace function public.comissao_extras_listar(p_inicio date, p_fim date, p_funcionario uuid default null,
+                                                         p_empresa uuid default null)
+returns table (id uuid, funcionario_id uuid, funcionario_nome text, cargo text, data date, pontos numeric, motivo text,
+               criado_por_nome text, criado_em timestamptz, fechado boolean)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  if p_funcionario is not null then
+    v_empresa := (public.funcionario_para_operar(p_funcionario)).empresa_id;
+  else
+    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  end if;
+  perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
+  return query
+  select x.id, x.funcionario_id, f.nome, f.cargo, x.data, x.pontos, x.motivo, x.criado_por_nome, x.criado_em,
+         public.comissao_periodo_fechado(x.empresa_id, x.data)
+    from public.comissao_pontos_extras x
+    join public.funcionarios f on f.id = x.funcionario_id
+   where x.empresa_id = v_empresa and x.data between p_inicio and p_fim
+     and (p_funcionario is null or x.funcionario_id = p_funcionario)
+   order by x.data desc, x.criado_em desc, x.id;
+end $$;
+comment on function public.comissao_extras_listar(date, date, uuid, uuid) is '[api] Pontos extras lançados no período (G A M).';
+
+-- ================================================================ valor padrão da diária
+create table if not exists public.funcionario_valores_diaria (
+  funcionario_id         uuid primary key references public.funcionarios (id) on delete cascade,
+  empresa_id             uuid not null references public.empresas (id) on delete cascade,
+  valor_diaria_centavos  bigint not null check (valor_diaria_centavos between 0 and 100000000),
+  atualizado_por         uuid references public.perfis (id) on delete set null,
+  atualizado_em          timestamptz not null default now()
+);
+create index if not exists funcionario_valores_diaria_empresa_idx on public.funcionario_valores_diaria (empresa_id);
+create index if not exists funcionario_valores_diaria_atualizado_por_idx on public.funcionario_valores_diaria (atualizado_por);
+comment on table public.funcionario_valores_diaria is
+  '[api:leitura] Valor padrão da diária do funcionário (fora de funcionarios: a leitura não vê valores).';
+
+-- ================================================================ diárias
+create table if not exists public.diarias (
+  id               uuid primary key default gen_random_uuid(),
+  empresa_id       uuid not null references public.empresas (id) on delete cascade,
+  funcionario_id   uuid references public.funcionarios (id) on delete set null,
+  pessoa_nome      text not null check (btrim(pessoa_nome) <> ''),
+  data             date not null,
+  funcao           text,
+  valor_centavos   bigint not null check (valor_centavos between 0 and 100000000),
+  observacao       text,
+  pago             boolean not null default false,
+  pago_em          date,
+  criado_por       uuid references public.perfis (id) on delete set null,
+  criado_por_nome  text not null,
+  criado_em        timestamptz not null default now(),
+  atualizado_em    timestamptz not null default now(),
+  constraint diarias_pagamento check (pago or pago_em is null)
+);
+create index if not exists diarias_empresa_idx on public.diarias (empresa_id, data);
+create index if not exists diarias_funcionario_idx on public.diarias (funcionario_id, data);
+create index if not exists diarias_criado_por_idx on public.diarias (criado_por);
+comment on table public.diarias is '[api:leitura] Diárias pagas a funcionários ou avulsos (freelancers). Só G A M.';
+
+alter table public.funcionario_valores_diaria enable row level security;
+alter table public.diarias enable row level security;
+drop policy if exists funcionario_valores_diaria_ler on public.funcionario_valores_diaria;
+create policy funcionario_valores_diaria_ler on public.funcionario_valores_diaria for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+drop policy if exists diarias_ler on public.diarias;
+create policy diarias_ler on public.diarias for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+
+drop trigger if exists a_empresa on public.funcionario_valores_diaria;
+create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.funcionario_valores_diaria
+  for each row execute function public.ponto_empresa_do_funcionario();
+
+-- diária: com funcionário, empresa_id dele (funcionário de outra empresa = erro); sem funcionário, mantém a informada.
+create or replace function public.diarias_antes_gravar()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  if new.funcionario_id is not null then
+    select f.empresa_id into v_empresa from public.funcionarios f where f.id = new.funcionario_id;
+    if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
+    if new.empresa_id is not null and new.empresa_id <> v_empresa then
+      raise exception 'Funcionário de outra empresa' using errcode = '22023';
+    end if;
+    new.empresa_id := v_empresa;
+  end if;
+  if tg_op = 'UPDATE' then
+    if new.funcionario_id is null and old.funcionario_id is not null and new.empresa_id is distinct from old.empresa_id then
+      new.empresa_id := old.empresa_id;
+    end if;
+    new.atualizado_em := now();
+  end if;
+  return new;
+end $$;
+comment on function public.diarias_antes_gravar() is '[interno] Gatilho de diarias: empresa do funcionário; atualizado_em.';
+drop trigger if exists a_antes on public.diarias;
+create trigger a_antes before insert or update on public.diarias
+  for each row execute function public.diarias_antes_gravar();
+
+create or replace function public.funcionario_definir_valor_diaria(p_funcionario uuid, p_valor_centavos bigint)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare f public.funcionarios;
+begin
+  f := public.funcionario_para_operar(p_funcionario);
+  if p_valor_centavos is null then
+    delete from public.funcionario_valores_diaria where funcionario_id = f.id;
+    return;
+  end if;
+  if p_valor_centavos < 0 or p_valor_centavos > 100000000 then raise exception 'Valor inválido' using errcode = '22023'; end if;
+  insert into public.funcionario_valores_diaria (funcionario_id, empresa_id, valor_diaria_centavos, atualizado_por, atualizado_em)
+  values (f.id, f.empresa_id, p_valor_centavos, public.meu_perfil_id(), now())
+  on conflict (funcionario_id) do update
+    set valor_diaria_centavos = excluded.valor_diaria_centavos, atualizado_por = excluded.atualizado_por,
+        atualizado_em = excluded.atualizado_em;
+end $$;
+comment on function public.funcionario_definir_valor_diaria(uuid, bigint) is
+  '[api] Define (ou remove, null) o valor padrão da diária do funcionário (G A M).';
+
+create or replace function public.funcionario_valores_diaria_listar(p_empresa uuid default null)
+returns table (funcionario_id uuid, valor_diaria_centavos bigint)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  return query select v.funcionario_id, v.valor_diaria_centavos from public.funcionario_valores_diaria v
+                where v.empresa_id = v_empresa order by v.funcionario_id;
+end $$;
+comment on function public.funcionario_valores_diaria_listar(uuid) is '[api] Valores padrão de diária da empresa (G A M).';
+
+-- Normaliza e valida os campos de uma diária (adendo E.2).
+create or replace function public.diaria_preparar(p_empresa uuid, p_data date, p_funcionario uuid, p_pessoa_nome text,
+                                                  p_funcao text, p_valor_centavos bigint, p_pago boolean, p_pago_em date,
+                                                  out empresa_id uuid, out funcionario_id uuid, out pessoa_nome text,
+                                                  out funcao text, out valor_centavos bigint, out pago boolean, out pago_em date)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare f public.funcionarios; v_hoje date;
+begin
+  empresa_id := p_empresa;
+  if p_funcionario is not null then
+    f := public.funcionario_para_operar(p_funcionario);
+    if p_empresa is not null and f.empresa_id <> p_empresa then
+      raise exception 'Funcionário de outra empresa' using errcode = '22023';
+    end if;
+    empresa_id := f.empresa_id;
+    funcionario_id := f.id;
+    pessoa_nome := f.nome;
+    funcao := coalesce(nullif(btrim(p_funcao), ''), f.cargo);
+    valor_centavos := coalesce(p_valor_centavos,
+                               (select v.valor_diaria_centavos from public.funcionario_valores_diaria v where v.funcionario_id = f.id));
+  else
+    pessoa_nome := nullif(btrim(coalesce(p_pessoa_nome, '')), '');
+    if pessoa_nome is null then raise exception 'Informe o funcionário ou o nome' using errcode = '22023'; end if;
+    funcao := nullif(btrim(p_funcao), '');
+    valor_centavos := p_valor_centavos;
+  end if;
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  v_hoje := public.dia_de_trabalho(public.agora(), empresa_id);
+  if p_data < v_hoje - 366 or p_data > v_hoje + 62 then raise exception 'Data fora do limite' using errcode = '22023'; end if;
+  if valor_centavos is null then raise exception 'Informe o valor da diária' using errcode = '22023'; end if;
+  if valor_centavos < 0 or valor_centavos > 100000000 then raise exception 'Valor inválido' using errcode = '22023'; end if;
+  pago := coalesce(p_pago, false);
+  pago_em := case when pago then coalesce(p_pago_em, v_hoje) end;
+end $$;
+comment on function public.diaria_preparar(uuid, date, uuid, text, text, bigint, boolean, date) is
+  '[interno] Validação/normalização de diária (adendo E.2).';
+
+create or replace function public.diaria_lancar(p_data date, p_funcionario uuid default null, p_pessoa_nome text default null,
+                                                p_funcao text default null, p_valor_centavos bigint default null,
+                                                p_observacao text default null, p_pago boolean default false,
+                                                p_pago_em date default null, p_empresa uuid default null)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v record; v_empresa uuid; v_id uuid;
+begin
+  if p_funcionario is null then
+    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  else
+    v_empresa := p_empresa;
+  end if;
+  select * into v from public.diaria_preparar(v_empresa, p_data, p_funcionario, p_pessoa_nome, p_funcao, p_valor_centavos,
+                                              p_pago, p_pago_em);
+  insert into public.diarias (empresa_id, funcionario_id, pessoa_nome, data, funcao, valor_centavos, observacao, pago, pago_em,
+                              criado_por, criado_por_nome)
+  values (v.empresa_id, v.funcionario_id, v.pessoa_nome, p_data, v.funcao, v.valor_centavos, nullif(btrim(p_observacao), ''),
+          v.pago, v.pago_em, public.meu_perfil_id(), public.ponto_nome_autor())
+  returning id into v_id;
+  return v_id;
+end $$;
+comment on function public.diaria_lancar(date, uuid, text, text, bigint, text, boolean, date, uuid) is
+  '[api] Lança uma diária (funcionário ou avulso) (G A M).';
+
+create or replace function public.diaria_para_operar(p_diaria uuid)
+returns public.diarias language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare d public.diarias;
+begin
+  select * into d from public.diarias where id = p_diaria;
+  if not found then raise exception 'Diária não encontrada' using errcode = 'P0002'; end if;
+  if public.pode_operar(d.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  return d;
+end $$;
+comment on function public.diaria_para_operar(uuid) is '[interno] Diária existente e operável (G A M).';
+
+create or replace function public.diaria_atualizar(p_diaria uuid, p_data date, p_funcionario uuid, p_pessoa_nome text,
+                                                   p_funcao text, p_valor_centavos bigint, p_observacao text,
+                                                   p_pago boolean, p_pago_em date)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare d public.diarias; v record;
+begin
+  d := public.diaria_para_operar(p_diaria);
+  select * into v from public.diaria_preparar(d.empresa_id, p_data, p_funcionario, p_pessoa_nome, p_funcao, p_valor_centavos,
+                                              p_pago, p_pago_em);
+  update public.diarias
+     set funcionario_id = v.funcionario_id, pessoa_nome = v.pessoa_nome, data = p_data, funcao = v.funcao,
+         valor_centavos = v.valor_centavos, observacao = nullif(btrim(p_observacao), ''), pago = v.pago, pago_em = v.pago_em
+   where id = d.id;
+end $$;
+comment on function public.diaria_atualizar(uuid, date, uuid, text, text, bigint, text, boolean, date) is
+  '[api] Substitui os dados de uma diária (G A M).';
+
+create or replace function public.diaria_marcar_paga(p_diaria uuid, p_pago boolean, p_pago_em date default null)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare d public.diarias;
+begin
+  d := public.diaria_para_operar(p_diaria);
+  update public.diarias
+     set pago = coalesce(p_pago, false),
+         pago_em = case when coalesce(p_pago, false)
+                        then coalesce(p_pago_em, public.dia_de_trabalho(public.agora(), d.empresa_id)) end
+   where id = d.id;
+end $$;
+comment on function public.diaria_marcar_paga(uuid, boolean, date) is '[api] Marca/desmarca a diária como paga (G A M).';
+
+create or replace function public.diaria_excluir(p_diaria uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare d public.diarias;
+begin
+  d := public.diaria_para_operar(p_diaria);
+  delete from public.diarias where id = d.id;
+end $$;
+comment on function public.diaria_excluir(uuid) is '[api] Exclui uma diária (G A M).';
+
+create or replace function public.diarias_listar(p_inicio date, p_fim date, p_funcionario uuid default null,
+                                                 p_pago boolean default null, p_empresa uuid default null)
+returns table (id uuid, data date, funcionario_id uuid, pessoa_nome text, avulso boolean, funcao text, valor_centavos bigint,
+               observacao text, pago boolean, pago_em date, criado_por_nome text, criado_em timestamptz)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  if p_funcionario is not null then
+    v_empresa := (public.funcionario_para_operar(p_funcionario)).empresa_id;
+  else
+    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  end if;
+  perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
+  return query
+  select d.id, d.data, d.funcionario_id, coalesce(f.nome, d.pessoa_nome), d.funcionario_id is null, d.funcao, d.valor_centavos,
+         d.observacao, d.pago, d.pago_em, d.criado_por_nome, d.criado_em
+    from public.diarias d
+    left join public.funcionarios f on f.id = d.funcionario_id
+   where d.empresa_id = v_empresa and d.data between p_inicio and p_fim
+     and (p_funcionario is null or d.funcionario_id = p_funcionario)
+     and (p_pago is null or d.pago = p_pago)
+   order by d.data desc, coalesce(f.nome, d.pessoa_nome), d.criado_em, d.id;
+end $$;
+comment on function public.diarias_listar(date, date, uuid, boolean, uuid) is '[api] Diárias do período (G A M).';
+
+-- ================================================================ gastos por período (adendo E.3)
+create or replace function public.gastos_periodo(p_inicio date, p_fim date, p_empresa uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
+  return (
+    with fech as (
+      select fc.id, fc.titulo, fc.status, fc.data_inicio, fc.data_fim, fc.base_distribuivel_centavos
+        from public.comissao_fechamentos fc
+       where fc.empresa_id = v_empresa and fc.data_fim between p_inicio and p_fim
+    ),
+    lanc as (   -- uma linha por valor: (chave, funcionario_id, nome, avulso, data, coluna, valor)
+      select case when d.funcionario_id is not null then 'f:' || d.funcionario_id
+                  else 'a:' || lower(btrim(d.pessoa_nome)) end as chave,
+             d.funcionario_id, coalesce(f.nome, d.pessoa_nome) as nome, d.funcionario_id is null as avulso, d.data,
+             case when d.pago then 'diarias_pagas' else 'diarias_a_pagar' end as coluna, d.valor_centavos as valor, 1 as qtd
+        from public.diarias d left join public.funcionarios f on f.id = d.funcionario_id
+       where d.empresa_id = v_empresa and d.data between p_inicio and p_fim
+      union all
+      select case when it.funcionario_id is not null then 'f:' || it.funcionario_id
+                  else 'a:' || lower(btrim(it.funcionario_nome)) end,
+             it.funcionario_id, coalesce(f.nome, it.funcionario_nome), it.funcionario_id is null, fe.data_fim,
+             case when fe.status = 'fechado' then 'comissoes_fechadas' else 'comissoes_previstas' end, it.valor_centavos, 0
+        from fech fe join public.comissao_itens it on it.fechamento_id = fe.id
+        left join public.funcionarios f on f.id = it.funcionario_id
+    ),
+    tot as (
+      select coalesce(sum(valor) filter (where coluna = 'diarias_pagas'), 0) as dp,
+             coalesce(sum(valor) filter (where coluna = 'diarias_a_pagar'), 0) as dap,
+             coalesce(sum(qtd), 0) as qtd,
+             coalesce(sum(valor) filter (where coluna = 'comissoes_fechadas'), 0) as cf,
+             coalesce(sum(valor) filter (where coluna = 'comissoes_previstas'), 0) as cp
+        from lanc
+    ),
+    pessoa as (
+      select chave, (array_agg(funcionario_id) filter (where funcionario_id is not null))[1] as funcionario_id,
+             (array_agg(nome order by (funcionario_id is null), nome))[1] as nome, bool_and(avulso) as avulso,
+             sum(qtd) as qtd,
+             coalesce(sum(valor) filter (where coluna = 'diarias_pagas'), 0) as dp,
+             coalesce(sum(valor) filter (where coluna = 'diarias_a_pagar'), 0) as dap,
+             coalesce(sum(valor) filter (where coluna = 'comissoes_fechadas'), 0) as cf,
+             coalesce(sum(valor) filter (where coluna = 'comissoes_previstas'), 0) as cp
+        from lanc group by chave
+    ),
+    dia as (
+      select g::date as data,
+             coalesce(sum(l.valor) filter (where l.coluna = 'diarias_pagas'), 0) as dp,
+             coalesce(sum(l.valor) filter (where l.coluna = 'diarias_a_pagar'), 0) as dap,
+             coalesce(sum(l.valor) filter (where l.coluna = 'comissoes_fechadas'), 0) as cf,
+             coalesce(sum(l.valor) filter (where l.coluna = 'comissoes_previstas'), 0) as cp
+        from generate_series(p_inicio, p_fim, interval '1 day') g
+        left join lanc l on l.data = g::date
+       group by g
+    )
+    select jsonb_build_object(
+      'empresa_id', v_empresa, 'inicio', p_inicio, 'fim', p_fim,
+      'totais', (select jsonb_build_object('diarias_pagas', dp, 'diarias_a_pagar', dap, 'diarias', dp + dap, 'diarias_qtd', qtd,
+                                           'comissoes_fechadas', cf, 'comissoes_previstas', cp,
+                                           'total', dp + dap + cf, 'total_com_previsto', dp + dap + cf + cp) from tot),
+      'por_pessoa', coalesce((select jsonb_agg(jsonb_build_object(
+                         'chave', chave, 'funcionario_id', funcionario_id, 'nome', nome, 'avulso', avulso, 'diarias_qtd', qtd,
+                         'diarias_pagas', dp, 'diarias_a_pagar', dap, 'comissoes_fechadas', cf, 'comissoes_previstas', cp,
+                         'total', dp + dap + cf) order by dp + dap + cf desc, nome collate "C", chave)
+                       from pessoa where qtd > 0 or dp + dap + cf + cp > 0), '[]'::jsonb),
+      'por_dia', (select jsonb_agg(jsonb_build_object('data', data, 'diarias_pagas', dp, 'diarias_a_pagar', dap,
+                                                      'comissoes_fechadas', cf, 'comissoes_previstas', cp,
+                                                      'total', dp + dap + cf) order by data) from dia),
+      'fechamentos', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'titulo', titulo, 'status', status,
+                                                                   'data_inicio', data_inicio, 'data_fim', data_fim,
+                                                                   'base_distribuivel_centavos', base_distribuivel_centavos)
+                                                order by data_fim, titulo, id) from fech), '[]'::jsonb))
+  );
+end $$;
+comment on function public.gastos_periodo(date, date, uuid) is
+  '[api] Gastos do período: diárias (pagas/a pagar) e comissões (fechadas/previstas), por pessoa e por dia (G A M).';
+
+-- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000260_extras.sql
+
+-- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 20261006000270_reservas.sql
+-- =====================================================================================================
+-- 20261006000270_reservas.sql — backend (adendo extras/ocorrências/reservas, seção R)
+-- Reservas do dia: cadastro manual, importação de CSV (front) e ingestão genérica da Tagme (N8N, tipo de integração
+-- 'tagme' ajustado em …0120). Telefone/e-mail são dados pessoais: só G A M (leitura lê por reservas_listar, sem eles).
+-- Idempotente.
+-- =====================================================================================================
+
+create table if not exists public.reservas (
+  id             uuid primary key default gen_random_uuid(),
+  empresa_id     uuid not null references public.empresas (id) on delete cascade,
+  integracao_id  uuid references public.integracoes (id) on delete set null,
+  origem         text not null check (origem in ('tagme', 'manual', 'importacao')),
+  id_externo     text,
+  data           date not null,
+  horario        time,
+  nome_cliente   text not null check (btrim(nome_cliente) <> ''),
+  pessoas        int not null default 1 check (pessoas between 1 and 500),
+  status         text not null default 'confirmada'
+                 check (status in ('confirmada', 'pendente', 'cancelada', 'sentada', 'concluida', 'nao_compareceu')),
+  area           text,
+  mesa           text,
+  observacao     text,
+  telefone       text,
+  email          text,
+  criado_por     uuid references public.perfis (id) on delete set null,
+  criado_em      timestamptz not null default now(),
+  atualizado_em  timestamptz not null default now(),
+  importado_em   timestamptz,
+  constraint reservas_externa_uk unique (empresa_id, origem, id_externo),
+  constraint reservas_tagme_id check (origem <> 'tagme' or id_externo is not null)
+);
+create index if not exists reservas_empresa_dia_idx on public.reservas (empresa_id, data, horario);
+create index if not exists reservas_integracao_idx on public.reservas (integracao_id);
+create index if not exists reservas_criado_por_idx on public.reservas (criado_por);
+comment on table public.reservas is
+  '[api:leitura] Reservas (Tagme, manuais, importadas). Select direto só G A M; leitura via reservas_listar (sem telefone/e-mail).';
+
+alter table public.reservas enable row level security;
+drop policy if exists reservas_ler on public.reservas;
+create policy reservas_ler on public.reservas for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+
+drop trigger if exists tocar_atualizado_em on public.reservas;
+create trigger tocar_atualizado_em before update on public.reservas
+  for each row execute function public.tocar_atualizado_em();
+
+-- ================================================================ auxiliares
+create or replace function public.reserva_validar(p_data date, p_nome text, p_pessoas int, p_status text)
+returns void language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+begin
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  if nullif(btrim(coalesce(p_nome, '')), '') is null then raise exception 'Informe o nome do cliente' using errcode = '22023'; end if;
+  if p_pessoas is null or p_pessoas < 1 or p_pessoas > 500 then
+    raise exception 'Número de pessoas inválido' using errcode = '22023';
+  end if;
+  if p_status is null or p_status not in ('confirmada', 'pendente', 'cancelada', 'sentada', 'concluida', 'nao_compareceu') then
+    raise exception 'Status de reserva inválido' using errcode = '22023';
+  end if;
+end $$;
+comment on function public.reserva_validar(date, text, int, text) is '[interno] Validação de reserva (adendo R.3).';
+
+create or replace function public.reserva_para_operar(p_reserva uuid)
+returns public.reservas language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare r public.reservas;
+begin
+  select * into r from public.reservas where id = p_reserva;
+  if not found then raise exception 'Reserva não encontrada' using errcode = 'P0002'; end if;
+  if public.pode_operar(r.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  return r;
+end $$;
+comment on function public.reserva_para_operar(uuid) is '[interno] Reserva existente e operável (G A M).';
+
+-- Data 'AAAA-MM-DD' ou 'DD/MM/AAAA' → date (null se inválida).
+create or replace function public.reserva_ler_data(p_texto text)
+returns date language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+declare t text := btrim(coalesce(p_texto, ''));
+begin
+  if t ~ '^\d{4}-\d{2}-\d{2}$' then return to_date(t, 'YYYY-MM-DD')::date
+    + case when to_char(to_date(t, 'YYYY-MM-DD'), 'YYYY-MM-DD') = t then 0 else null end;
+  elsif t ~ '^\d{2}/\d{2}/\d{4}$' then return to_date(t, 'DD/MM/YYYY')::date
+    + case when to_char(to_date(t, 'DD/MM/YYYY'), 'DD/MM/YYYY') = t then 0 else null end;
+  end if;
+  return null;
+exception when others then return null;
+end $$;
+comment on function public.reserva_ler_data(text) is '[interno] Lê data AAAA-MM-DD ou DD/MM/AAAA.';
+
+-- Horário 'HH:MM' ou 'HH:MM:SS' → time. Vazio → null; inválido → exceção 'horário inválido'.
+create or replace function public.reserva_ler_horario(p_texto text)
+returns time language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+declare t text := btrim(coalesce(p_texto, ''));
+begin
+  if t = '' then return null; end if;
+  if t !~ '^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$' then raise exception 'horário inválido'; end if;
+  return t::time;
+end $$;
+comment on function public.reserva_ler_horario(text) is '[interno] Lê horário HH:MM[:SS].';
+
+-- Converte um item jsonb (importação/ingestão) em campos de reserva; erro → exceção com o motivo (texto curto).
+create or replace function public.reserva_ler_item(p_item jsonb, p_chave_hora text,
+                                                   out data date, out horario time, out nome text, out pessoas int,
+                                                   out status text, out telefone text, out email text, out area text,
+                                                   out mesa text, out observacao text, out id_externo text)
+language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+declare v text;
+begin
+  if p_item is null or jsonb_typeof(p_item) <> 'object' then raise exception 'item inválido'; end if;
+  data := public.reserva_ler_data(p_item ->> 'data');
+  if data is null then raise exception 'data inválida'; end if;
+  horario := public.reserva_ler_horario(p_item ->> p_chave_hora);
+  nome := nullif(btrim(coalesce(p_item ->> 'nome', p_item ->> 'nome_cliente', '')), '');
+  if nome is null then raise exception 'informe o nome'; end if;
+  v := btrim(coalesce(p_item ->> 'pessoas', ''));
+  if v = '' then pessoas := 1;
+  elsif v ~ '^\d{1,4}$' and v::int between 1 and 500 then pessoas := v::int;
+  else raise exception 'pessoas inválido';
+  end if;
+  status := coalesce(nullif(btrim(p_item ->> 'status'), ''), 'confirmada');
+  if status not in ('confirmada', 'pendente', 'cancelada', 'sentada', 'concluida', 'nao_compareceu') then
+    raise exception 'status inválido';
+  end if;
+  telefone := nullif(btrim(p_item ->> 'telefone'), '');
+  email := nullif(btrim(p_item ->> 'email'), '');
+  area := nullif(btrim(p_item ->> 'area'), '');
+  mesa := nullif(btrim(p_item ->> 'mesa'), '');
+  observacao := nullif(btrim(p_item ->> 'observacao'), '');
+  id_externo := nullif(btrim(p_item ->> 'id_externo'), '');
+end $$;
+comment on function public.reserva_ler_item(jsonb, text) is '[interno] Item de importação/ingestão de reserva → campos.';
+
+-- ================================================================ RPCs (front)
+create or replace function public.reserva_criar(p_data date, p_horario time, p_nome_cliente text, p_pessoas int default 1,
+                                                p_telefone text default null, p_area text default null, p_mesa text default null,
+                                                p_observacao text default null, p_status text default 'confirmada',
+                                                p_email text default null, p_empresa uuid default null)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid; v_id uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  perform public.reserva_validar(p_data, p_nome_cliente, coalesce(p_pessoas, 1), coalesce(p_status, 'confirmada'));
+  insert into public.reservas (empresa_id, origem, data, horario, nome_cliente, pessoas, status, area, mesa, observacao,
+                               telefone, email, criado_por)
+  values (v_empresa, 'manual', p_data, p_horario, btrim(p_nome_cliente), coalesce(p_pessoas, 1), coalesce(p_status, 'confirmada'),
+          nullif(btrim(p_area), ''), nullif(btrim(p_mesa), ''), nullif(btrim(p_observacao), ''),
+          nullif(btrim(p_telefone), ''), nullif(btrim(p_email), ''), public.meu_perfil_id())
+  returning id into v_id;
+  return v_id;
+end $$;
+comment on function public.reserva_criar(date, time, text, int, text, text, text, text, text, text, uuid) is
+  '[api] Cria uma reserva manual (G A M).';
+
+create or replace function public.reserva_atualizar(p_reserva uuid, p_data date, p_horario time, p_nome_cliente text,
+                                                    p_pessoas int, p_telefone text, p_area text, p_mesa text,
+                                                    p_observacao text, p_status text, p_email text)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare r public.reservas;
+begin
+  r := public.reserva_para_operar(p_reserva);
+  if r.origem = 'tagme' then
+    raise exception 'Reserva da Tagme: só o status pode ser alterado' using errcode = '22023';
+  end if;
+  perform public.reserva_validar(p_data, p_nome_cliente, p_pessoas, p_status);
+  update public.reservas
+     set data = p_data, horario = p_horario, nome_cliente = btrim(p_nome_cliente), pessoas = p_pessoas, status = p_status,
+         area = nullif(btrim(p_area), ''), mesa = nullif(btrim(p_mesa), ''), observacao = nullif(btrim(p_observacao), ''),
+         telefone = nullif(btrim(p_telefone), ''), email = nullif(btrim(p_email), '')
+   where id = r.id;
+end $$;
+comment on function public.reserva_atualizar(uuid, date, time, text, int, text, text, text, text, text, text) is
+  '[api] Edita uma reserva manual/importada (G A M).';
+
+create or replace function public.reserva_mudar_status(p_reserva uuid, p_status text)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare r public.reservas;
+begin
+  r := public.reserva_para_operar(p_reserva);
+  if p_status is null or p_status not in ('confirmada', 'pendente', 'cancelada', 'sentada', 'concluida', 'nao_compareceu') then
+    raise exception 'Status de reserva inválido' using errcode = '22023';
+  end if;
+  update public.reservas set status = p_status where id = r.id and status is distinct from p_status;
+end $$;
+comment on function public.reserva_mudar_status(uuid, text) is '[api] Muda o status de uma reserva (G A M).';
+
+create or replace function public.reserva_cancelar(p_reserva uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+begin
+  perform public.reserva_mudar_status(p_reserva, 'cancelada');
+end $$;
+comment on function public.reserva_cancelar(uuid) is '[api] Cancela uma reserva (G A M).';
+
+create or replace function public.reserva_excluir(p_reserva uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare r public.reservas;
+begin
+  r := public.reserva_para_operar(p_reserva);
+  if r.origem = 'tagme' then raise exception 'Reserva da Tagme não pode ser excluída' using errcode = '22023'; end if;
+  delete from public.reservas where id = r.id;
+end $$;
+comment on function public.reserva_excluir(uuid) is '[api] Exclui uma reserva manual/importada (G A M).';
+
+create or replace function public.reservas_listar(p_inicio date, p_fim date default null, p_status text[] default null,
+                                                  p_empresa uuid default null)
+returns table (id uuid, origem text, data date, horario time, nome_cliente text, pessoas int, status text, area text, mesa text,
+               observacao text, telefone text, email text, criado_em timestamptz, atualizado_em timestamptz)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid; v_operar boolean;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
+  perform public.ponto_validar_periodo(p_inicio, coalesce(p_fim, p_inicio), 93);
+  v_operar := public.pode_operar(v_empresa) is true;
+  return query
+  select r.id, r.origem, r.data, r.horario, r.nome_cliente, r.pessoas, r.status, r.area, r.mesa, r.observacao,
+         case when v_operar then r.telefone end, case when v_operar then r.email end, r.criado_em, r.atualizado_em
+    from public.reservas r
+   where r.empresa_id = v_empresa and r.data between p_inicio and coalesce(p_fim, p_inicio)
+     and (p_status is null or r.status = any (p_status))
+   order by r.data, r.horario nulls last, r.nome_cliente, r.id;
+end $$;
+comment on function public.reservas_listar(date, date, text[], uuid) is
+  '[api] Reservas do período (L G A M; telefone/e-mail só para G A M).';
+
+create or replace function public.reservas_importar(p_linhas jsonb, p_empresa uuid default null)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_empresa uuid; it record; c record; v_erros jsonb := '[]'::jsonb; v_ign int := 0; v_ins int := 0; v_atu int := 0;
+  v_ids text[] := '{}'; v_novo boolean;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  if p_linhas is null or jsonb_typeof(p_linhas) <> 'array' then raise exception 'Lista de itens inválida' using errcode = '22023'; end if;
+  if jsonb_array_length(p_linhas) > 2000 then raise exception 'Lote maior que 2000 itens' using errcode = '22023'; end if;
+  for it in select e.valor, (e.ord - 1)::int as indice from jsonb_array_elements(p_linhas) with ordinality as e(valor, ord) loop
+    begin
+      select * into c from public.reserva_ler_item(it.valor, 'horario');
+      if c.id_externo is not null then
+        if c.id_externo = any (v_ids) then raise exception 'id repetido'; end if;
+        v_ids := v_ids || c.id_externo;
+      end if;
+    exception when others then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then
+        v_erros := v_erros || jsonb_build_object('indice', it.indice, 'motivo', sqlerrm);
+      end if;
+      continue;
+    end;
+    if c.id_externo is null then
+      insert into public.reservas (empresa_id, origem, data, horario, nome_cliente, pessoas, status, area, mesa, observacao,
+                                   telefone, email, criado_por, importado_em)
+      values (v_empresa, 'importacao', c.data, c.horario, c.nome, c.pessoas, c.status, c.area, c.mesa, c.observacao,
+              c.telefone, c.email, public.meu_perfil_id(), public.agora());
+      v_ins := v_ins + 1;
+    else
+      insert into public.reservas as r (empresa_id, origem, id_externo, data, horario, nome_cliente, pessoas, status, area, mesa,
+                                        observacao, telefone, email, criado_por, importado_em)
+      values (v_empresa, 'importacao', c.id_externo, c.data, c.horario, c.nome, c.pessoas, c.status, c.area, c.mesa,
+              c.observacao, c.telefone, c.email, public.meu_perfil_id(), public.agora())
+      on conflict (empresa_id, origem, id_externo) do update
+        set data = excluded.data, horario = excluded.horario, nome_cliente = excluded.nome_cliente, pessoas = excluded.pessoas,
+            status = excluded.status, area = excluded.area, mesa = excluded.mesa, observacao = excluded.observacao,
+            telefone = excluded.telefone, email = excluded.email, importado_em = excluded.importado_em
+      returning (xmax = 0) into v_novo;
+      if v_novo then v_ins := v_ins + 1; else v_atu := v_atu + 1; end if;
+    end if;
+  end loop;
+  return jsonb_build_object('lidos', jsonb_array_length(p_linhas), 'gravados', v_ins + v_atu, 'ignorados', v_ign,
+                            'inseridos', v_ins, 'atualizados', v_atu, 'erros', v_erros);
+end $$;
+comment on function public.reservas_importar(jsonb, uuid) is '[api] Importa reservas de um CSV lido pelo front (G A M).';
+
+-- ================================================================ ingestão (N8N)
+create or replace function public.ingestao_reservas(p_integracao uuid, p_inicio date, p_fim date, p_itens jsonb)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig public.integracoes; it record; c record; v_erros jsonb := '[]'::jsonb; v_ign int := 0; v_ins int := 0; v_atu int := 0;
+  v_rem int := 0; v_ids text[] := '{}'; v_novo boolean;
+begin
+  ig := public.ingestao_integracao_validar(p_integracao, array['tagme']);
+  perform public.ponto_validar_periodo(p_inicio, p_fim, 62);
+  if p_itens is null or jsonb_typeof(p_itens) <> 'array' then raise exception 'Lista de itens inválida' using errcode = '22023'; end if;
+  if jsonb_array_length(p_itens) > 2000 then raise exception 'Lote maior que 2000 itens' using errcode = '22023'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('mdg:reservas:' || ig.empresa_id::text, 0));
+
+  for it in select e.valor, (e.ord - 1)::int as indice from jsonb_array_elements(p_itens) with ordinality as e(valor, ord) loop
+    begin
+      if it.valor is null or jsonb_typeof(it.valor) <> 'object' then raise exception 'item inválido'; end if;
+      if nullif(btrim(it.valor ->> 'id_externo'), '') is null then raise exception 'id_externo ausente'; end if;
+      select * into c from public.reserva_ler_item(it.valor, 'hora');
+      if c.id_externo = any (v_ids) then raise exception 'id repetido'; end if;
+      v_ids := v_ids || c.id_externo;
+    exception when others then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then
+        v_erros := v_erros || jsonb_build_object('indice', it.indice, 'motivo', sqlerrm);
+      end if;
+      continue;
+    end;
+    insert into public.reservas as r (empresa_id, integracao_id, origem, id_externo, data, horario, nome_cliente, pessoas, status,
+                                      area, mesa, observacao, telefone, email, importado_em)
+    values (ig.empresa_id, ig.id, 'tagme', c.id_externo, c.data, c.horario, c.nome, c.pessoas, c.status, c.area, c.mesa,
+            c.observacao, c.telefone, c.email, public.agora())
+    on conflict (empresa_id, origem, id_externo) do update
+      set integracao_id = excluded.integracao_id, data = excluded.data, horario = excluded.horario,
+          nome_cliente = excluded.nome_cliente, pessoas = excluded.pessoas, status = excluded.status, area = excluded.area,
+          mesa = excluded.mesa, observacao = excluded.observacao, telefone = excluded.telefone, email = excluded.email,
+          importado_em = excluded.importado_em
+    returning (xmax = 0) into v_novo;
+    if v_novo then v_ins := v_ins + 1; else v_atu := v_atu + 1; end if;
+  end loop;
+
+  delete from public.reservas r
+   where r.empresa_id = ig.empresa_id and r.origem = 'tagme' and r.data between p_inicio and p_fim
+     and not (r.id_externo = any (v_ids));
+  get diagnostics v_rem = row_count;
+
+  update public.integracoes
+     set cursor = jsonb_build_object('ultimo_inicio', p_inicio, 'ultimo_fim', p_fim)
+   where id = ig.id;
+
+  return jsonb_build_object('lidos', jsonb_array_length(p_itens), 'gravados', v_ins + v_atu, 'ignorados', v_ign,
+                            'inseridos', v_ins, 'atualizados', v_atu, 'removidos', v_rem, 'erros', v_erros);
+end $$;
+comment on function public.ingestao_reservas(uuid, date, date, jsonb) is
+  '[servico] Reservas da Tagme (N8N): upsert por id_externo e remove as da janela que não vieram (adendo R.3).';
+
+-- Bloco "reservas" do painel (sem checagem; o painel já resolveu a empresa).
+create or replace function public.reservas_painel(p_empresa uuid, p_hoje date, p_telefone boolean)
+returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  with e as (select fuso from public.empresas where id = p_empresa),
+       r as (select * from public.reservas where empresa_id = p_empresa and data = p_hoje)
+  select jsonb_build_object(
+    'total', (select count(*) from r where status <> 'cancelada'),
+    'pessoas', (select coalesce(sum(pessoas), 0) from r where status <> 'cancelada'),
+    'canceladas', (select count(*) from r where status = 'cancelada'),
+    'nao_compareceu', (select count(*) from r where status = 'nao_compareceu'),
+    'sentadas', (select count(*) from r where status = 'sentada'),
+    'tem_tagme', exists (select 1 from public.integracoes i where i.empresa_id = p_empresa and i.tipo = 'tagme' and i.ativa),
+    'proximas', coalesce((
+       select jsonb_agg(jsonb_build_object('id', x.id, 'horario', x.horario, 'nome_cliente', x.nome_cliente, 'pessoas', x.pessoas,
+                                           'status', x.status, 'area', x.area, 'mesa', x.mesa, 'observacao', x.observacao,
+                                           'origem', x.origem, 'telefone', case when p_telefone then x.telefone end)
+                        order by x.horario nulls last, x.nome_cliente, x.id)
+         from (select r.* from r, e
+                where r.status in ('confirmada', 'pendente')
+                  and (r.horario is null or ((r.data + r.horario) at time zone e.fuso) >= public.agora() - interval '30 minutes')
+                order by r.horario nulls last, r.nome_cliente, r.id
+                limit 10) x), '[]'::jsonb))
+$$;
+comment on function public.reservas_painel(uuid, date, boolean) is '[interno] Bloco reservas do painel_do_dia (adendo R.4).';
+
+-- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000270_reservas.sql
 
 -- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 20261006000900_permissoes.sql
 -- =====================================================================================================

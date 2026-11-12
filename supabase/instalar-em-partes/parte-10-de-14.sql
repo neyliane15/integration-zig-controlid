@@ -1,8 +1,222 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 10 DE 11.
+-- Meu Dia de Gerente — instalação do banco, PARTE 10 DE 14.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000220_comissoes.sql, 20261006000230_ingestao.sql. Não edite à mão.
 
 begin;
+create or replace function public.comissao_calcular(p_fechamento uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  fc        record;
+  v_zig     bigint;
+  v_bruto   bigint;
+  v_ret     bigint;
+  v_base    bigint;
+  v_dias    int;
+  v_soma    numeric;
+  v_resto   bigint;
+begin
+  select * into fc from public.comissao_fechamentos where id = p_fechamento for update;
+  if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
+  if fc.status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
+
+  -- 1–3. serviço, retenção, base
+  select coalesce(sum(i.valor_total), 0) into v_zig
+    from public.zig_vendas_itens i
+   where i.empresa_id = fc.empresa_id and i.tipo = 'Tip'
+     and i.data_operacao between fc.data_inicio and fc.data_fim
+     and (fc.loja_id_externo is null or i.loja_id_externo = fc.loja_id_externo);
+  v_bruto := greatest(0, v_zig + fc.servico_ajuste_centavos);
+  v_ret := round(v_bruto::numeric * fc.percentual_retencao / 100);
+  v_base := v_bruto - v_ret;
+  v_dias := fc.data_fim - fc.data_inicio + 1;
+
+  -- 4b. (adendo E.1) quem tem pontos extras no período entra (pontos base 0) e os extras são relidos
+  insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, pontos)
+  select fc.empresa_id, p_fechamento, f.id, f.nome, f.cargo, 0
+    from public.funcionarios f
+   where f.empresa_id = fc.empresa_id
+     and exists (select 1 from public.comissao_pontos_extras x
+                  where x.funcionario_id = f.id and x.data between fc.data_inicio and fc.data_fim)
+     and not exists (select 1 from public.comissao_itens it where it.fechamento_id = p_fechamento and it.funcionario_id = f.id);
+  update public.comissao_itens it
+     set pontos_extras = coalesce((select sum(x.pontos) from public.comissao_pontos_extras x
+                                    where x.funcionario_id = it.funcionario_id
+                                      and x.data between fc.data_inicio and fc.data_fim), 0)
+   where it.fechamento_id = p_fechamento and it.funcionario_id is not null;
+
+  -- 5–6. dias trabalhados e pontos efetivos (extras somados depois da proporção, sem proporcionalizar)
+  update public.comissao_itens it
+     set dias_trabalhados = case when it.funcionario_id is null then it.dias_trabalhados
+                                 else (select count(*) from public.ponto_dias d
+                                        where d.funcionario_id = it.funcionario_id
+                                          and d.data between fc.data_inicio and fc.data_fim
+                                          and d.batidas_validas > 0) end
+   where it.fechamento_id = p_fechamento;
+  update public.comissao_itens it
+     set pontos_efetivos = case when not it.incluido then 0
+                                when fc.proporcional_dias then round(it.pontos * it.dias_trabalhados / v_dias, 6) + it.pontos_extras
+                                else it.pontos + it.pontos_extras end
+   where it.fechamento_id = p_fechamento;
+
+  select coalesce(sum(it.pontos_efetivos), 0) into v_soma from public.comissao_itens it where it.fechamento_id = p_fechamento;
+
+  if v_soma = 0 then
+    update public.comissao_itens set valor_centavos = 0 where fechamento_id = p_fechamento;
+  else
+    -- 9. maior resto — aritmética EXATA: piso = div(base × pe, soma) e resto = mod(base × pe, soma)
+    -- (mesmo denominador para todos, então comparar o resto inteiro = comparar a parte fracionária; a divisão
+    -- numérica com escala finita podia arredondar o piso para cima em valores extremos).
+    -- Desempate por nome com collate "C" (ordem de código de caractere, igual à prévia do front em
+    -- web/src/lib/comissao.ts), independente da collation do banco do Supabase.
+    with c as (
+      select it.id, div(v_base * it.pontos_efetivos, v_soma) as piso
+        from public.comissao_itens it where it.fechamento_id = p_fechamento
+    )
+    update public.comissao_itens it set valor_centavos = c.piso::bigint
+      from c where it.id = c.id;
+    select v_base - coalesce(sum(valor_centavos), 0) into v_resto
+      from public.comissao_itens where fechamento_id = p_fechamento;
+    with ordem as (
+      select it.id
+        from public.comissao_itens it
+       where it.fechamento_id = p_fechamento and it.pontos_efetivos > 0
+       order by mod(v_base * it.pontos_efetivos, v_soma) desc,
+                it.pontos_efetivos desc, it.funcionario_nome collate "C" asc, it.funcionario_id asc nulls last, it.id
+       limit v_resto
+    )
+    update public.comissao_itens it set valor_centavos = it.valor_centavos + 1
+      from ordem where it.id = ordem.id;
+  end if;
+
+  update public.comissao_fechamentos
+     set servico_zig_centavos = v_zig,
+         servico_bruto_centavos = v_bruto,
+         retencao_centavos = v_ret,
+         base_distribuivel_centavos = v_base,
+         dias_periodo = v_dias,
+         soma_pontos_efetivos = v_soma,
+         valor_ponto_centavos = case when v_soma = 0 then null else round(v_base / v_soma, 6) end,
+         calculado_em = public.agora()
+   where id = p_fechamento;
+end $$;
+comment on function public.comissao_calcular(uuid) is '[interno] Recalcula um fechamento em rascunho (§9).';
+
+-- Carrega o fechamento e checa permissão de operação (G A M) e status rascunho.
+create or replace function public.comissao_rascunho_para_editar(p_fechamento uuid)
+returns public.comissao_fechamentos language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos;
+begin
+  select * into fc from public.comissao_fechamentos where id = p_fechamento;
+  if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(fc.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if fc.status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
+  return fc;
+end $$;
+comment on function public.comissao_rascunho_para_editar(uuid) is '[interno] Fechamento em rascunho editável pelo usuário?';
+
+-- ================================================================ RPCs
+create or replace function public.comissao_criar_fechamento(p_data_inicio date, p_data_fim date, p_titulo text default null,
+                                                            p_loja text default null, p_proporcional_dias boolean default false,
+                                                            p_empresa uuid default null)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid; v_id uuid; v_pct numeric;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  perform public.ponto_validar_periodo(p_data_inicio, p_data_fim, 93);
+  p_loja := nullif(btrim(p_loja), '');
+  if p_loja is not null and not exists (select 1 from public.zig_lojas l
+                                         where l.empresa_id = v_empresa and l.loja_id_externo = p_loja) then
+    raise exception 'Loja não encontrada' using errcode = 'P0002';
+  end if;
+  select e.comissao_percentual_retencao into v_pct from public.empresas e where e.id = v_empresa;
+
+  insert into public.comissao_fechamentos (empresa_id, titulo, data_inicio, data_fim, loja_id_externo, percentual_retencao,
+                                           proporcional_dias, criado_por)
+  values (v_empresa,
+          coalesce(nullif(btrim(p_titulo), ''),
+                   'Comissão ' || to_char(p_data_inicio, 'DD/MM') || ' a ' || to_char(p_data_fim, 'DD/MM/YYYY')),
+          p_data_inicio, p_data_fim, p_loja, coalesce(v_pct, 20), coalesce(p_proporcional_dias, false), auth.uid())
+  returning id into v_id;
+
+  insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, pontos)
+  select v_empresa, v_id, f.id, f.nome, f.cargo, pv.pontos
+    from public.funcionarios f
+    cross join lateral (select public.comissao_pontos_vigentes(f.id, p_data_fim) as pontos) pv
+   where f.empresa_id = v_empresa and f.ativo and f.participa_comissao
+     and (f.data_admissao is null or f.data_admissao <= p_data_fim)
+     and (f.data_desligamento is null or f.data_desligamento >= p_data_inicio)
+     and pv.pontos > 0;
+
+  perform public.comissao_calcular(v_id);
+  return v_id;
+end $$;
+comment on function public.comissao_criar_fechamento(date, date, text, text, boolean, uuid) is '[api] Cria rascunho de comissão com os participantes e calcula.';
+
+create or replace function public.comissao_atualizar_fechamento(p_fechamento uuid, p_titulo text, p_servico_ajuste_centavos bigint,
+                                                                p_percentual_retencao numeric, p_proporcional_dias boolean,
+                                                                p_observacoes text)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos;
+begin
+  fc := public.comissao_rascunho_para_editar(p_fechamento);
+  if p_percentual_retencao is not null and (p_percentual_retencao < 0 or p_percentual_retencao > 100) then
+    raise exception 'Percentual de retenção inválido' using errcode = '22023';
+  end if;
+  update public.comissao_fechamentos
+     set titulo = coalesce(nullif(btrim(p_titulo), ''), titulo),
+         servico_ajuste_centavos = coalesce(p_servico_ajuste_centavos, servico_ajuste_centavos),
+         percentual_retencao = coalesce(p_percentual_retencao, percentual_retencao),
+         proporcional_dias = coalesce(p_proporcional_dias, proporcional_dias),
+         observacoes = nullif(btrim(p_observacoes), '')
+   where id = p_fechamento;
+  perform public.comissao_calcular(p_fechamento);
+end $$;
+comment on function public.comissao_atualizar_fechamento(uuid, text, bigint, numeric, boolean, text) is '[api] Edita parâmetros do rascunho e recalcula.';
+
+create or replace function public.comissao_definir_item(p_fechamento uuid, p_funcionario uuid, p_pontos numeric,
+                                                        p_incluido boolean default true)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos; f record; v_pontos numeric;
+begin
+  fc := public.comissao_rascunho_para_editar(p_fechamento);
+  select * into f from public.funcionarios where id = p_funcionario;
+  if not found then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
+  if f.empresa_id <> fc.empresa_id then raise exception 'Funcionário de outra empresa' using errcode = '22023'; end if;
+  v_pontos := coalesce(p_pontos, public.comissao_pontos_vigentes(f.id, fc.data_fim));
+  if v_pontos < 0 or v_pontos > 999999.99 then raise exception 'Pontos inválidos' using errcode = '22023'; end if;
+
+  insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, incluido, pontos)
+  values (fc.empresa_id, p_fechamento, f.id, f.nome, f.cargo, coalesce(p_incluido, true), v_pontos)
+  on conflict (fechamento_id, funcionario_id) do update
+    set funcionario_nome = excluded.funcionario_nome, cargo = excluded.cargo,
+        incluido = excluded.incluido, pontos = excluded.pontos;
+  perform public.comissao_calcular(p_fechamento);
+end $$;
+comment on function public.comissao_definir_item(uuid, uuid, numeric, boolean) is '[api] Inclui/atualiza participante (snapshot de nome/cargo) e recalcula.';
+
+create or replace function public.comissao_remover_item(p_fechamento uuid, p_funcionario uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos;
+begin
+  fc := public.comissao_rascunho_para_editar(p_fechamento);
+  if exists (select 1 from public.comissao_pontos_extras x
+              where x.funcionario_id = p_funcionario and x.data between fc.data_inicio and fc.data_fim) then
+    -- com extras no período ele voltaria no próximo cálculo: só desmarca (adendo E.1)
+    update public.comissao_itens set incluido = false where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
+  else
+    delete from public.comissao_itens where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
+  end if;
+  perform public.comissao_calcular(p_fechamento);
+end $$;
+comment on function public.comissao_remover_item(uuid, uuid) is '[api] Remove participante do rascunho (com extras no período: só desmarca) e recalcula.';
+
+create or replace function public.comissao_recalcular(p_fechamento uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos;
+begin
+  fc := public.comissao_rascunho_para_editar(p_fechamento);
+  perform public.comissao_calcular(p_fechamento);
+end $$;
 comment on function public.comissao_recalcular(uuid) is '[api] Relê serviço e presença e recalcula o rascunho.';
 
 create or replace function public.comissao_fechar(p_fechamento uuid)
@@ -302,216 +516,5 @@ returns text language sql immutable set search_path = public, extensions, pg_tem
 $$;
 comment on function public.ingestao_zig_tipo(text) is '[interno] type da Zig → tipo (desconhecido = Outro).';
 
-create or replace function public.ingestao_zig_saida_produtos(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
-returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  ig public.integracoes; v_fuso text; x jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0;
-  v_rem int; v_erros jsonb := '[]'::jsonb; v_unit bigint; v_qtd numeric; v_desc bigint; v_tipo_orig text;
-begin
-  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
-  p_itens := public.ingestao_lista(p_itens);
-  select e.fuso into v_fuso from public.empresas e where e.id = ig.empresa_id;
-
-  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
-  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
-  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_vendas_itens:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
-  delete from public.zig_vendas_itens where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
-  get diagnostics v_rem = row_count;
-
-  for x in select value from jsonb_array_elements(p_itens) loop
-    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
-    begin
-      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
-      if public.ingestao_texto(x -> 'transactionId') is null then raise exception 'transactionId ausente'; end if;
-      v_unit := public.ingestao_centavos(x -> 'unitValue');
-      v_qtd := coalesce((public.ingestao_texto(x -> 'count'))::numeric, 0);
-      v_desc := public.ingestao_centavos(x -> 'discountValue');
-      v_tipo_orig := public.ingestao_texto(x -> 'type');
-      insert into public.zig_vendas_itens (
-        empresa_id, loja_id_externo, data_operacao, transaction_id, transaction_date, event_id, event_date, invoice_id,
-        product_id, product_sku, product_name, product_category, tipo, tipo_original, unit_value, quantidade,
-        fractional_amount, fraction_unit, discount_value, valor_total, employee_name, additions)
-      values (
-        ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'transactionId'),
-        public.ingestao_ler_instante(x ->> 'transactionDate', v_fuso),
-        public.ingestao_texto(x -> 'eventId'),
-        left(public.ingestao_texto(x -> 'eventDate'), 10)::date,
-        public.ingestao_texto(x -> 'invoiceId'),
-        public.ingestao_texto(x -> 'productId'), public.ingestao_texto(x -> 'productSku'),
-        public.ingestao_texto(x -> 'productName'), public.ingestao_texto(x -> 'productCategory'),
-        public.ingestao_zig_tipo(v_tipo_orig), v_tipo_orig, v_unit, v_qtd,
-        (public.ingestao_texto(x -> 'fractionalAmount'))::numeric, public.ingestao_texto(x -> 'fractionUnit'),
-        v_desc, round(v_unit * v_qtd)::bigint - v_desc,
-        public.ingestao_texto(x -> 'employeeName'),
-        case when jsonb_typeof(x -> 'additions') = 'array' then x -> 'additions' else '[]'::jsonb end);
-      v_grav := v_grav + 1;
-    exception when others then
-      v_ign := v_ign + 1;
-      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
-    end;
-  end loop;
-
-  if ig.cursor ->> 'ultimo_dia' is null or p_data > (ig.cursor ->> 'ultimo_dia')::date then
-    update public.integracoes set cursor = cursor || jsonb_build_object('ultimo_dia', p_data) where id = ig.id;
-  end if;
-
-  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
-         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
-end $$;
-comment on function public.ingestao_zig_saida_produtos(uuid, text, date, jsonb) is '[servico] Substitui os itens vendidos do dia/loja (/erp/saida-produtos).';
-
-create or replace function public.ingestao_zig_faturamento(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
-returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  ig public.integracoes; x jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0; v_rem int;
-  v_erros jsonb := '[]'::jsonb;
-begin
-  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
-  p_itens := public.ingestao_lista(p_itens);
-  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
-  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
-  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_faturamento:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
-  delete from public.zig_faturamento where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
-  get diagnostics v_rem = row_count;
-  for x in select value from jsonb_array_elements(p_itens) loop
-    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
-    begin
-      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
-      if public.ingestao_texto(x -> 'paymentId') is null then raise exception 'paymentId ausente'; end if;
-      insert into public.zig_faturamento (empresa_id, loja_id_externo, data_operacao, event_id, event_date, payment_id,
-                                          payment_name, valor)
-      values (ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'eventId'),
-              left(public.ingestao_texto(x -> 'eventDate'), 10)::date,
-              (public.ingestao_texto(x -> 'paymentId'))::int,
-              coalesce(public.ingestao_texto(x -> 'paymentName'), 'Forma ' || public.ingestao_texto(x -> 'paymentId')),
-              public.ingestao_centavos(coalesce(x -> 'value', x -> 'valor', x -> 'totalValue')));
-      v_grav := v_grav + 1;
-    exception when others then
-      v_ign := v_ign + 1;
-      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
-    end;
-  end loop;
-  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
-         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
-end $$;
-comment on function public.ingestao_zig_faturamento(uuid, text, date, jsonb) is '[servico] Substitui o faturamento do dia/loja (/erp/faturamento).';
-
-create or replace function public.ingestao_zig_faturamento_bandeiras(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
-returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  ig public.integracoes; x jsonb; v jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0; v_rem int;
-  v_erros jsonb := '[]'::jsonb; v_valores jsonb;
-begin
-  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
-  p_itens := public.ingestao_lista(p_itens);
-  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
-  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
-  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_faturamento_bandeiras:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
-  delete from public.zig_faturamento_bandeiras
-   where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
-  get diagnostics v_rem = row_count;
-  for x in select value from jsonb_array_elements(p_itens) loop
-    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
-    begin
-      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
-      if public.ingestao_texto(x -> 'paymentId') is null then raise exception 'paymentId ausente'; end if;
-      v_valores := case when jsonb_typeof(x -> 'values') = 'array' then x -> 'values' else '[]'::jsonb end;
-      for v in select value from jsonb_array_elements(v_valores) loop
-        insert into public.zig_faturamento_bandeiras (empresa_id, loja_id_externo, data_operacao, event_id, payment_id,
-                                                      payment_name, card_brand, valor)
-        values (ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'eventId'),
-                (public.ingestao_texto(x -> 'paymentId'))::int, public.ingestao_texto(x -> 'paymentName'),
-                coalesce(public.ingestao_texto(v -> 'cardBrand'), public.ingestao_texto(v -> 'brand')),
-                public.ingestao_centavos(coalesce(v -> 'totalValue', v -> 'value', v -> 'valor')));
-        v_grav := v_grav + 1;
-      end loop;
-    exception when others then
-      v_ign := v_ign + 1;
-      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
-    end;
-  end loop;
-  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
-         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
-end $$;
-comment on function public.ingestao_zig_faturamento_bandeiras(uuid, text, date, jsonb) is '[servico] Substitui o faturamento por bandeira do dia/loja (cada values[] vira uma linha).';
-
-create or replace function public.ingestao_zig_compradores(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
-returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  ig public.integracoes; x jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0; v_rem int;
-  v_erros jsonb := '[]'::jsonb;
-begin
-  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
-  p_itens := public.ingestao_lista(p_itens);
-  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
-  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
-  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_compradores:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
-  delete from public.zig_compradores where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
-  get diagnostics v_rem = row_count;
-  for x in select value from jsonb_array_elements(p_itens) loop
-    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
-    begin
-      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
-      if public.ingestao_texto(x -> 'transactionId') is null then raise exception 'transactionId ausente'; end if;
-      -- LGPD: userDocument, userDocumentType, userPhone, userName, userEmail são descartados.
-      insert into public.zig_compradores (empresa_id, loja_id_externo, data_operacao, transaction_id, products_value, tip_value)
-      values (ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'transactionId'),
-              public.ingestao_centavos(x -> 'productsValue'), public.ingestao_centavos(x -> 'tipValue'));
-      v_grav := v_grav + 1;
-    exception when others then
-      v_ign := v_ign + 1;
-      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
-    end;
-  end loop;
-  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
-         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
-end $$;
-comment on function public.ingestao_zig_compradores(uuid, text, date, jsonb) is '[servico] Substitui os compradores do dia/loja, sem dados pessoais.';
-
--- ======================================================== apuração e exportação (§11.6)
-create or replace function public.ingestao_apurar_ponto(p_empresa uuid default null, p_inicio date default null,
-                                                        p_fim date default null)
-returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  e record; f record; v_atual date; v_ini date; v_fim date;
-  v_emp int := 0; v_func int := 0; v_dias int := 0; v_n int;
-begin
-  if p_empresa is not null and not exists (select 1 from public.empresas where id = p_empresa) then
-    raise exception 'Empresa não encontrada' using errcode = 'P0002';
-  end if;
-  for e in
-    select em.id from public.empresas em
-     where (p_empresa is null and em.ativa) or em.id = p_empresa
-     order by em.id
-  loop
-    v_atual := public.dia_de_trabalho(public.agora(), e.id);
-    v_ini := coalesce(p_inicio, v_atual - 2);
-    v_fim := coalesce(p_fim, v_atual);
-    perform public.ponto_validar_periodo(v_ini, v_fim, 93);
-    v_emp := v_emp + 1;
-    for f in
-      select fu.id from public.funcionarios fu
-       where fu.empresa_id = e.id
-         and (fu.data_admissao is null or fu.data_admissao <= v_fim)
-         and (fu.data_desligamento is null or fu.data_desligamento >= v_ini)
-       order by fu.id
-    loop
-      v_n := public.ponto_apurar(f.id, v_ini, v_fim);
-      if v_n > 0 then v_func := v_func + 1; end if;
-      v_dias := v_dias + v_n;
-    end loop;
-  end loop;
-  return jsonb_build_object('empresas', v_emp, 'funcionarios', v_func, 'dias', v_dias);
-end $$;
-comment on function public.ingestao_apurar_ponto(uuid, date, date) is '[servico] Rotina diária: apura todas as empresas ativas (padrão: dia atual − 2 até hoje).';
-
 commit;
-select 'parte 10 de 11 instalada' as resultado;
+select 'parte 10 de 14 instalada' as resultado;

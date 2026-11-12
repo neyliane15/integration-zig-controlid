@@ -1,8 +1,112 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 08 DE 11.
+-- Meu Dia de Gerente — instalação do banco, PARTE 08 DE 14.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql, 20261006000210_zig.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql. Não edite à mão.
 
 begin;
+create or replace function public.ponto_gatilho_funcionario_vinculo()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_atual date;
+begin
+  v_atual := public.dia_de_trabalho(public.agora(), new.empresa_id);
+  perform public.ponto_apurar(new.id, v_atual - 93, v_atual);
+  return null;
+end $$;
+comment on function public.ponto_gatilho_funcionario_vinculo() is '[interno] §7.8: mudança de admissão/desligamento/ativo → reapura 93 dias.';
+
+drop trigger if exists ponto_vinculo on public.funcionarios;
+create trigger ponto_vinculo after update of data_admissao, data_desligamento, ativo on public.funcionarios
+  for each row
+  when (old.data_admissao is distinct from new.data_admissao
+        or old.data_desligamento is distinct from new.data_desligamento
+        or old.ativo is distinct from new.ativo)
+  execute function public.ponto_gatilho_funcionario_vinculo();
+
+create or replace function public.ponto_gatilho_funcionario_jornada()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_func   uuid;
+  v_desde  date;
+  v_empresa uuid;
+  v_atual  date;
+begin
+  if tg_op = 'DELETE' then
+    v_func := old.funcionario_id; v_desde := old.vigente_desde;
+  elsif tg_op = 'UPDATE' then
+    v_func := new.funcionario_id; v_desde := least(old.vigente_desde, new.vigente_desde);
+    if old.funcionario_id is distinct from new.funcionario_id then
+      select f.empresa_id into v_empresa from public.funcionarios f where f.id = old.funcionario_id;
+      if v_empresa is not null then
+        v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
+        perform public.ponto_apurar(old.funcionario_id, greatest(old.vigente_desde, v_atual - 93), v_atual);
+      end if;
+    end if;
+  else
+    v_func := new.funcionario_id; v_desde := new.vigente_desde;
+  end if;
+  select f.empresa_id into v_empresa from public.funcionarios f where f.id = v_func;
+  if v_empresa is null then return null; end if;
+  v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
+  perform public.ponto_apurar(v_func, greatest(v_desde, v_atual - 93), v_atual);
+  return null;
+end $$;
+comment on function public.ponto_gatilho_funcionario_jornada() is '[interno] §7.8: escala do funcionário mudou → reapura desde vigente_desde (máx. 93 dias).';
+
+drop trigger if exists ponto_reapurar on public.funcionario_jornadas;
+create trigger ponto_reapurar after insert or update or delete on public.funcionario_jornadas
+  for each row execute function public.ponto_gatilho_funcionario_jornada();
+
+create or replace function public.ponto_gatilho_jornada()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_jornada uuid;
+  v_empresa uuid;
+  v_atual   date;
+  f         record;
+begin
+  if tg_table_name = 'jornadas' then
+    v_jornada := coalesce(new.id, old.id);
+  else
+    v_jornada := coalesce(new.jornada_id, old.jornada_id);
+  end if;
+  select j.empresa_id into v_empresa from public.jornadas j where j.id = v_jornada;
+  if v_empresa is null then return null; end if;
+  v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
+  for f in
+    select distinct fj.funcionario_id from public.funcionario_jornadas fj
+     where fj.jornada_id = v_jornada
+  loop
+    perform public.ponto_apurar(f.funcionario_id, v_atual - 31, v_atual);
+  end loop;
+  return null;
+end $$;
+comment on function public.ponto_gatilho_jornada() is '[interno] §7.8: jornada/jornada_dias mudou → reapura 31 dias dos funcionários dessa jornada.';
+
+drop trigger if exists ponto_reapurar on public.jornada_dias;
+create trigger ponto_reapurar after insert or update or delete on public.jornada_dias
+  for each row execute function public.ponto_gatilho_jornada();
+drop trigger if exists ponto_reapurar on public.jornadas;
+create trigger ponto_reapurar after update of tolerancia_batida_minutos, tolerancia_diaria_minutos on public.jornadas
+  for each row execute function public.ponto_gatilho_jornada();
+
+-- Empresa: mudar fuso/virada/janela/alarme de atraso → reapura 31 dias.
+create or replace function public.ponto_gatilho_empresa()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_atual date;
+begin
+  v_atual := public.dia_de_trabalho(public.agora(), new.id);
+  perform public.ponto_apurar_empresa(new.id, v_atual - 31, v_atual);
+  return null;
+end $$;
+comment on function public.ponto_gatilho_empresa() is '[interno] Parâmetros de ponto da empresa mudaram → reapura 31 dias.';
+
+drop trigger if exists ponto_reapurar on public.empresas;
+create trigger ponto_reapurar after update of fuso, virada_dia, ponto_janela_duplicada_minutos, ponto_alarme_atraso on public.empresas
+  for each row
+  when (old.fuso is distinct from new.fuso or old.virada_dia is distinct from new.virada_dia
+        or old.ponto_janela_duplicada_minutos is distinct from new.ponto_janela_duplicada_minutos
+        or old.ponto_alarme_atraso is distinct from new.ponto_alarme_atraso)
+  execute function public.ponto_gatilho_empresa();
+
 -- Fuso/virada mudou → data_trabalho das batidas precisa ser recalculada (antes da reapuração acima).
 create or replace function public.ponto_gatilho_empresa_datas()
 returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -232,6 +336,11 @@ begin
   if p_tipo is null or p_tipo not in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro') then
     raise exception 'Tipo de abono inválido' using errcode = '22023';
   end if;
+  if p_funcionario is not null and exists (
+       select 1 from public.ponto_abonos a
+        where a.funcionario_id = p_funcionario and a.data between p_inicio and p_fim and a.ocorrencia_id is not null) then
+    raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
 
   insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por)
   select v_empresa, p_funcionario, g::date, p_tipo, nullif(btrim(p_motivo), ''), auth.uid()
@@ -256,6 +365,9 @@ begin
   select * into a from public.ponto_abonos where id = p_abono;
   if not found then raise exception 'Abono não encontrado' using errcode = 'P0002'; end if;
   if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if a.ocorrencia_id is not null then
+    raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
   delete from public.ponto_abonos where id = p_abono;
   if a.funcionario_id is not null then
     perform public.ponto_apurar(a.funcionario_id, a.data, a.data);
@@ -331,7 +443,7 @@ declare
   v_saldo   bigint;
   r         record;
   v_rotulos constant jsonb := '{"completo":"Completo","incompleto":"Incompleto","ausente":"Ausente","folga":"Folga",
-     "sem_escala":"Sem escala","abonado":"Abonado","em_andamento":"Em andamento"}'::jsonb;
+     "sem_escala":"Sem escala","abonado":"Abonado","suspenso":"Suspenso","em_andamento":"Em andamento"}'::jsonb;
 begin
   select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
   if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
@@ -402,99 +514,6 @@ begin
   returning id into v_id;
   return v_id;
 end $$;
-comment on function public.banco_horas_lancar(uuid, date, text, integer, text) is '[api] Lança ajuste/compensação/pagamento (saldo inicial só administrador).';
-
-create or replace function public.banco_horas_excluir_lancamento(p_lancamento uuid)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid;
-begin
-  select l.empresa_id into v_empresa from public.banco_horas_lancamentos l where l.id = p_lancamento;
-  if v_empresa is null then raise exception 'Lançamento não encontrado' using errcode = 'P0002'; end if;
-  if public.pode_administrar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  delete from public.banco_horas_lancamentos where id = p_lancamento;
-end $$;
-comment on function public.banco_horas_excluir_lancamento(uuid) is '[api] Exclui lançamento do banco de horas (administrador).';-- =====================================================================================================
--- 20261006000210_zig.sql — backend-2
--- Zig: lojas, itens vendidos (saída de produtos), faturamento, bandeiras, compradores e RPCs de vendas.
--- Contrato: §6 (DDL), §8 (regras), §10.5 (RPCs). Idempotente.
--- =====================================================================================================
-
--- ===================================================================== zig_lojas
-create table if not exists public.zig_lojas (
-  id               uuid primary key default gen_random_uuid(),
-  empresa_id       uuid not null references public.empresas (id) on delete cascade,
-  integracao_id    uuid not null references public.integracoes (id) on delete cascade,
-  loja_id_externo  text not null,
-  nome             text not null,
-  sincronizar      boolean not null default true,
-  visto_em         timestamptz not null default now(),
-  criado_em        timestamptz not null default now(),
-  unique (empresa_id, loja_id_externo)
-);
-create index if not exists zig_lojas_integracao_idx on public.zig_lojas (integracao_id);
-comment on table public.zig_lojas is '[api:crud] Lojas da Zig. authenticated (administrador) só altera `sincronizar`.';
-
--- ============================================================== zig_vendas_itens
-create table if not exists public.zig_vendas_itens (
-  id                 bigint generated always as identity primary key,
-  empresa_id         uuid not null references public.empresas (id) on delete cascade,
-  loja_id_externo    text not null,
-  data_operacao      date not null,
-  transaction_id     text not null,
-  transaction_date   timestamptz,
-  event_id           text,
-  event_date         date,
-  invoice_id         text,
-  product_id         text,
-  product_sku        text,
-  product_name       text,
-  product_category   text,
-  tipo               text not null check (tipo in ('Normal', 'Couvert', 'ZigCard', 'Entrance', 'Tip', 'Outro')),
-  tipo_original      text,
-  unit_value         bigint not null default 0,
-  quantidade         numeric(14,3) not null default 0,
-  fractional_amount  numeric(14,3),
-  fraction_unit      text,
-  discount_value     bigint not null default 0,
-  valor_total        bigint not null,
-  employee_name      text,
-  additions          jsonb not null default '[]'::jsonb,
-  importado_em       timestamptz not null default now()
-);
-create index if not exists zig_vendas_itens_dia_idx on public.zig_vendas_itens (empresa_id, data_operacao, loja_id_externo);
-create index if not exists zig_vendas_itens_garcom_idx on public.zig_vendas_itens (empresa_id, lower(btrim(employee_name)));
-comment on table public.zig_vendas_itens is '[api:leitura] Itens de /erp/saida-produtos (centavos). Tip = serviço.';
-
--- =============================================================== zig_faturamento
-create table if not exists public.zig_faturamento (
-  id               bigint generated always as identity primary key,
-  empresa_id       uuid not null references public.empresas (id) on delete cascade,
-  loja_id_externo  text not null,
-  data_operacao    date not null,
-  event_id         text,
-  event_date       date,
-  payment_id       int not null,
-  payment_name     text not null,
-  valor            bigint not null,
-  importado_em     timestamptz not null default now()
-);
-create index if not exists zig_faturamento_dia_idx on public.zig_faturamento (empresa_id, data_operacao, loja_id_externo);
-comment on table public.zig_faturamento is '[api:leitura] Faturamento por forma de pagamento (/erp/faturamento), centavos.';
-
-create table if not exists public.zig_faturamento_bandeiras (
-  id               bigint generated always as identity primary key,
-  empresa_id       uuid not null references public.empresas (id) on delete cascade,
-  loja_id_externo  text not null,
-  data_operacao    date not null,
-  event_id         text,
-  payment_id       int not null,
-  payment_name     text,
-  card_brand       text,
-  valor            bigint not null,
-  importado_em     timestamptz not null default now()
-);
-create index if not exists zig_bandeiras_dia_idx on public.zig_faturamento_bandeiras (empresa_id, data_operacao, loja_id_externo);
-comment on table public.zig_faturamento_bandeiras is '[api:leitura] Faturamento por bandeira (/erp/faturamento/detalhesMaquinaIntegrada).';
 
 commit;
-select 'parte 08 de 11 instalada' as resultado;
+select 'parte 08 de 14 instalada' as resultado;

@@ -145,8 +145,8 @@ export function useGastosPeriodo(inicio: string, fim: string) {
     enabled: !!empresaId && !!inicio && !!fim && inicio <= fim,
     queryFn: async (): Promise<GastosPeriodo> => {
       const g = await chamarRpc('gastos_periodo', { p_inicio: inicio, p_fim: fim, p_empresa: empresaId })
-      const normal = <T extends Record<string, unknown>>(o: T): T => {
-        const r: Record<string, unknown> = { ...o }
+      const normal = <T extends object>(o: T): T => {
+        const r: Record<string, unknown> = { ...(o as Record<string, unknown>) }
         for (const c of CAMPOS_DINHEIRO) if (c in r) r[c] = num(r[c])
         return r as T
       }

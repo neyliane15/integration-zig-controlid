@@ -1,8 +1,92 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 06 DE 11.
+-- Meu Dia de Gerente — instalação do banco, PARTE 06 DE 14.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000140_envio_controlid.sql, 20261006000200_ponto.sql. Não edite à mão.
 
 begin;
+create or replace function public.controlid_envio_gatilho_usuarios() returns trigger
+language plpgsql security definer
+set search_path = public, extensions, pg_temp
+as $$
+begin
+  if tg_op = 'UPDATE' and old.funcionario_id is not null and old.funcionario_id is distinct from new.funcionario_id then
+    perform public.controlid_envio_atualizar(old.empresa_id, old.funcionario_id, old.integracao_id);
+  end if;
+  if new.funcionario_id is not null and (tg_op = 'INSERT' or old.funcionario_id is distinct from new.funcionario_id
+                                         or old.removido_no_equipamento is distinct from new.removido_no_equipamento) then
+    perform public.controlid_envio_atualizar(new.empresa_id, new.funcionario_id, new.integracao_id);
+  end if;
+  return null;
+end $$;
+comment on function public.controlid_envio_gatilho_usuarios() is '[interno] Gatilho: vínculo com o equipamento mudou.';
+drop trigger if exists controlid_envio on public.controlid_usuarios;
+create trigger controlid_envio after insert or update on public.controlid_usuarios
+  for each row execute function public.controlid_envio_gatilho_usuarios();
+
+-- ==================================================================================== RPCs do front
+create or replace function public.funcionario_para_operar(p_funcionario uuid) returns public.funcionarios
+language plpgsql stable security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  f public.funcionarios;
+begin
+  select * into f from public.funcionarios where id = p_funcionario;
+  if not found then
+    raise exception 'Funcionário não encontrado' using errcode = 'P0002';
+  end if;
+  if public.pode_operar(f.empresa_id) is not true then
+    raise exception 'Sem permissão' using errcode = '42501';
+  end if;
+  return f;
+end $$;
+comment on function public.funcionario_para_operar(uuid) is '[interno] Funcionário existente e operável (G A M).';
+
+create or replace function public.funcionario_definir_senha(p_funcionario uuid, p_senha text) returns void
+language plpgsql volatile security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  f public.funcionarios := public.funcionario_para_operar(p_funcionario);
+  v text := nullif(btrim(coalesce(p_senha, '')), '');
+begin
+  if v is not null and v !~ '^[0-9]{4,8}$' then
+    raise exception 'Senha de acesso inválida' using errcode = '22023';
+  end if;
+  insert into public.funcionario_credenciais (funcionario_id, empresa_id, senha, versao, atualizado_em)
+  values (f.id, f.empresa_id, v, 1, now())
+  on conflict (funcionario_id) do update
+    set senha = excluded.senha,
+        versao = funcionario_credenciais.versao + 1,
+        atualizado_em = now()
+  where funcionario_credenciais.senha is distinct from excluded.senha;
+end $$;
+comment on function public.funcionario_definir_senha(uuid, text) is
+  '[api] Define (4 a 8 dígitos) ou remove (null/vazio) a senha de acesso do funcionário (G A M).';
+
+create or replace function public.funcionario_adicionar_cartao(p_funcionario uuid, p_numero text) returns uuid
+language plpgsql volatile security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  f public.funcionarios := public.funcionario_para_operar(p_funcionario);
+  v text := regexp_replace(coalesce(p_numero, ''), '[^0-9]', '', 'g');
+  v_id uuid;
+begin
+  v := nullif(ltrim(v, '0'), '');
+  v := coalesce(v, case when regexp_replace(coalesce(p_numero, ''), '[^0-9]', '', 'g') <> '' then '0' end);
+  if v is null or length(v) > 20 then
+    raise exception 'Número de cartão inválido' using errcode = '22023';
+  end if;
+  if exists (select 1 from public.funcionario_cartoes where empresa_id = f.empresa_id and numero = v) then
+    raise exception 'Cartão já cadastrado' using errcode = '23505';
+  end if;
+  insert into public.funcionario_cartoes (empresa_id, funcionario_id, numero, criado_por)
+  values (f.empresa_id, f.id, v, public.meu_perfil_id())
+  returning id into v_id;
+  return v_id;
+exception when unique_violation then
+  raise exception 'Cartão já cadastrado' using errcode = '23505';
+end $$;
 comment on function public.funcionario_adicionar_cartao(uuid, text) is '[api] Adiciona cartão/crachá ao funcionário (G A M).';
 
 create or replace function public.funcionario_remover_cartao(p_cartao uuid) returns void
@@ -338,7 +422,7 @@ create table if not exists public.ponto_dias (
   primeira_batida     timestamptz,
   ultima_batida       timestamptz,
   situacao            text not null check (situacao in ('completo', 'incompleto', 'ausente', 'folga',
-                                                        'sem_escala', 'abonado', 'em_andamento')),
+                                                        'sem_escala', 'abonado', 'suspenso', 'em_andamento')),
   encerrado           boolean not null,
   alarmes_abertos     smallint not null default 0,
   apurado_em          timestamptz not null default now(),
@@ -400,8 +484,10 @@ create table if not exists public.ponto_abonos (
   empresa_id      uuid not null references public.empresas (id) on delete cascade,
   funcionario_id  uuid references public.funcionarios (id) on delete cascade,
   data            date not null,
-  tipo            text not null check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro')),
+  tipo            text not null check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro',
+                                                'suspensao')),
   motivo          text,
+  ocorrencia_id   uuid,          -- abono gerado por suspensão (FK para funcionario_ocorrencias criada em …0250)
   criado_por      uuid references public.perfis (id) on delete set null,
   criado_em       timestamptz not null default now(),
   constraint ponto_abonos_uk unique nulls not distinct (empresa_id, funcionario_id, data)
@@ -409,6 +495,15 @@ create table if not exists public.ponto_abonos (
 create index if not exists ponto_abonos_funcionario_idx on public.ponto_abonos (funcionario_id, data);
 create index if not exists ponto_abonos_criado_por_idx on public.ponto_abonos (criado_por);
 comment on table public.ponto_abonos is '[api:leitura] Abonos (folga, feriado, férias, atestado...). funcionario_id null = empresa toda.';
+-- (adendo extras/ocorrências/reservas) suspensão: abono 'suspensao' gerado pela ocorrência; situação 'suspenso'.
+alter table public.ponto_abonos add column if not exists ocorrencia_id uuid;
+create index if not exists ponto_abonos_ocorrencia_idx on public.ponto_abonos (ocorrencia_id);
+alter table public.ponto_abonos drop constraint if exists ponto_abonos_tipo_check;
+alter table public.ponto_abonos add constraint ponto_abonos_tipo_check
+  check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro', 'suspensao'));
+alter table public.ponto_dias drop constraint if exists ponto_dias_situacao_check;
+alter table public.ponto_dias add constraint ponto_dias_situacao_check
+  check (situacao in ('completo', 'incompleto', 'ausente', 'folga', 'sem_escala', 'abonado', 'suspenso', 'em_andamento'));
 
 -- ======================================================= banco_horas_lancamentos
 create table if not exists public.banco_horas_lancamentos (
@@ -430,86 +525,5 @@ create index if not exists banco_horas_funcionario_idx on public.banco_horas_lan
 create index if not exists banco_horas_criado_por_idx on public.banco_horas_lancamentos (criado_por);
 comment on table public.banco_horas_lancamentos is '[api:leitura] Lançamentos manuais do banco de horas (saldo inicial, ajustes, compensações, pagamentos).';
 
--- ========================================================================= RLS
-alter table public.ponto_batidas enable row level security;
-alter table public.ponto_dias enable row level security;
-alter table public.ponto_alarmes enable row level security;
-alter table public.ponto_ajustes enable row level security;
-alter table public.ponto_abonos enable row level security;
-alter table public.banco_horas_lancamentos enable row level security;
-
-drop policy if exists ponto_batidas_ler on public.ponto_batidas;
-create policy ponto_batidas_ler on public.ponto_batidas for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
-drop policy if exists ponto_dias_ler on public.ponto_dias;
-create policy ponto_dias_ler on public.ponto_dias for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
-drop policy if exists ponto_alarmes_ler on public.ponto_alarmes;
-create policy ponto_alarmes_ler on public.ponto_alarmes for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
-drop policy if exists ponto_ajustes_ler on public.ponto_ajustes;
-create policy ponto_ajustes_ler on public.ponto_ajustes for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-drop policy if exists ponto_abonos_ler on public.ponto_abonos;
-create policy ponto_abonos_ler on public.ponto_abonos for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
-drop policy if exists banco_horas_ler on public.banco_horas_lancamentos;
-create policy banco_horas_ler on public.banco_horas_lancamentos for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
-
--- ================================================================ auxiliares
-create or replace function public.ponto_validar_periodo(p_inicio date, p_fim date, p_max_dias int)
-returns void language plpgsql immutable set search_path = public, extensions, pg_temp as $$
-begin
-  if p_inicio is null or p_fim is null or p_fim < p_inicio then
-    raise exception 'Período inválido' using errcode = '22023';
-  end if;
-  if p_fim - p_inicio + 1 > p_max_dias then
-    raise exception 'Período máximo de % dias', p_max_dias using errcode = '22023';
-  end if;
-end $$;
-comment on function public.ponto_validar_periodo(date, date, int) is '[interno] Valida período (Período inválido / Período máximo de N dias).';
-
-create or replace function public.ponto_nome_autor()
-returns text language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  select coalesce((select p.nome from public.perfis p where p.id = auth.uid()), 'Sistema')
-$$;
-comment on function public.ponto_nome_autor() is '[interno] Nome do perfil logado ou ''Sistema''.';
-
--- resolver_empresa (b1) + checagem nula-segura do nível (defesa em profundidade).
-create or replace function public.ponto_resolver_empresa(p_empresa uuid, p_nivel text)
-returns uuid language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare v uuid;
-begin
-  v := public.resolver_empresa(p_empresa, p_nivel);
-  if (case p_nivel when 'ler' then public.pode_ler(v) when 'operar' then public.pode_operar(v)
-                   when 'administrar' then public.pode_administrar(v) end) is not true then
-    raise exception 'Sem permissão' using errcode = '42501';
-  end if;
-  return v;
-end $$;
-comment on function public.ponto_resolver_empresa(uuid, text) is '[interno] resolver_empresa com checagem nula-segura do nível.';
-
--- Instante do horário de escala t no dia de trabalho D (§2.4).
-create or replace function public.ponto_instante_escala(p_data date, p_hora time, p_fuso text, p_virada time)
-returns timestamptz language sql stable set search_path = public, extensions, pg_temp as $$
-  select ((p_data + p_hora) + (case when p_hora < p_virada then interval '1 day' else interval '0' end)) at time zone p_fuso
-$$;
-comment on function public.ponto_instante_escala(date, time, text, time) is '[interno] Instante de um horário de escala no dia de trabalho (§2.4).';
-
-create or replace function public.ponto_fmt_minutos(p_minutos bigint)
-returns text language sql immutable set search_path = public, extensions, pg_temp as $$
-  select case when p_minutos < 0 then '-' else '' end
-      || (abs(p_minutos) / 60)::text || 'h' || lpad((abs(p_minutos) % 60)::text, 2, '0')
-$$;
-comment on function public.ponto_fmt_minutos(bigint) is '[interno] Minutos como 7h30 / -3h26.';
-
--- Funcionário dentro do vínculo na data?
-create or replace function public.ponto_no_vinculo(p_admissao date, p_desligamento date, p_data date)
-returns boolean language sql immutable set search_path = public, extensions, pg_temp as $$
-  select (p_admissao is null or p_data >= p_admissao) and (p_desligamento is null or p_data <= p_desligamento)
-$$;
-comment on function public.ponto_no_vinculo(date, date, date) is '[interno] Data dentro do vínculo (admissão/desligamento).';
-
 commit;
-select 'parte 06 de 11 instalada' as resultado;
+select 'parte 06 de 14 instalada' as resultado;

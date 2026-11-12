@@ -128,10 +128,15 @@ select teste.erro('excluir extra de período fechado', $$select public.comissao_
 select teste.passa('extra fora do período fechado continua livre', $$select public.comissao_extra_excluir((select id from fx where nome = 'x_out'))$$);
 select teste.ok('listar: fechado = true no período fechado',
   (select bool_and(fechado) from public.comissao_extras_listar('2026-09-01', '2026-09-30')));
+select teste.como_dono();
+create temp table fx_f1 on commit drop as select id from fx where nome = 'f1';
+grant select on fx_f1 to service_role;
+select teste.como_servico();
 select teste.ok('exportação traz pontos_extras dos itens',
-  (select bool_and(i ? 'pontos_extras') from jsonb_array_elements(public.ingestao_fechamento_exportar((select id from fx where nome = 'f1')) -> 'itens') i));
+  (select bool_and(i ? 'pontos_extras') from jsonb_array_elements(public.ingestao_fechamento_exportar((select id from fx_f1)) -> 'itens') i));
 
 -- permissões e isolamento (extras)
+select teste.como_dono();
 select teste.como('b2.lei.a@teste.local');
 select teste.erro('leitura não lança extra', $$select public.comissao_extra_lancar('e2000000-0000-4000-8000-000000000301', '2026-10-05', 1, 'x')$$, 'Sem permissão', '42501');
 select teste.erro('leitura não lista extras', $$select * from public.comissao_extras_listar('2026-09-01', '2026-10-06')$$, 'Sem permissão', '42501');
