@@ -22,6 +22,7 @@ export const RPCS_PADRAO = {
   ingestao_zig_faturamento: contar,
   ingestao_zig_compradores: contar,
   ingestao_zig_faturamento_bandeiras: contar,
+  ingestao_reservas: contar,
   ingestao_apurar_ponto: () => ({ empresas: 1, funcionarios: 5, dias: 15 }),
   ingestao_tarefas_gerar: () => 2,
 }

@@ -8,7 +8,7 @@
 create table if not exists public.integracoes (
   id                   uuid primary key default gen_random_uuid(),
   empresa_id           uuid not null references public.empresas (id) on delete cascade,
-  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep')),
+  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')),
   nome                 text not null check (btrim(nome) <> ''),
   ativa                boolean not null default true,
   parametros           jsonb not null default '{}'::jsonb,
@@ -23,7 +23,11 @@ create table if not exists public.integracoes (
 );
 create index if not exists integracoes_empresa_idx on public.integracoes (empresa_id);
 create unique index if not exists integracoes_zig_uk on public.integracoes (empresa_id) where tipo = 'zig';
-comment on table public.integracoes is '[api:crud] Integrações (Zig, Control iD acesso/REP). Segredos ficam em integracoes_segredos.';
+comment on table public.integracoes is '[api:crud] Integrações (Zig, Control iD acesso/REP, Tagme). Segredos ficam em integracoes_segredos.';
+-- (adendo extras/ocorrências/reservas) bancos já instalados: check do tipo com 'tagme'.
+alter table public.integracoes drop constraint if exists integracoes_tipo_check;
+alter table public.integracoes add constraint integracoes_tipo_check
+  check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme'));
 
 create table if not exists public.integracoes_segredos (
   integracao_id  uuid primary key references public.integracoes (id) on delete cascade,
@@ -62,7 +66,7 @@ create table if not exists public.sync_solicitacoes (
   id              uuid primary key default gen_random_uuid(),
   empresa_id      uuid not null references public.empresas (id) on delete cascade,
   integracao_id   uuid references public.integracoes (id) on delete cascade,
-  escopo          text not null check (escopo in ('tudo', 'funcionarios', 'batidas', 'vendas',
+  escopo          text not null check (escopo in ('tudo', 'funcionarios', 'batidas', 'vendas', 'reservas',
                                                   'exportar_funcionarios', 'apurar_ponto', 'exportar_fechamento')),
   data_inicio     date,
   data_fim        date,
@@ -82,6 +86,10 @@ create index if not exists sync_solicitacoes_integracao_idx on public.sync_solic
 create index if not exists sync_solicitacoes_fila_idx on public.sync_solicitacoes (solicitado_em) where status = 'pendente';
 create index if not exists sync_solicitacoes_solicitado_por_idx on public.sync_solicitacoes (solicitado_por);
 comment on table public.sync_solicitacoes is '[api:leitura] Fila do "Sincronizar agora" (escrita por sync_solicitar).';
+alter table public.sync_solicitacoes drop constraint if exists sync_solicitacoes_escopo_check;
+alter table public.sync_solicitacoes add constraint sync_solicitacoes_escopo_check
+  check (escopo in ('tudo', 'funcionarios', 'batidas', 'vendas', 'reservas',
+                    'exportar_funcionarios', 'apurar_ponto', 'exportar_fechamento'));
 
 -- ================================================================================= sync_execucoes
 create table if not exists public.sync_execucoes (
@@ -91,7 +99,7 @@ create table if not exists public.sync_execucoes (
   solicitacao_id       uuid references public.sync_solicitacoes (id) on delete set null,
   tipo                 text not null check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                          'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
-                         'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento')),
+                         'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar')),
   gatilho              text not null check (gatilho in ('agendado', 'manual', 'webhook')),
   workflow             text not null,
   n8n_execution_id     text,
@@ -111,6 +119,11 @@ create index if not exists sync_execucoes_empresa_idx on public.sync_execucoes (
 create index if not exists sync_execucoes_integracao_idx on public.sync_execucoes (integracao_id, iniciado_em desc);
 create index if not exists sync_execucoes_solicitacao_idx on public.sync_execucoes (solicitacao_id);
 comment on table public.sync_execucoes is '[api:leitura] Execuções dos workflows N8N (escritas pelo serviço).';
+alter table public.sync_execucoes drop constraint if exists sync_execucoes_tipo_check;
+alter table public.sync_execucoes add constraint sync_execucoes_tipo_check
+  check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
+                  'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
+                  'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar'));
 
 -- ====================================================================================== gatilhos
 -- Parâmetros padrão por tipo (§11.1); as chaves informadas prevalecem.
@@ -123,6 +136,7 @@ as $$
     when 'controlid_acesso' then
       '{"modelo": "iDFace", "dias_retroativos": 2, "eventos_validos": [7], "relogio_em_hora_local": true}'::jsonb
     when 'controlid_rep' then '{"modelo": "iDClass", "dias_retroativos": 2, "identificador": "cpf"}'::jsonb
+    when 'tagme' then '{"url_base": "", "restaurante_id": "", "dias_retroativos": 1, "dias_a_frente": 7}'::jsonb
     else '{}'::jsonb
   end
 $$;
@@ -333,6 +347,7 @@ as $$
     when 'zig' then array['token']
     when 'controlid_acesso' then array['url', 'login', 'senha']
     when 'controlid_rep' then array['url', 'login', 'senha']
+    when 'tagme' then array['token', 'cliente_id', 'cliente_segredo']
     else array[]::text[]
   end
 $$;
@@ -407,10 +422,11 @@ language sql immutable
 set search_path = public, extensions, pg_temp
 as $$
   select case p_escopo
-    when 'tudo' then p_tipo in ('zig', 'controlid_acesso', 'controlid_rep')
+    when 'tudo' then p_tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')
     when 'funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep')
     when 'batidas' then p_tipo in ('controlid_acesso', 'controlid_rep')
     when 'vendas' then p_tipo = 'zig'
+    when 'reservas' then p_tipo = 'tagme'
     when 'exportar_funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep')
     else false
   end
@@ -434,7 +450,7 @@ declare
   v_existe boolean;
   r record;
 begin
-  if p_escopo is null or p_escopo not in ('tudo', 'funcionarios', 'batidas', 'vendas', 'exportar_funcionarios',
+  if p_escopo is null or p_escopo not in ('tudo', 'funcionarios', 'batidas', 'vendas', 'reservas', 'exportar_funcionarios',
                                          'apurar_ponto', 'exportar_fechamento') then
     raise exception 'Escopo inválido' using errcode = '22023';
   end if;
