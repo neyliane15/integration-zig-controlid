@@ -1,6 +1,7 @@
 # Meu Dia de Gerente — Contrato técnico
 
 Fonte única da verdade entre **banco (Supabase)**, **front (web/)** e **N8N (n8n/)**.
+Adendos: `docs/CONTRATO-ADENDO-envio-controlid.md`, `docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md` (ocorrências, extras, reservas/Tagme).
 Seis agentes implementam em paralelo a partir deste documento (divisão em `docs/DIVISAO.md`).
 Mudou algo? Atualize **aqui primeiro** e avise os donos afetados.
 
@@ -223,7 +224,10 @@ Nas tabelas `[api:crud]`, quem não tem política para a operação recebe 0 lin
 | `20261006000210_zig.sql` | backend-2 | zig_lojas, zig_vendas_itens, zig_faturamento, zig_faturamento_bandeiras, zig_compradores, RPCs de vendas, RLS |
 | `20261006000220_comissoes.sql` | backend-2 | comissao_fechamentos, comissao_itens, RPCs de comissão, RLS |
 | `20261006000230_ingestao.sql` | backend-2 | `ingestao_controlid_batidas`, `ingestao_zig_*`, `ingestao_apurar_ponto`, `ingestao_fechamento_exportar` |
-| `20261006000240_painel.sql` | backend-2 | `painel_do_dia` |
+| `20261006000240_painel.sql` | backend-2 | `painel_do_dia` (+ blocos `reservas`/`ocorrencias`, adendo) |
+| `20261006000250_ocorrencias.sql` | backend | ocorrências disciplinares, anexos (bucket `funcionarios-documentos`), suspensão → abono (`docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md`) |
+| `20261006000260_extras.sql` | backend | pontos extras (RPCs), diárias, `gastos_periodo` (adendo) |
+| `20261006000270_reservas.sql` | backend | reservas, importação CSV, `ingestao_reservas` (Tagme) (adendo) |
 | `20261006000900_permissoes.sql` | backend-1 | varredura de privilégios por etiqueta (§2.2). **Sempre a última.** |
 
 O backend-2 escreve contra o DDL do §5 **exatamente** como está aqui (nomes, tipos, nulidade).
@@ -388,7 +392,7 @@ create index if not exists funcionario_jornadas_jornada_idx on public.funcionari
 create table if not exists public.integracoes (
   id                   uuid primary key default gen_random_uuid(),
   empresa_id           uuid not null references public.empresas (id) on delete cascade,
-  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep')),
+  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')),  -- tagme: adendo R.1
   nome                 text not null check (btrim(nome) <> ''),    -- ex.: 'Zig', 'iDFace porta dos fundos', 'iDClass salão'
   ativa                boolean not null default true,
   parametros           jsonb not null default '{}'::jsonb,          -- NÃO secreto; formato em §11.1
@@ -607,7 +611,7 @@ create table if not exists public.ponto_dias (
   primeira_batida     timestamptz,
   ultima_batida       timestamptz,
   situacao            text not null check (situacao in ('completo', 'incompleto', 'ausente', 'folga',
-                                                        'sem_escala', 'abonado', 'em_andamento')),
+                                                        'sem_escala', 'abonado', 'suspenso', 'em_andamento')),  -- suspenso: adendo O
   encerrado           boolean not null,
   alarmes_abertos     smallint not null default 0,
   apurado_em          timestamptz not null default now(),
@@ -665,7 +669,7 @@ create table if not exists public.ponto_abonos (
   empresa_id      uuid not null references public.empresas (id) on delete cascade,
   funcionario_id  uuid references public.funcionarios (id) on delete cascade,   -- null = empresa toda (feriado)
   data            date not null,
-  tipo            text not null check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro')),
+  tipo            text not null check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro', 'suspensao')),  -- suspensao: só via ocorrência (adendo O)
   motivo          text,
   criado_por      uuid references public.perfis (id) on delete set null,
   criado_em       timestamptz not null default now(),
@@ -863,7 +867,7 @@ Não grava nada. Fonte única da verdade usada por `ponto_apurar` e `ponto_espel
    atraso se a combinação escolhida no §7.3 inclui a **entrada** — se a entrada foi esquecida, o dia gera `batida_faltando`
    na entrada e **não** um atraso de horas (a regra vale também no dia em andamento).
 7. **Situação** (na ordem):
-   `encerrado = false` → `em_andamento`; abono → `abonado`; `esperadas = 0 e n = 0` → `sem_escala` (sem jornada) ou `folga`;
+   `encerrado = false` → `em_andamento`; abono `suspensao` → `suspenso` *(adendo O)*; outro abono → `abonado`; `esperadas = 0 e n = 0` → `sem_escala` (sem jornada) ou `folga`;
    `n = 0` → `ausente`; `n ≥ esperadas e n par` → `completo`; senão `incompleto`.
 
 ### 7.3 Alarmes esperados de um dia
@@ -964,8 +968,11 @@ Para um fechamento de `[data_inicio, data_fim]` (loja opcional):
 4. Participantes = itens com `incluido = true`. `pontos` do item: ao criar, `pontos_vigentes(funcionario, data_fim)`; editável no rascunho.
 5. `dias_periodo = data_fim − data_inicio + 1`. `dias_trabalhados` = nº de dias de trabalho no período com ao menos uma batida válida
    (`ponto_dias.batidas_validas > 0`).
-6. `pontos_efetivos = pontos` (padrão) ou, com `proporcional_dias = true`, `round(pontos × dias_trabalhados / dias_periodo, 6)`.
-   Item não incluído → `pontos_efetivos = 0`, `valor = 0`.
+6. `pontos_efetivos = pontos` (padrão) ou, com `proporcional_dias = true`, `round(pontos × dias_trabalhados / dias_periodo, 6)`,
+   **mais `pontos_extras`** *(adendo extras, E.1)*: `pontos_extras` = Σ de `comissao_pontos_extras` do funcionário com data no período
+   (somados **depois** da proporção, nunca proporcionalizados); quem tem extras e não tem item entra com `pontos = 0`.
+   Item não incluído → `pontos_efetivos = 0`, `valor = 0`. Lançar/excluir extra em período de fechamento **fechado** é recusado
+   (`Período de comissão já fechado`). Vetores com extras: adendo E.1.
 7. `soma = Σ pontos_efetivos`. Se `soma = 0` → todos os valores 0 e `valor_ponto_centavos = null` (fechar é recusado: `Fechamento sem participantes`).
 8. `valor_ponto = base / soma` (numeric, 6 casas, só para exibir).
 9. **Arredondamento (maior resto, determinístico)**: `exato_i = base × pe_i / soma` (numeric sem arredondar);
@@ -1112,6 +1119,7 @@ Leitura: `comissao_fechamentos` e `comissao_itens` direto (RLS G A M).
 `alarmes`: os 5 abertos mais recentes (data desc). `presentes_agora`: funcionários com nº ímpar de batidas válidas hoje.
 `escalados_hoje`: com `esperadas > 0` hoje. `executando`: existe `sync_execucoes` 'executando' ou solicitação `pendente`/`em_andamento` da integração.
 `sincronizacao`: todos os papéis veem (só status, nunca segredos).
+*(Adendo extras/ocorrências/reservas, R.4)* chaves novas `reservas` (todos os papéis; telefone só G A M) e `ocorrencias` (`null` para leitura).
 
 ### 10.8 Ingestão e exportação (backend-2, `[servico]`)
 `ingestao_controlid_batidas`, `ingestao_zig_lojas`, `ingestao_zig_saida_produtos`, `ingestao_zig_faturamento`,
@@ -1156,6 +1164,7 @@ Motivos por item nas ingestões (vão em `erros[].motivo`, §11.2, não são exc
 | `zig` | `{"rede": "<id da rede>", "dias_retroativos": 2}` | `{"token": "<token da Zig>"}` |
 | `controlid_acesso` | `{"modelo": "iDFace", "dias_retroativos": 2, "eventos_validos": [7], "relogio_em_hora_local": true}` | `{"url": "http://192.168.0.50", "login": "admin", "senha": "admin"}` |
 | `controlid_rep` | `{"modelo": "iDClass", "dias_retroativos": 2, "identificador": "cpf"}` (`"cpf"` Portaria 671 / `"pis"` legado) | `{"url": "https://192.168.0.60", "login": "admin", "senha": "admin"}` |
+| `tagme` *(adendo)* | `{"url_base": "", "restaurante_id": "", "dias_retroativos": 1, "dias_a_frente": 7}` | `{"token", "cliente_id", "cliente_segredo"}` |
 
 `relogio_em_hora_local = true` (padrão): o `time` (unix) dos `access_logs` representa a **hora de parede local** gravada como se fosse UTC
 (comportamento comum dos equipamentos); o N8N envia `instante_local`. `false`: envia `instante` UTC. Confirmar com uma batida conhecida na implantação.
@@ -1333,7 +1342,7 @@ Nome do arquivo: `<tipo>_<empresa-slug>_<aaaa-mm-dd>[_<aaaa-mm-dd>].csv`.
 
 | arquivo | colunas |
 |---|---|
-| `comissao_…` | `Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos efetivos;Valor (R$)` + linha final `Total;;;<soma pontos>;;<soma pe>;<base>` + bloco de cabeçalho antes das colunas: `Período;dd/mm/aaaa a dd/mm/aaaa`, `Serviço Zig (R$)`, `Ajuste (R$)`, `Serviço bruto (R$)`, `Retenção (%)`, `Retenção (R$)`, `Base distribuível (R$)`, `Valor do ponto (R$)`, `Status`, linha em branco |
+| `comissao_…` | `Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos extras;Pontos efetivos;Valor (R$)` *(adendo extras: coluna "Pontos extras")* + linha final `Total;;;<soma pontos>;;<soma extras>;<soma pe>;<base>` + bloco de cabeçalho antes das colunas: `Período;dd/mm/aaaa a dd/mm/aaaa`, `Serviço Zig (R$)`, `Ajuste (R$)`, `Serviço bruto (R$)`, `Retenção (%)`, `Retenção (R$)`, `Base distribuível (R$)`, `Valor do ponto (R$)`, `Status`, linha em branco |
 | `ponto_…` (espelho) | `Data;Dia;Batidas;Previsto;Trabalhado;Saldo;Situação;Alarmes` (batidas `hh:mm` separadas por espaço) |
 | `banco-horas_…` | `Funcionário;Cargo;Saldo (hh:mm);Saldo do mês (hh:mm)` |
 | `vendas-garcom_…` | `Garçom;Funcionário;Quantidade;Vendas (R$);Serviço (R$);Transações` |

@@ -25,7 +25,7 @@ function normalizarFechamento(f: ComissaoFechamento): ComissaoFechamento {
 }
 
 function normalizarItem(i: ComissaoItem): ComissaoItem {
-  return { ...i, pontos: num(i.pontos), pontos_efetivos: num(i.pontos_efetivos), valor_centavos: num(i.valor_centavos) }
+  return { ...i, pontos: num(i.pontos), pontos_extras: num(i.pontos_extras), pontos_efetivos: num(i.pontos_efetivos), valor_centavos: num(i.valor_centavos) }
 }
 
 export type FechamentoNaLista = ComissaoFechamento & { total_itens_centavos: number; participantes: number }

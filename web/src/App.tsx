@@ -57,6 +57,10 @@ const PaginaFechamento = lazy(() => import('./paginas/comissoes/PaginaFechamento
 const PaginaTarefas = lazy(() => import('./paginas/tarefas/PaginaTarefas').then((m) => ({ default: m.PaginaTarefas })))
 const PaginaRotinas = lazy(() => import('./paginas/tarefas/PaginaRotinas').then((m) => ({ default: m.PaginaRotinas })))
 
+// ------------------------------------------- extras, ocorrências e reservas (adendo)
+const PaginaExtras = lazy(() => import('./paginas/extras/PaginaExtras').then((m) => ({ default: m.PaginaExtras })))
+const PaginaReservas = lazy(() => import('./paginas/reservas/PaginaReservas').then((m) => ({ default: m.PaginaReservas })))
+
 function So({ permitir, children }: { permitir(p: Papel): boolean; children: ReactNode }) {
   return <SoPara permitir={permitir}>{children}</SoPara>
 }
@@ -99,6 +103,9 @@ export function App() {
 
           <Route path="/comissoes" element={<So permitir={podeVerComissoes}><PaginaComissoes /></So>} />
           <Route path="/comissoes/:id" element={<So permitir={podeVerComissoes}><PaginaFechamento /></So>} />
+
+          <Route path="/extras" element={<So permitir={podeOperar}><PaginaExtras /></So>} />
+          <Route path="/reservas" element={<PaginaReservas />} />
 
           <Route path="/tarefas" element={<PaginaTarefas />} />
           <Route path="/tarefas/rotinas" element={<So permitir={podeOperar}><PaginaRotinas /></So>} />

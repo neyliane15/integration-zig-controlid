@@ -140,6 +140,7 @@ function Fechamento({ fechamento: f, itens }: { fechamento: ComissaoFechamento; 
           nome: i.funcionario_nome,
           cargo: i.cargo,
           diasTrabalhados: i.dias_trabalhados,
+          pontosExtras: i.pontos_extras,
           ...itemEfetivo(i),
         })),
       }),
@@ -389,7 +390,16 @@ function Fechamento({ fechamento: f, itens }: { fechamento: ComissaoFechamento; 
         <Cartao
           sobrancelha={`${previa.itens.filter((i) => i.incluido && i.pontosEfetivos > 0).length} participante(s)`}
           titulo="Rateio por funcionário"
-          acoes={confere ? <Selo tom="sucesso">Prévia confere com o banco</Selo> : sujo ? <Selo tom="ouro">Prévia</Selo> : null}
+          acoes={
+            <>
+              {confere ? <Selo tom="sucesso">Prévia confere com o banco</Selo> : sujo ? <Selo tom="ouro">Prévia</Selo> : null}
+              {rascunho && (
+                <BotaoLink to={`/extras?aba=pontos&de=${f.data_inicio}&ate=${f.data_fim}`} variante="fantasma" tamanho="p">
+                  Pontos extras
+                </BotaoLink>
+              )}
+            </>
+          }
           semPreenchimento
         >
           {itens.length === 0 ? (
@@ -405,6 +415,9 @@ function Fechamento({ fechamento: f, itens }: { fechamento: ComissaoFechamento; 
                     <th scope="col" className="px-3 py-3 text-center">Incluído</th>
                     <th scope="col" className="px-3 py-3 text-right">Pontos</th>
                     <th scope="col" className="px-3 py-3 text-right">Dias</th>
+                    <th scope="col" className="px-3 py-3 text-right" title="Pontos extras lançados em Extras no período (não são proporcionais aos dias)">
+                      Extras
+                    </th>
                     <th scope="col" className="px-3 py-3 text-right">Pts efetivos</th>
                     <th scope="col" className="px-3 py-3 text-right">Valor</th>
                     {rascunho && <th scope="col" className="px-3 py-3"><span className="sr-only">Ações</span></th>}
@@ -455,6 +468,9 @@ function Fechamento({ fechamento: f, itens }: { fechamento: ComissaoFechamento; 
                         <td className="numero px-3 py-3 text-right text-lavanda">
                           {i.dias_trabalhados}/{f.dias_periodo}
                         </td>
+                        <td className={clsx('numero px-3 py-3 text-right', i.pontos_extras > 0 ? 'text-ouro-claro' : 'text-lavanda-escuro')}>
+                          {i.pontos_extras > 0 ? `+${fmtPontos(i.pontos_extras)}` : '—'}
+                        </td>
                         <td className="numero px-3 py-3 text-right">{fmtPontos(p?.pontosEfetivos ?? 0, 6)}</td>
                         <td className="numero px-3 py-3 text-right font-semibold whitespace-nowrap text-ouro-claro">
                           {formatarCentavos(p?.valorCentavos ?? 0)}
@@ -497,6 +513,9 @@ function Fechamento({ fechamento: f, itens }: { fechamento: ComissaoFechamento; 
                       {fmtPontos(itens.reduce((s, i) => s + (itemEfetivo(i).incluido ? itemEfetivo(i).pontos : 0), 0))}
                     </td>
                     <td />
+                    <td className="numero px-3 py-3 text-right">
+                      {fmtPontos(itens.reduce((s, i) => s + (itemEfetivo(i).incluido ? i.pontos_extras : 0), 0))}
+                    </td>
                     <td className="numero px-3 py-3 text-right">{fmtPontos(previa.somaPontosEfetivos, 6)}</td>
                     <td className="numero px-3 py-3 text-right text-ouro-claro">{formatarCentavos(previa.totalDistribuidoCentavos)}</td>
                     {rascunho && <td />}
