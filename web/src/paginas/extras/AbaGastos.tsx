@@ -8,7 +8,7 @@ import { useGastosPeriodo } from '@/consultas/extras'
 import { csvGastos } from '@/lib/extras'
 import { baixarCsv } from '@/lib/csv'
 import { formatarCentavos, formatarData } from '@/lib/formato'
-import { rotuloStatusFechamento } from '@/lib/rotulos'
+import { rotuloModoRateio, rotuloStatusFechamento } from '@/lib/rotulos'
 
 const SERIES: SerieBarras[] = [
   { id: 'diarias_pagas', rotulo: 'Diárias pagas', cor: 'bg-sucesso/80' },
@@ -51,7 +51,7 @@ export function AbaGastos({ inicio, fim }: { inicio: string; fim: string }) {
           ) : (
             <span className="truncate">{p.nome}</span>
           )}
-          {p.avulso && <Selo tom="info">Avulso</Selo>}
+          {p.tipo === 'extra' && <Selo tom="info">Extra</Selo>}
         </span>
       ),
     },
@@ -66,8 +66,18 @@ export function AbaGastos({ inicio, fim }: { inicio: string; fim: string }) {
   return (
     <div className="flex flex-col gap-5">
       <div className="grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-3 2xl:grid-cols-5">
-        <Indicador rotulo="Diárias pagas" valor={formatarCentavos(t.diarias_pagas)} tom="sucesso" detalhe={`${t.diarias_qtd} diária(s) no período`} />
-        <Indicador rotulo="Diárias a pagar" valor={formatarCentavos(t.diarias_a_pagar)} tom={t.diarias_a_pagar > 0 ? 'alerta' : undefined} />
+        <Indicador
+          rotulo="Diárias"
+          valor={formatarCentavos(t.diarias)}
+          tom="sucesso"
+          detalhe={`${t.diarias_qtd} dia(s) · extras ${formatarCentavos(t.diarias_extras)} · funcionários ${formatarCentavos(t.diarias_funcionarios)}`}
+        />
+        <Indicador
+          rotulo="Diárias a pagar"
+          valor={formatarCentavos(t.diarias_a_pagar)}
+          tom={t.diarias_a_pagar > 0 ? 'alerta' : undefined}
+          detalhe={`${formatarCentavos(t.diarias_pagas)} já pago`}
+        />
         <Indicador rotulo="Comissões fechadas" valor={formatarCentavos(t.comissoes_fechadas)} />
         <Indicador rotulo="Comissões previstas" valor={formatarCentavos(t.comissoes_previstas)} detalhe="Rascunhos (não somam no total)" tom="info" />
         <div className="col-span-2 lg:col-span-1 2xl:col-span-1">
@@ -93,7 +103,9 @@ export function AbaGastos({ inicio, fim }: { inicio: string; fim: string }) {
                 valores: { diarias_pagas: d.diarias_pagas, diarias_a_pagar: d.diarias_a_pagar, comissoes_fechadas: d.comissoes_fechadas },
               }))}
             />
-            <p className="mt-3 text-xs text-lavanda">A comissão de um fechamento entra no último dia do período dele.</p>
+            <p className="mt-3 text-xs text-lavanda">
+              Rateio diário: a comissão cai no próprio dia trabalhado. Rateio por período: entra inteira no último dia do fechamento.
+            </p>
           </>
         )}
       </Cartao>
@@ -118,16 +130,22 @@ export function AbaGastos({ inicio, fim }: { inicio: string; fim: string }) {
       </Cartao>
 
       {g.fechamentos.length > 0 && (
-        <Cartao titulo="Fechamentos considerados" sobrancelha="Comissões com fim no período">
+        <Cartao titulo="Fechamentos considerados" sobrancelha="Comissões que caem no período">
           <ul className="flex flex-col divide-y divide-borda">
             {g.fechamentos.map((f) => (
               <li key={f.id} className="flex flex-wrap items-center justify-between gap-2 py-3 first:pt-0 last:pb-0">
                 <Link to={`/comissoes/${f.id}`} className={`min-w-0 truncate font-semibold text-creme hover:underline ${FOCO}`}>
                   {f.titulo}
                 </Link>
-                <span className="flex items-center gap-3">
+                <span className="flex flex-wrap items-center gap-3">
+                  <span className="text-xs text-lavanda">{rotuloModoRateio[f.modo_rateio]}</span>
                   <Selo tom={f.status === 'fechado' ? 'sucesso' : 'ouro'}>{rotuloStatusFechamento[f.status]}</Selo>
-                  <span className="numero text-sm">{formatarCentavos(f.base_distribuivel_centavos)}</span>
+                  <span className="numero text-right text-sm">
+                    {formatarCentavos(f.valor_no_periodo_centavos)}
+                    {f.valor_no_periodo_centavos !== f.base_distribuivel_centavos && (
+                      <span className="block text-[11px] text-lavanda">de {formatarCentavos(f.base_distribuivel_centavos)}</span>
+                    )}
+                  </span>
                 </span>
               </li>
             ))}

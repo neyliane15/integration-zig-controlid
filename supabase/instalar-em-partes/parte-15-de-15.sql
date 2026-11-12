@@ -1,8 +1,58 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 14 DE 14.
+-- Meu Dia de Gerente — instalação do banco, PARTE 15 DE 15.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000270_reservas.sql, 20261006000900_permissoes.sql. Não edite à mão.
 
 begin;
+comment on function public.reservas_listar(date, date, text[], uuid) is
+  '[api] Reservas do período (L G A M; telefone/e-mail só para G A M).';
+
+create or replace function public.reservas_importar(p_linhas jsonb, p_empresa uuid default null)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_empresa uuid; it record; c record; v_erros jsonb := '[]'::jsonb; v_ign int := 0; v_ins int := 0; v_atu int := 0;
+  v_ids text[] := '{}'; v_novo boolean;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  if p_linhas is null or jsonb_typeof(p_linhas) <> 'array' then raise exception 'Lista de itens inválida' using errcode = '22023'; end if;
+  if jsonb_array_length(p_linhas) > 2000 then raise exception 'Lote maior que 2000 itens' using errcode = '22023'; end if;
+  for it in select e.valor, (e.ord - 1)::int as indice from jsonb_array_elements(p_linhas) with ordinality as e(valor, ord) loop
+    begin
+      select * into c from public.reserva_ler_item(it.valor, 'horario');
+      if c.id_externo is not null then
+        if c.id_externo = any (v_ids) then raise exception 'id repetido'; end if;
+        v_ids := v_ids || c.id_externo;
+      end if;
+    exception when others then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then
+        v_erros := v_erros || jsonb_build_object('indice', it.indice, 'motivo', sqlerrm);
+      end if;
+      continue;
+    end;
+    if c.id_externo is null then
+      insert into public.reservas (empresa_id, origem, data, horario, nome_cliente, pessoas, status, area, mesa, observacao,
+                                   telefone, email, criado_por, importado_em)
+      values (v_empresa, 'importacao', c.data, c.horario, c.nome, c.pessoas, c.status, c.area, c.mesa, c.observacao,
+              c.telefone, c.email, public.meu_perfil_id(), public.agora());
+      v_ins := v_ins + 1;
+    else
+      insert into public.reservas as r (empresa_id, origem, id_externo, data, horario, nome_cliente, pessoas, status, area, mesa,
+                                        observacao, telefone, email, criado_por, importado_em)
+      values (v_empresa, 'importacao', c.id_externo, c.data, c.horario, c.nome, c.pessoas, c.status, c.area, c.mesa,
+              c.observacao, c.telefone, c.email, public.meu_perfil_id(), public.agora())
+      on conflict (empresa_id, origem, id_externo) do update
+        set data = excluded.data, horario = excluded.horario, nome_cliente = excluded.nome_cliente, pessoas = excluded.pessoas,
+            status = excluded.status, area = excluded.area, mesa = excluded.mesa, observacao = excluded.observacao,
+            telefone = excluded.telefone, email = excluded.email, importado_em = excluded.importado_em
+      returning (xmax = 0) into v_novo;
+      if v_novo then v_ins := v_ins + 1; else v_atu := v_atu + 1; end if;
+    end if;
+  end loop;
+  return jsonb_build_object('lidos', jsonb_array_length(p_linhas), 'gravados', v_ins + v_atu, 'ignorados', v_ign,
+                            'inseridos', v_ins, 'atualizados', v_atu, 'erros', v_erros);
+end $$;
+comment on function public.reservas_importar(jsonb, uuid) is '[api] Importa reservas de um CSV lido pelo front (G A M).';
+
 -- ================================================================ ingestão (N8N)
 create or replace function public.ingestao_reservas(p_integracao uuid, p_inicio date, p_fim date, p_itens jsonb)
 returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -170,4 +220,4 @@ begin
 end $$;
 
 commit;
-select 'parte 14 de 14 instalada' as resultado;
+select 'parte 15 de 15 instalada' as resultado;

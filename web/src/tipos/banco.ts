@@ -57,6 +57,9 @@ export type TipoAbono = 'folga' | 'feriado' | 'ferias' | 'atestado' | 'compensac
 export type TipoLancamento = 'saldo_inicial' | 'ajuste' | 'compensacao' | 'pagamento'
 export type TipoZig = 'Normal' | 'Couvert' | 'ZigCard' | 'Entrance' | 'Tip' | 'Outro'
 export type StatusFechamento = 'rascunho' | 'fechado'
+export type ModoRateio = 'diario' | 'periodo'
+export type TipoParticipanteComissao = 'funcionario' | 'extra'
+export type TipoDiaria = 'extra' | 'funcionario'
 /** Adendo envio Control iD (A.2). */
 export type StatusEnvioControlId = 'pendente' | 'enviando' | 'enviado' | 'erro' | 'aguardando'
 export type OperacaoEnvio = 'salvar' | 'remover' | 'bloquear'
@@ -579,20 +582,33 @@ export interface ComissaoFechamento {
   calculado_em: InstanteISO | null
   fechado_por: Uuid | null
   fechado_em: InstanteISO | null
+  /** adendo E.3 — 'diario' (padrão dos novos) ou 'periodo' (§9) */
+  modo_rateio: ModoRateio
+  /** modo diário: dias com base > 0 rateados pelo fallback (sem presença registrada) */
+  dias_sem_presenca: number
+  /** modo diário: dias com base > 0 sem ninguém para ratear (fechar é recusado) */
+  dias_sem_participantes: number
 }
 
 export interface ComissaoItem {
   id: Uuid
   empresa_id: Uuid
   fechamento_id: Uuid
+  /** adendo E.3: participante = funcionário OU extra */
+  tipo: TipoParticipanteComissao
   funcionario_id: Uuid | null
+  extra_id: Uuid | null
+  /** snapshot do nome (funcionário ou extra) */
   funcionario_nome: string
   cargo: string | null
   incluido: boolean
   pontos: number
+  /** funcionário: pontos fixados no rascunho (senão: vigentes de cada dia) */
+  pontos_manual: boolean
+  /** = dias_presentes (compatibilidade) */
   dias_trabalhados: number
-  /** adendo E.1: Σ pontos extras do período (numeric(10,2)) */
-  pontos_extras: number
+  /** funcionário: dias com batida válida no período; extra: dias lançados */
+  dias_presentes: number
   pontos_efetivos: number
   valor_centavos: Centavos
   criado_em: InstanteISO
@@ -653,33 +669,81 @@ export interface ResumoOcorrencias {
   recentes: OcorrenciaRecente[]
 }
 
-/** Linha de `comissao_extras_listar` (E.1). */
-export interface PontoExtra {
-  id: Uuid
-  funcionario_id: Uuid
-  funcionario_nome: string
-  cargo: string | null
-  data: DataISO
+/** `comissao_detalhe` (adendo E.3.4). */
+export interface ComissaoDetalheRateio {
+  item_id: Uuid
   pontos: number
-  motivo: string
-  criado_por_nome: string
-  criado_em: InstanteISO
-  /** data dentro de fechamento fechado (não pode excluir) */
-  fechado: boolean
+  valor_centavos: Centavos
+  fallback: boolean
+}
+export interface ComissaoDetalheDia {
+  data: DataISO
+  servico_zig_centavos: Centavos
+  ajuste_centavos: Centavos
+  servico_bruto_centavos: Centavos
+  retencao_centavos: Centavos
+  base_centavos: Centavos
+  soma_pontos: number
+  participantes: number
+  sem_presenca: boolean
+  sem_participantes: boolean
+  rateio: ComissaoDetalheRateio[]
+}
+export interface ComissaoDetalheItem {
+  id: Uuid
+  tipo: TipoParticipanteComissao
+  funcionario_id: Uuid | null
+  extra_id: Uuid | null
+  nome: string
+  cargo: string | null
+  incluido: boolean
+  pontos: number
+  pontos_manual: boolean
+  dias_presentes: number
+  pontos_efetivos: number
+  valor_centavos: Centavos
+  entrada: { data: DataISO; presente: boolean; pontos: number }[]
+}
+export interface ComissaoDetalhe {
+  fechamento: ComissaoFechamento
+  servico_dias: { data: DataISO; servico_zig_centavos: Centavos }[]
+  dias: ComissaoDetalheDia[]
+  itens: ComissaoDetalheItem[]
 }
 
-/** Linha de `diarias_listar` (E.2). */
+/** Linha de `extras_listar` (E.1) — freela/diarista. */
+export interface Extra {
+  id: Uuid
+  nome: string
+  funcao: string | null
+  telefone: string | null
+  documento: string | null
+  pontos_padrao: number
+  valor_diaria_centavos: Centavos | null
+  ativo: boolean
+  observacoes: string | null
+  dias_lancados: number
+  ultimo_dia: DataISO | null
+  criado_em: InstanteISO
+}
+
+/** Linha de `diarias_listar` (E.2): dia trabalhado de um extra (com pontos) ou diária de funcionário (só custo). */
 export interface Diaria {
   id: Uuid
   data: DataISO
+  tipo: TipoDiaria
+  extra_id: Uuid | null
   funcionario_id: Uuid | null
   pessoa_nome: string
-  avulso: boolean
   funcao: string | null
+  /** só extra */
+  pontos: number | null
   valor_centavos: Centavos
   observacao: string | null
   pago: boolean
   pago_em: DataISO | null
+  /** extra com data dentro de fechamento fechado: data e pontos travados */
+  fechado: boolean
   criado_por_nome: string
   criado_em: InstanteISO
 }
@@ -694,6 +758,8 @@ export interface GastosTotais {
   diarias_a_pagar: Centavos
   diarias: Centavos
   diarias_qtd: number
+  diarias_extras: Centavos
+  diarias_funcionarios: Centavos
   comissoes_fechadas: Centavos
   comissoes_previstas: Centavos
   total: Centavos
@@ -702,9 +768,10 @@ export interface GastosTotais {
 
 export interface GastosPessoa {
   chave: string
+  tipo: TipoParticipanteComissao
   funcionario_id: Uuid | null
+  extra_id: Uuid | null
   nome: string
-  avulso: boolean
   diarias_qtd: number
   diarias_pagas: Centavos
   diarias_a_pagar: Centavos
@@ -734,9 +801,11 @@ export interface GastosPeriodo {
     id: Uuid
     titulo: string
     status: StatusFechamento
+    modo_rateio: ModoRateio
     data_inicio: DataISO
     data_fim: DataISO
     base_distribuivel_centavos: Centavos
+    valor_no_periodo_centavos: Centavos
   }[]
 }
 
@@ -1047,6 +1116,7 @@ export interface Rpcs {
       p_loja?: string | null
       p_proporcional_dias?: boolean
       p_empresa?: Uuid | null
+      p_modo_rateio?: ModoRateio
     }
     retorno: Uuid
   }
@@ -1058,13 +1128,17 @@ export interface Rpcs {
       p_percentual_retencao: number
       p_proporcional_dias: boolean
       p_observacoes: string | null
+      p_modo_rateio?: ModoRateio | null
     }
     retorno: null
   }
   comissao_definir_item: {
-    args: { p_fechamento: Uuid; p_funcionario: Uuid; p_pontos: number; p_incluido?: boolean }
+    /** p_pontos null = automático (pontos vigentes de cada dia) */
+    args: { p_fechamento: Uuid; p_funcionario: Uuid; p_pontos: number | null; p_incluido?: boolean }
     retorno: null
   }
+  comissao_definir_extra: { args: { p_fechamento: Uuid; p_extra: Uuid; p_incluido: boolean }; retorno: null }
+  comissao_detalhe: { args: { p_fechamento: Uuid }; retorno: ComissaoDetalhe }
   comissao_remover_item: { args: { p_fechamento: Uuid; p_funcionario: Uuid }; retorno: null }
   comissao_recalcular: { args: { p_fechamento: Uuid }; retorno: null }
   comissao_fechar: { args: { p_fechamento: Uuid }; retorno: null }
@@ -1103,38 +1177,60 @@ export interface Rpcs {
   ocorrencias_contagem: { args: { p_funcionario?: Uuid | null; p_empresa?: Uuid | null }; retorno: ContagemOcorrencias[] }
   ocorrencias_resumo: { args: { p_dias?: number; p_empresa?: Uuid | null }; retorno: ResumoOcorrencias }
   // extras (adendo E)
-  comissao_extra_lancar: { args: { p_funcionario: Uuid; p_data: DataISO; p_pontos: number; p_motivo: string }; retorno: Uuid }
-  comissao_extra_excluir: { args: { p_extra: Uuid }; retorno: null }
-  comissao_extras_listar: {
-    args: { p_inicio: DataISO; p_fim: DataISO; p_funcionario?: Uuid | null; p_empresa?: Uuid | null }
-    retorno: PontoExtra[]
+  extra_criar: {
+    args: {
+      p_nome: string
+      p_funcao?: string | null
+      p_pontos_padrao?: number | null
+      p_valor_diaria_centavos?: Centavos | null
+      p_telefone?: string | null
+      p_documento?: string | null
+      p_observacoes?: string | null
+      p_empresa?: Uuid | null
+    }
+    retorno: Uuid
   }
+  extra_atualizar: {
+    args: {
+      p_extra: Uuid
+      p_nome: string
+      p_funcao: string | null
+      p_pontos_padrao: number | null
+      p_valor_diaria_centavos: Centavos | null
+      p_telefone: string | null
+      p_documento: string | null
+      p_ativo: boolean | null
+      p_observacoes: string | null
+    }
+    retorno: null
+  }
+  extra_excluir: { args: { p_extra: Uuid }; retorno: null }
+  extras_listar: { args: { p_incluir_inativos?: boolean; p_empresa?: Uuid | null }; retorno: Extra[] }
   funcionario_definir_valor_diaria: { args: { p_funcionario: Uuid; p_valor_centavos: Centavos | null }; retorno: null }
   funcionario_valores_diaria_listar: { args: { p_empresa?: Uuid | null }; retorno: ValorDiaria[] }
   diaria_lancar: {
     args: {
       p_data: DataISO
+      p_extra?: Uuid | null
       p_funcionario?: Uuid | null
-      p_pessoa_nome?: string | null
-      p_funcao?: string | null
+      p_pontos?: number | null
       p_valor_centavos?: Centavos | null
+      p_funcao?: string | null
       p_observacao?: string | null
       p_pago?: boolean
       p_pago_em?: DataISO | null
-      p_empresa?: Uuid | null
     }
     retorno: Uuid
   }
   diaria_atualizar: {
     args: {
       p_diaria: Uuid
-      p_data: DataISO
-      p_funcionario: Uuid | null
-      p_pessoa_nome: string | null
-      p_funcao: string | null
+      p_data: DataISO | null
+      p_pontos: number | null
       p_valor_centavos: Centavos | null
+      p_funcao: string | null
       p_observacao: string | null
-      p_pago: boolean
+      p_pago: boolean | null
       p_pago_em: DataISO | null
     }
     retorno: null
@@ -1142,7 +1238,15 @@ export interface Rpcs {
   diaria_marcar_paga: { args: { p_diaria: Uuid; p_pago: boolean; p_pago_em?: DataISO | null }; retorno: null }
   diaria_excluir: { args: { p_diaria: Uuid }; retorno: null }
   diarias_listar: {
-    args: { p_inicio: DataISO; p_fim: DataISO; p_funcionario?: Uuid | null; p_pago?: boolean | null; p_empresa?: Uuid | null }
+    args: {
+      p_inicio: DataISO
+      p_fim: DataISO
+      p_tipo?: TipoDiaria | null
+      p_extra?: Uuid | null
+      p_funcionario?: Uuid | null
+      p_pago?: boolean | null
+      p_empresa?: Uuid | null
+    }
     retorno: Diaria[]
   }
   gastos_periodo: { args: { p_inicio: DataISO; p_fim: DataISO; p_empresa?: Uuid | null }; retorno: GastosPeriodo }

@@ -1,45 +1,101 @@
 /**
- * Extras (adendo E): pontos extras de comissão, diárias (com valor padrão por funcionário) e gastos do período.
- * Tudo por RPC (G A M).
+ * Extras (adendo E v2): cadastro de freelas/diaristas, dias trabalhados (de extra, com pontos, ou diária de funcionário, só custo),
+ * valor padrão de diária do funcionário e gastos do período. Tudo por RPC (G A M).
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { Diaria, GastosPeriodo, PontoExtra } from '@/tipos/banco'
+import type { Diaria, Extra, GastosPeriodo, TipoDiaria } from '@/tipos/banco'
 import { chamarRpc } from '@/lib/supabase'
 import { chaves, invalidar } from '@/lib/consultas'
 import { useEmpresaAtual } from '@/lib/sessao'
 
-export { lerPontosExtras, totaisDiarias } from '@/lib/extras'
+export { lerPontos, totaisDiarias } from '@/lib/extras'
 
 const num = (v: unknown) => Number(v) || 0
+const numOuNull = (v: unknown) => (v == null ? null : Number(v))
 
-// ------------------------------------------------------------ pontos extras
-export function usePontosExtras(inicio: string, fim: string) {
+// ------------------------------------------------------------------ cadastro
+export function useExtras(incluirInativos = false) {
   const { empresaId } = useEmpresaAtual()
   return useQuery({
-    queryKey: chaves.pontosExtras(empresaId, inicio, fim),
-    enabled: !!empresaId && !!inicio && !!fim && inicio <= fim,
+    queryKey: chaves.extras(empresaId, incluirInativos),
+    enabled: !!empresaId,
     queryFn: async () =>
-      ((await chamarRpc('comissao_extras_listar', { p_inicio: inicio, p_fim: fim, p_empresa: empresaId })) ?? []).map<PontoExtra>((l) => ({
-        ...l,
-        pontos: num(l.pontos),
+      ((await chamarRpc('extras_listar', { p_incluir_inativos: incluirInativos, p_empresa: empresaId })) ?? []).map<Extra>((x) => ({
+        ...x,
+        pontos_padrao: num(x.pontos_padrao),
+        valor_diaria_centavos: numOuNull(x.valor_diaria_centavos),
+        dias_lancados: num(x.dias_lancados),
       })),
   })
 }
 
-function useMutacaoExtras<A, R>(fn: (a: A) => Promise<R>) {
-  const qc = useQueryClient()
-  // extras mudam o cálculo dos rascunhos (após recalcular) e os gastos previstos
-  return useMutation({ mutationFn: fn, onSuccess: () => invalidar(qc, 'pontos-extras', 'gastos', 'comissoes', 'fechamento') })
+export interface DadosExtra {
+  nome: string
+  funcao: string | null
+  pontosPadrao: number
+  valorDiariaCentavos: number | null
+  telefone: string | null
+  documento: string | null
+  observacoes: string | null
+  ativo: boolean
 }
 
-export function useLancarPontoExtra() {
-  return useMutacaoExtras((a: { funcionarioId: string; data: string; pontos: number; motivo: string }) =>
-    chamarRpc('comissao_extra_lancar', { p_funcionario: a.funcionarioId, p_data: a.data, p_pontos: a.pontos, p_motivo: a.motivo }),
+function useMutacaoExtra<A, R>(fn: (a: A) => Promise<R>) {
+  const qc = useQueryClient()
+  return useMutation({ mutationFn: fn, onSuccess: () => invalidar(qc, 'extras', 'diarias', 'gastos') })
+}
+
+/** Cria (sem id) ou substitui o cadastro (com id). Retorna o id. */
+export function useSalvarExtra() {
+  const { empresaId } = useEmpresaAtual()
+  return useMutacaoExtra(async (a: { id?: string | null; dados: DadosExtra }): Promise<string> => {
+    const d = a.dados
+    if (a.id) {
+      await chamarRpc('extra_atualizar', {
+        p_extra: a.id,
+        p_nome: d.nome,
+        p_funcao: d.funcao,
+        p_pontos_padrao: d.pontosPadrao,
+        p_valor_diaria_centavos: d.valorDiariaCentavos,
+        p_telefone: d.telefone,
+        p_documento: d.documento,
+        p_ativo: d.ativo,
+        p_observacoes: d.observacoes,
+      })
+      return a.id
+    }
+    return chamarRpc('extra_criar', {
+      p_nome: d.nome,
+      p_funcao: d.funcao,
+      p_pontos_padrao: d.pontosPadrao,
+      p_valor_diaria_centavos: d.valorDiariaCentavos,
+      p_telefone: d.telefone,
+      p_documento: d.documento,
+      p_observacoes: d.observacoes,
+      p_empresa: empresaId,
+    })
+  })
+}
+
+/** Liga/desliga o cadastro (substitui tudo com os dados atuais). */
+export function useAtivarExtra() {
+  return useMutacaoExtra((x: { extra: Extra; ativo: boolean }) =>
+    chamarRpc('extra_atualizar', {
+      p_extra: x.extra.id,
+      p_nome: x.extra.nome,
+      p_funcao: x.extra.funcao,
+      p_pontos_padrao: x.extra.pontos_padrao,
+      p_valor_diaria_centavos: x.extra.valor_diaria_centavos,
+      p_telefone: x.extra.telefone,
+      p_documento: x.extra.documento,
+      p_ativo: x.ativo,
+      p_observacoes: x.extra.observacoes,
+    }),
   )
 }
 
-export function useExcluirPontoExtra() {
-  return useMutacaoExtras((id: string) => chamarRpc('comissao_extra_excluir', { p_extra: id }))
+export function useExcluirExtra() {
+  return useMutacaoExtra((id: string) => chamarRpc('extra_excluir', { p_extra: id }))
 }
 
 // -------------------------------------------------------------------- diárias
@@ -64,14 +120,15 @@ export function useDefinirValorDiaria() {
   })
 }
 
-export function useDiarias(inicio: string, fim: string) {
+export function useDiarias(inicio: string, fim: string, tipo: TipoDiaria | null = null) {
   const { empresaId } = useEmpresaAtual()
   return useQuery({
-    queryKey: chaves.diarias(empresaId, inicio, fim),
+    queryKey: chaves.diarias(empresaId, inicio, fim, tipo),
     enabled: !!empresaId && !!inicio && !!fim && inicio <= fim,
     queryFn: async () =>
-      ((await chamarRpc('diarias_listar', { p_inicio: inicio, p_fim: fim, p_empresa: empresaId })) ?? []).map<Diaria>((d) => ({
+      ((await chamarRpc('diarias_listar', { p_inicio: inicio, p_fim: fim, p_tipo: tipo, p_empresa: empresaId })) ?? []).map<Diaria>((d) => ({
         ...d,
+        pontos: numOuNull(d.pontos),
         valor_centavos: num(d.valor_centavos),
       })),
   })
@@ -79,32 +136,35 @@ export function useDiarias(inicio: string, fim: string) {
 
 function useMutacaoDiaria<A, R>(fn: (a: A) => Promise<R>) {
   const qc = useQueryClient()
-  return useMutation({ mutationFn: fn, onSuccess: () => invalidar(qc, 'diarias', 'gastos') })
+  // dias de extra mudam o rateio dos rascunhos (após recalcular) e os gastos
+  return useMutation({ mutationFn: fn, onSuccess: () => invalidar(qc, 'diarias', 'extras', 'gastos', 'comissoes', 'fechamento') })
 }
 
 export interface DadosDiaria {
   data: string
+  /** exatamente um dos dois (só no lançamento: a pessoa não muda depois) */
+  extraId: string | null
   funcionarioId: string | null
-  pessoaNome: string | null
-  funcao: string | null
+  /** só extra; null = padrão do cadastro */
+  pontos: number | null
+  /** null = padrão do cadastro */
   valorCentavos: number | null
+  funcao: string | null
   observacao: string | null
   pago: boolean
   pagoEm: string | null
 }
 
 export function useSalvarDiaria() {
-  const { empresaId } = useEmpresaAtual()
   return useMutacaoDiaria(async (a: { id?: string | null; dados: DadosDiaria }) => {
     const d = a.dados
     if (a.id) {
       await chamarRpc('diaria_atualizar', {
         p_diaria: a.id,
         p_data: d.data,
-        p_funcionario: d.funcionarioId,
-        p_pessoa_nome: d.pessoaNome,
-        p_funcao: d.funcao,
+        p_pontos: d.extraId ? d.pontos : null,
         p_valor_centavos: d.valorCentavos,
+        p_funcao: d.funcao,
         p_observacao: d.observacao,
         p_pago: d.pago,
         p_pago_em: d.pago ? d.pagoEm : null,
@@ -113,14 +173,14 @@ export function useSalvarDiaria() {
     }
     return chamarRpc('diaria_lancar', {
       p_data: d.data,
-      p_funcionario: d.funcionarioId,
-      p_pessoa_nome: d.pessoaNome,
-      p_funcao: d.funcao,
+      p_extra: d.extraId,
+      p_funcionario: d.extraId ? null : d.funcionarioId,
+      p_pontos: d.extraId ? d.pontos : null,
       p_valor_centavos: d.valorCentavos,
+      p_funcao: d.funcao,
       p_observacao: d.observacao,
       p_pago: d.pago,
       p_pago_em: d.pago ? d.pagoEm : null,
-      p_empresa: empresaId,
     })
   })
 }
@@ -136,7 +196,7 @@ export function useExcluirDiaria() {
 }
 
 // ---------------------------------------------------------------- gastos
-const CAMPOS_DINHEIRO = ['diarias_pagas', 'diarias_a_pagar', 'comissoes_fechadas', 'comissoes_previstas', 'total'] as const
+const CAMPOS_DINHEIRO = ['diarias_pagas', 'diarias_a_pagar', 'comissoes_fechadas', 'comissoes_previstas', 'total', 'diarias_qtd'] as const
 
 export function useGastosPeriodo(inicio: string, fim: string) {
   const { empresaId } = useEmpresaAtual()
@@ -157,14 +217,20 @@ export function useGastosPeriodo(inicio: string, fim: string) {
           diarias_a_pagar: num(g.totais.diarias_a_pagar),
           diarias: num(g.totais.diarias),
           diarias_qtd: num(g.totais.diarias_qtd),
+          diarias_extras: num(g.totais.diarias_extras),
+          diarias_funcionarios: num(g.totais.diarias_funcionarios),
           comissoes_fechadas: num(g.totais.comissoes_fechadas),
           comissoes_previstas: num(g.totais.comissoes_previstas),
           total: num(g.totais.total),
           total_com_previsto: num(g.totais.total_com_previsto),
         },
-        por_pessoa: (g.por_pessoa ?? []).map((p) => ({ ...normal(p), diarias_qtd: num(p.diarias_qtd) })),
+        por_pessoa: (g.por_pessoa ?? []).map(normal),
         por_dia: (g.por_dia ?? []).map(normal),
-        fechamentos: (g.fechamentos ?? []).map((f) => ({ ...f, base_distribuivel_centavos: num(f.base_distribuivel_centavos) })),
+        fechamentos: (g.fechamentos ?? []).map((f) => ({
+          ...f,
+          base_distribuivel_centavos: num(f.base_distribuivel_centavos),
+          valor_no_periodo_centavos: num(f.valor_no_periodo_centavos),
+        })),
       }
     },
   })

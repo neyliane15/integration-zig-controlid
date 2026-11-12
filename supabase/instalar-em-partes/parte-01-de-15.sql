@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 01 DE 14.
+-- Meu Dia de Gerente — instalação do banco, PARTE 01 DE 15.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000100_base.sql. Não edite à mão.
 
@@ -653,4 +653,4 @@ end $$;
 comment on function public.tornar_master(text) is '[interno] Torna um usuário existente master (só pelo SQL Editor).';
 
 commit;
-select 'parte 01 de 14 instalada' as resultado;
+select 'parte 01 de 15 instalada' as resultado;

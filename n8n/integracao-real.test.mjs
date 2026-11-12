@@ -157,7 +157,7 @@ describe('integração real N8N × Supabase local', { skip: !ATIVO && 'defina MD
     assert.ok(email, 'e-mail do fechamento enviado')
     const anexo = Object.values(email.anexos || {})[0]
     const csv = Buffer.from(anexo.data, 'base64').toString('utf8')
-    assert.ok(csv.startsWith('﻿') && csv.includes('Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos extras;Pontos efetivos;Valor (R$)'))
+    assert.ok(csv.startsWith('﻿') && csv.includes('Participante;Tipo;Cargo;Incluído;Pontos;Dias presentes;Valor (R$)'))
   })
 
   it('rotina diária e agendador contra o banco real', async () => {

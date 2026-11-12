@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 09 DE 14.
+-- Meu Dia de Gerente — instalação do banco, PARTE 09 DE 15.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql, 20261006000210_zig.sql, 20261006000220_comissoes.sql. Não edite à mão.
 
@@ -258,7 +258,7 @@ end $$;
 comment on function public.vendas_por_garcom(date, date, text, uuid) is '[api] Vendas e serviço por garçom (employeeName da Zig).';-- =====================================================================================================
 -- 20261006000220_comissoes.sql — backend-2
 -- Comissão: serviço (Tips da Zig) − retenção = base; rateio por pontos com maior resto; rascunho → fechado (imutável).
--- Contrato: §6 (DDL), §9 (regras), §10.6 (RPCs). Idempotente.
+-- Contrato: §6 (DDL), §9 (regras), §10.6 (RPCs); adendo extras v2 §E.3 (rateio diário, extras). Idempotente.
 -- =====================================================================================================
 
 create table if not exists public.comissao_fechamentos (
@@ -311,25 +311,64 @@ create table if not exists public.comissao_itens (
 create index if not exists comissao_itens_empresa_idx on public.comissao_itens (empresa_id);
 create index if not exists comissao_itens_funcionario_idx on public.comissao_itens (funcionario_id);
 comment on table public.comissao_itens is '[api:leitura] Itens (participantes) de um fechamento de comissão.';
--- (adendo extras) pontos extras somados aos pontos efetivos (não proporcionalizados).
-alter table public.comissao_itens add column if not exists pontos_extras numeric(10,2) not null default 0;
 
--- ================================================================ pontos extras (adendo E.1)
-create table if not exists public.comissao_pontos_extras (
-  id               uuid primary key default gen_random_uuid(),
-  empresa_id       uuid not null references public.empresas (id) on delete cascade,
-  funcionario_id   uuid not null references public.funcionarios (id) on delete cascade,
-  data             date not null,
-  pontos           numeric(8,2) not null check (pontos > 0 and pontos <= 9999.99),
-  motivo           text not null check (btrim(motivo) <> ''),
-  criado_por       uuid references public.perfis (id) on delete set null,
-  criado_por_nome  text not null,
-  criado_em        timestamptz not null default now()
+-- ================================================================ adendo extras v2 (E.3): rateio diário
+-- Fechamentos existentes ficam 'periodo' (coluna criada com esse default); novos nascem 'diario'.
+alter table public.comissao_fechamentos add column if not exists modo_rateio text not null default 'periodo';
+alter table public.comissao_fechamentos alter column modo_rateio set default 'diario';
+alter table public.comissao_fechamentos drop constraint if exists comissao_fechamentos_modo_rateio_check;
+alter table public.comissao_fechamentos add constraint comissao_fechamentos_modo_rateio_check
+  check (modo_rateio in ('diario', 'periodo'));
+alter table public.comissao_fechamentos add column if not exists dias_sem_presenca int not null default 0;
+alter table public.comissao_fechamentos add column if not exists dias_sem_participantes int not null default 0;
+
+-- Participante = funcionário OU extra (freela). Nome/cargo do participante: snapshot em funcionario_nome/cargo.
+-- FK de extra_id → extras e o check de participante ficam em …0260_extras.sql (a tabela extras nasce lá).
+alter table public.comissao_itens add column if not exists tipo text not null default 'funcionario';
+alter table public.comissao_itens drop constraint if exists comissao_itens_tipo_check;
+alter table public.comissao_itens add constraint comissao_itens_tipo_check check (tipo in ('funcionario', 'extra'));
+alter table public.comissao_itens add column if not exists extra_id uuid;
+alter table public.comissao_itens add column if not exists dias_presentes int not null default 0;
+alter table public.comissao_itens add column if not exists pontos_manual boolean not null default false;
+create unique index if not exists comissao_itens_extra_uk on public.comissao_itens (fechamento_id, extra_id);
+create index if not exists comissao_itens_extra_idx on public.comissao_itens (extra_id);
+
+-- v1 (removido): pontos extras de comissão. DROPs idempotentes para quem já rodou a v1.
+drop table if exists public.comissao_pontos_extras cascade;
+alter table public.comissao_itens drop column if exists pontos_extras;
+
+-- Detalhe do rateio diário (só no modo 'diario'; recalcular o rascunho apaga e regrava).
+create table if not exists public.comissao_rateio_dias (
+  fechamento_id           uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id              uuid not null references public.empresas (id) on delete cascade,
+  data                    date not null,
+  servico_zig_centavos    bigint not null default 0,
+  ajuste_centavos         bigint not null default 0,
+  servico_bruto_centavos  bigint not null default 0,
+  retencao_centavos       bigint not null default 0,
+  base_centavos           bigint not null default 0,
+  soma_pontos             numeric(18,2) not null default 0,
+  participantes           int not null default 0,
+  sem_presenca            boolean not null default false,
+  sem_participantes       boolean not null default false,
+  primary key (fechamento_id, data)
 );
-create index if not exists comissao_pontos_extras_empresa_idx on public.comissao_pontos_extras (empresa_id, data);
-create index if not exists comissao_pontos_extras_funcionario_idx on public.comissao_pontos_extras (funcionario_id, data);
-create index if not exists comissao_pontos_extras_criado_por_idx on public.comissao_pontos_extras (criado_por);
-comment on table public.comissao_pontos_extras is '[api:leitura] Pontos extras de comissão por funcionário e data (entram no fechamento do período).';
+create index if not exists comissao_rateio_dias_empresa_idx on public.comissao_rateio_dias (empresa_id, data);
+comment on table public.comissao_rateio_dias is '[api:leitura] Rateio diário da comissão: serviço, ajuste, retenção e base de cada dia.';
+
+create table if not exists public.comissao_rateio_itens_dia (
+  item_id         uuid not null references public.comissao_itens (id) on delete cascade,
+  fechamento_id   uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id      uuid not null references public.empresas (id) on delete cascade,
+  data            date not null,
+  pontos          numeric(8,2) not null,
+  valor_centavos  bigint not null default 0,
+  fallback        boolean not null default false,
+  primary key (item_id, data)
+);
+create index if not exists comissao_rateio_itens_dia_fechamento_idx on public.comissao_rateio_itens_dia (fechamento_id, data);
+create index if not exists comissao_rateio_itens_dia_empresa_idx on public.comissao_rateio_itens_dia (empresa_id, data);
+comment on table public.comissao_rateio_itens_dia is '[api:leitura] Rateio diário da comissão: pontos e valor de cada participante em cada dia.';
 
 alter table public.comissao_fechamentos enable row level security;
 alter table public.comissao_itens enable row level security;
@@ -339,9 +378,13 @@ create policy comissao_fechamentos_ler on public.comissao_fechamentos for select
 drop policy if exists comissao_itens_ler on public.comissao_itens;
 create policy comissao_itens_ler on public.comissao_itens for select to authenticated
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-alter table public.comissao_pontos_extras enable row level security;
-drop policy if exists comissao_pontos_extras_ler on public.comissao_pontos_extras;
-create policy comissao_pontos_extras_ler on public.comissao_pontos_extras for select to authenticated
+alter table public.comissao_rateio_dias enable row level security;
+alter table public.comissao_rateio_itens_dia enable row level security;
+drop policy if exists comissao_rateio_dias_ler on public.comissao_rateio_dias;
+create policy comissao_rateio_dias_ler on public.comissao_rateio_dias for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+drop policy if exists comissao_rateio_itens_dia_ler on public.comissao_rateio_itens_dia;
+create policy comissao_rateio_itens_dia_ler on public.comissao_rateio_itens_dia for select to authenticated
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
 
 -- ================================================================ gatilhos
@@ -405,7 +448,7 @@ begin
       return old;
     end if;
     if tg_op = 'UPDATE' and pg_trigger_depth() > 1
-       and public.comissao_so_anula_fks(to_jsonb(old), to_jsonb(new), array['funcionario_id']) then
+       and public.comissao_so_anula_fks(to_jsonb(old), to_jsonb(new), array['funcionario_id', 'extra_id']) then
       return new;
     end if;
     raise exception 'Fechamento já está fechado' using errcode = '22023';
@@ -421,17 +464,41 @@ drop trigger if exists a_protecao on public.comissao_itens;
 create trigger a_protecao before insert or update or delete on public.comissao_itens
   for each row execute function public.comissao_itens_protecao();
 
--- ================================================================ cálculo (§9)
-create or replace function public.comissao_pontos_vigentes(p_funcionario uuid, p_data date)
-returns numeric language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  select coalesce(
-    (select fp.pontos from public.funcionario_pontos fp
-      where fp.funcionario_id = p_funcionario and fp.vigente_desde <= p_data order by fp.vigente_desde desc limit 1),
-    (select fp.pontos from public.funcionario_pontos fp
-      where fp.funcionario_id = p_funcionario order by fp.vigente_desde limit 1),
-    (select f.pontos_comissao from public.funcionarios f where f.id = p_funcionario))
-$$;
-comment on function public.comissao_pontos_vigentes(uuid, date) is '[interno] Mesma regra de pontos_vigentes (§5), sem checagem de papel.';
+-- Detalhe do rateio: segue o status do fechamento (fechado = imutável); empresa_id do fechamento.
+create or replace function public.comissao_rateio_protecao()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_status text; v_empresa uuid; v_fech uuid;
+begin
+  v_fech := case when tg_op = 'DELETE' then old.fechamento_id else new.fechamento_id end;
+  select f.status, f.empresa_id into v_status, v_empresa from public.comissao_fechamentos f where f.id = v_fech;
+  if tg_op = 'INSERT' then
+    if v_empresa is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
+    if v_status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
+    new.empresa_id := v_empresa;
+    return new;
+  end if;
+  if tg_op = 'UPDATE' and old.fechamento_id is distinct from new.fechamento_id then
+    raise exception 'Item não pode mudar de fechamento' using errcode = '22023';
+  end if;
+  if v_status = 'fechado' then
+    if tg_op = 'DELETE' and pg_trigger_depth() > 1
+       and not exists (select 1 from public.empresas e where e.id = old.empresa_id) then
+      return old;
+    end if;
+    raise exception 'Fechamento já está fechado' using errcode = '22023';
+  end if;
+  if tg_op = 'DELETE' then return old; end if;
+  new.empresa_id := coalesce(v_empresa, old.empresa_id);
+  return new;
+end $$;
+comment on function public.comissao_rateio_protecao() is '[interno] Detalhe do rateio de fechamento fechado é imutável.';
+
+drop trigger if exists a_protecao on public.comissao_rateio_dias;
+create trigger a_protecao before insert or update or delete on public.comissao_rateio_dias
+  for each row execute function public.comissao_rateio_protecao();
+drop trigger if exists a_protecao on public.comissao_rateio_itens_dia;
+create trigger a_protecao before insert or update or delete on public.comissao_rateio_itens_dia
+  for each row execute function public.comissao_rateio_protecao();
 
 commit;
-select 'parte 09 de 14 instalada' as resultado;
+select 'parte 09 de 15 instalada' as resultado;

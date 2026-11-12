@@ -1,23 +1,24 @@
 /**
- * /extras (`?aba=pontos|diarias|gastos&de&ate`) — pontos extras de comissão, diárias e gastos do período (adendo E). G A M.
+ * /extras (`?aba=extras|dias|gastos&de&ate`) — adendo E v2: cadastro de extras (freelas/diaristas), dias trabalhados
+ * (com pontos que entram na comissão do dia) e gastos do período. G A M.
  */
 import { useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Abas, CabecalhoPagina, Cartao, FiltroPeriodo } from '@/componentes/ui'
 import { useContextoEmpresa } from '@/consultas/funcionarios'
 import { diasDoPeriodo } from '@/lib/comissao'
-import { AbaPontosExtras } from './AbaPontosExtras'
-import { AbaDiarias } from './AbaDiarias'
+import { AbaExtras } from './AbaExtras'
+import { AbaDias } from './AbaDias'
 import { AbaGastos } from './AbaGastos'
 
-type Aba = 'pontos' | 'diarias' | 'gastos'
-const ABAS: Aba[] = ['pontos', 'diarias', 'gastos']
+type Aba = 'extras' | 'dias' | 'gastos'
+const ABAS: Aba[] = ['extras', 'dias', 'gastos']
 const RE_DATA = /^\d{4}-\d{2}-\d{2}$/
 
 export function PaginaExtras() {
   const { hoje } = useContextoEmpresa()
   const [params, setParams] = useSearchParams()
-  const aba: Aba = ABAS.includes(params.get('aba') as Aba) ? (params.get('aba') as Aba) : 'pontos'
+  const aba: Aba = ABAS.includes(params.get('aba') as Aba) ? (params.get('aba') as Aba) : 'extras'
   const de = params.get('de')
   const ate = params.get('ate')
   const inicio = de && RE_DATA.test(de) ? de : `${hoje.slice(0, 7)}-01`
@@ -39,32 +40,45 @@ export function PaginaExtras() {
             Extras <span className="titulo-italico">e gastos</span>
           </>
         }
-        subtitulo="Pontos extras de comissão, diárias de freelancers e o quanto a equipe custou no período."
+        subtitulo="Freelas e diaristas: cadastro, dias trabalhados (que entram na comissão do dia) e o quanto a equipe custou no período."
       />
-      <Cartao className="mb-5">
-        <FiltroPeriodo inicio={inicio} fim={fim} hoje={hoje} aoMudar={(i, f) => mudar({ de: i, ate: f })} />
-        {erroPeriodo && (
-          <p role="alert" className="mt-3 text-sm text-perigo">
-            {erroPeriodo}
-          </p>
-        )}
-      </Cartao>
       <Abas<Aba>
         abas={[
-          { id: 'pontos', rotulo: 'Pontos extras' },
-          { id: 'diarias', rotulo: 'Diárias' },
+          { id: 'extras', rotulo: 'Extras' },
+          { id: 'dias', rotulo: 'Dias trabalhados' },
           { id: 'gastos', rotulo: 'Gastos do período' },
         ]}
         ativa={aba}
         aoMudar={(a) => mudar({ aba: a })}
       />
       <div className="mt-5">
-        {erroPeriodo ? null : aba === 'pontos' ? (
-          <AbaPontosExtras inicio={inicio} fim={fim} />
-        ) : aba === 'diarias' ? (
-          <AbaDiarias inicio={inicio} fim={fim} />
+        {aba === 'extras' ? (
+          <AbaExtras aoLancarDia={(extraId) => mudar({ aba: 'dias', lancar: extraId })} />
         ) : (
-          <AbaGastos inicio={inicio} fim={fim} />
+          <>
+            <Cartao className="mb-5">
+              <FiltroPeriodo inicio={inicio} fim={fim} hoje={hoje} aoMudar={(i, f) => mudar({ de: i, ate: f })} />
+              {erroPeriodo && (
+                <p role="alert" className="mt-3 text-sm text-perigo">
+                  {erroPeriodo}
+                </p>
+              )}
+            </Cartao>
+            {erroPeriodo ? null : aba === 'dias' ? (
+              <AbaDias
+                inicio={inicio}
+                fim={fim}
+                lancarPara={params.get('lancar')}
+                aoConsumirLancar={() => {
+                  const p = new URLSearchParams(params)
+                  p.delete('lancar')
+                  setParams(p, { replace: true })
+                }}
+              />
+            ) : (
+              <AbaGastos inicio={inicio} fim={fim} />
+            )}
+          </>
         )}
       </div>
     </div>

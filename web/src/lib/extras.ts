@@ -1,41 +1,76 @@
 /**
- * Funções puras dos Extras (adendo E): validação de pontos extras, totais de diárias e CSVs.
+ * Funções puras dos Extras (adendo E v2 — freelas/diaristas): validação de pontos, busca, totais dos dias trabalhados e CSVs.
  */
-import type { Diaria, GastosPeriodo } from '@/tipos/banco'
+import type { Diaria, Extra, GastosPeriodo } from '@/tipos/banco'
 import { centavosCsv, dataCsv, gerarCsv, nomeArquivoCsv } from './csv'
+import { numeroCsv } from './comissao'
 
-/** Pontos com até 2 casas, 0 < x ≤ 9999,99 (mesma regra do banco: `Pontos extras inválidos`). Aceita vírgula. */
-export function lerPontosExtras(s: string): number | null {
+/** Pontos com até 2 casas em 0..9999,99 (regra do banco: `Pontos inválidos`). Aceita vírgula. Vazio → null. */
+export function lerPontos(s: string): number | null {
   const t = s.replace(',', '.').trim()
   if (!/^\d{1,4}(\.\d{1,2})?$/.test(t)) return null
   const n = Number(t)
-  return n > 0 && n <= 9999.99 ? n : null
+  return n >= 0 && n <= 9999.99 ? n : null
 }
 
-/** Totais da lista de diárias (centavos). */
-export function totaisDiarias(lista: Pick<Diaria, 'pago' | 'valor_centavos'>[]) {
+/** Pontos para exibir/editar: 7.5 → "7,5". */
+export const pontosTexto = (n: number | null | undefined) => (n == null ? '' : n.toLocaleString('pt-BR', { maximumFractionDigits: 2 }))
+
+const normalizar = (s: string) =>
+  s
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+
+/** Busca por nome, função, telefone ou documento (sem acento/maiúsculas). */
+export function filtrarExtras<T extends Pick<Extra, 'nome' | 'funcao' | 'telefone' | 'documento'>>(lista: T[], busca: string): T[] {
+  const termo = normalizar(busca.trim())
+  if (!termo) return lista
+  const digitos = termo.replace(/\D/g, '')
+  return lista.filter((e) => {
+    if (normalizar(`${e.nome} ${e.funcao ?? ''}`).includes(termo)) return true
+    if (!digitos) return false
+    return `${e.telefone ?? ''} ${e.documento ?? ''}`.replace(/\D/g, '').includes(digitos)
+  })
+}
+
+/** Totais da lista de dias trabalhados / diárias (centavos e pontos). */
+export function totaisDiarias(lista: Pick<Diaria, 'pago' | 'valor_centavos' | 'tipo' | 'pontos'>[]) {
   let pagas = 0
   let aPagar = 0
+  let extras = 0
+  let funcionarios = 0
+  let diasExtras = 0
+  let pontos = 0
   for (const d of lista) {
     if (d.pago) pagas += d.valor_centavos
     else aPagar += d.valor_centavos
+    if (d.tipo === 'extra') {
+      extras += d.valor_centavos
+      diasExtras += 1
+      pontos += Number(d.pontos) || 0
+    } else funcionarios += d.valor_centavos
   }
-  return { pagas, aPagar, total: pagas + aPagar, quantidade: lista.length }
+  return { pagas, aPagar, total: pagas + aPagar, quantidade: lista.length, extras, funcionarios, diasExtras, pontos: Math.round(pontos * 100) / 100 }
 }
 
-/** Fechamentos fechados que cobrem a data (o banco recusa lançar/excluir extra nelas). */
+/** Fechamento fechado que cobre a data (o banco trava data/pontos de dias de extra nele). */
 export function fechamentoQueCobre<T extends { status: string; data_inicio: string; data_fim: string }>(fechamentos: T[], data: string | null): T | null {
   if (!data) return null
   return fechamentos.find((f) => f.status === 'fechado' && f.data_inicio <= data && data <= f.data_fim) ?? null
 }
 
-export const COLUNAS_CSV_GASTOS = ['Pessoa', 'Avulso', 'Diárias (qtd)', 'Diárias pagas (R$)', 'Diárias a pagar (R$)', 'Comissões fechadas (R$)', 'Comissões previstas (R$)', 'Total (R$)']
+const rotuloTipo = (t: string) => (t === 'extra' ? 'Extra' : 'Funcionário')
+
+export const COLUNAS_CSV_GASTOS = ['Pessoa', 'Tipo', 'Diárias (qtd)', 'Diárias pagas (R$)', 'Diárias a pagar (R$)', 'Comissões fechadas (R$)', 'Comissões previstas (R$)', 'Total (R$)']
 
 /** CSV dos gastos do período (§13): preâmbulo com os totais + uma linha por pessoa + Total. */
 export function csvGastos(g: GastosPeriodo, empresaNome: string): { nome: string; conteudo: string } {
   const t = g.totais
   const preambulo = [
     ['Período', `${dataCsv(g.inicio)} a ${dataCsv(g.fim)}`],
+    ['Diárias de extras (R$)', centavosCsv(t.diarias_extras)],
+    ['Diárias de funcionários (R$)', centavosCsv(t.diarias_funcionarios)],
     ['Diárias pagas (R$)', centavosCsv(t.diarias_pagas)],
     ['Diárias a pagar (R$)', centavosCsv(t.diarias_a_pagar)],
     ['Comissões fechadas (R$)', centavosCsv(t.comissoes_fechadas)],
@@ -45,7 +80,7 @@ export function csvGastos(g: GastosPeriodo, empresaNome: string): { nome: string
   ]
   const linhas: unknown[][] = g.por_pessoa.map((p) => [
     p.nome,
-    p.avulso,
+    rotuloTipo(p.tipo),
     p.diarias_qtd,
     centavosCsv(p.diarias_pagas),
     centavosCsv(p.diarias_a_pagar),
@@ -66,11 +101,24 @@ export function csvGastos(g: GastosPeriodo, empresaNome: string): { nome: string
   return { nome: nomeArquivoCsv('gastos', empresaNome || 'empresa', g.inicio, g.fim), conteudo: gerarCsv(COLUNAS_CSV_GASTOS, linhas, preambulo) }
 }
 
-export const COLUNAS_CSV_DIARIAS = ['Data', 'Pessoa', 'Avulso', 'Função', 'Valor (R$)', 'Pago', 'Pago em', 'Observação']
+export const COLUNAS_CSV_DIARIAS = ['Data', 'Pessoa', 'Tipo', 'Função', 'Pontos', 'Valor (R$)', 'Pago', 'Pago em', 'Observação']
 
+/** CSV dos dias trabalhados: em ordem de data e nome + linha Total (Σ pontos dos extras, Σ valor). */
 export function csvDiarias(lista: Diaria[], empresaNome: string, inicio: string, fim: string): { nome: string; conteudo: string } {
-  const linhas = [...lista]
+  const linhas: unknown[][] = [...lista]
     .sort((a, b) => a.data.localeCompare(b.data) || a.pessoa_nome.localeCompare(b.pessoa_nome, 'pt-BR'))
-    .map((d) => [dataCsv(d.data), d.pessoa_nome, d.avulso, d.funcao ?? '', centavosCsv(d.valor_centavos), d.pago, dataCsv(d.pago_em), d.observacao ?? ''])
-  return { nome: nomeArquivoCsv('diarias', empresaNome || 'empresa', inicio, fim), conteudo: gerarCsv(COLUNAS_CSV_DIARIAS, linhas) }
+    .map((d) => [
+      dataCsv(d.data),
+      d.pessoa_nome,
+      rotuloTipo(d.tipo),
+      d.funcao ?? '',
+      d.tipo === 'extra' ? numeroCsv(d.pontos ?? 0, 2) : '',
+      centavosCsv(d.valor_centavos),
+      d.pago,
+      dataCsv(d.pago_em),
+      d.observacao ?? '',
+    ])
+  const t = totaisDiarias(lista)
+  linhas.push(['Total', '', '', '', numeroCsv(t.pontos, 2), centavosCsv(t.total), '', '', ''])
+  return { nome: nomeArquivoCsv('dias-trabalhados', empresaNome || 'empresa', inicio, fim), conteudo: gerarCsv(COLUNAS_CSV_DIARIAS, linhas) }
 }

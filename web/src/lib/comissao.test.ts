@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { calcularComissao, csvComissao, diasDoPeriodo, numeroCsv, tituloPadraoFechamento, validarPeriodoFechamento, type ParticipanteComissao } from './comissao'
+import {
+  calcularComissao,
+  csvComissao,
+  datasDoPeriodo,
+  diasDoPeriodo,
+  numeroCsv,
+  tituloPadraoFechamento,
+  validarPeriodoFechamento,
+  type EntradaComissao,
+  type ParticipanteComissao,
+} from './comissao'
 
 const P = (nome: string, cargo: string, pontos: number, id: string, dias = 30, incluido = true): ParticipanteComissao => ({
   funcionarioId: id,
@@ -77,68 +87,177 @@ describe('calcularComissao — proporcional aos dias (§9)', () => {
   })
 })
 
-describe('calcularComissao — pontos extras (adendo E.1)', () => {
-  const comExtras = (extras: Record<string, number>) => EQUIPE.map((p) => ({ ...p, pontosExtras: extras[p.nome] ?? 0 }))
+// ------------------------------------------------------------ adendo E.3 — rateio diário (vetores V1–V6)
+const ANA = 'a0000000-0000-4000-8000-000000000301'
+const BRUNO = 'a0000000-0000-4000-8000-000000000302'
+const CARLA = 'a0000000-0000-4000-8000-000000000303'
+const MARCOS = 'b0000000-0000-4000-8000-000000000401'
+const DIAS3 = ['2026-09-01', '2026-09-02', '2026-09-03']
 
-  it('vetor 1: sem extras, valores inalterados', () => {
-    const r = calcularComissao({ ...BASE, proporcionalDias: false, participantes: comExtras({}) })
-    expect(valores(r)).toEqual({
-      'Ana Souza': 209_474,
-      'Bruno Lima': 209_474,
-      'Carla Dias': 125_684,
-      'Davi Rocha': 167_579,
-      'Eva Martins': 83_789,
-    })
+/** Funcionário com pontos vigentes fixos e presença nos dias dados. */
+const F = (nome: string, pontos: number, id: string, presentes: string[]): ParticipanteComissao => ({
+  tipo: 'funcionario',
+  funcionarioId: id,
+  nome,
+  pontos,
+  incluido: true,
+  diasTrabalhados: presentes.length,
+  entrada: DIAS3.map((data) => ({ data, presente: presentes.includes(data), pontos })),
+})
+/** Extra com lançamentos {data: pontos}. */
+const X = (nome: string, id: string, lancamentos: Record<string, number>): ParticipanteComissao => ({
+  tipo: 'extra',
+  funcionarioId: null,
+  extraId: id,
+  nome,
+  pontos: 0,
+  incluido: true,
+  diasTrabalhados: Object.keys(lancamentos).length,
+  entrada: Object.entries(lancamentos).map(([data, pontos]) => ({ data, presente: true, pontos })),
+})
+
+const V1 = (ajuste: number, servico = [100_000, 50_001, 30_000], pct = 20): EntradaComissao => ({
+  modoRateio: 'diario',
+  servicoZigCentavos: 0,
+  servicoAjusteCentavos: ajuste,
+  percentualRetencao: pct,
+  proporcionalDias: false,
+  dataInicio: '2026-09-01',
+  dataFim: '2026-09-03',
+  servicoDias: DIAS3.map((data, k) => ({ data, servicoZigCentavos: servico[k]! })),
+  participantes: [
+    F('Ana Souza', 10, ANA, ['2026-09-01', '2026-09-02']),
+    F('Bruno Lima', 10, BRUNO, ['2026-09-01']),
+    F('Carla Dias', 6, CARLA, ['2026-09-01', '2026-09-02']),
+    X('Marcos Freitas', MARCOS, { '2026-09-01': 5, '2026-09-02': 7.5 }),
+  ],
+})
+
+const valoresDia = (r: ReturnType<typeof calcularComissao>, k: number) =>
+  Object.fromEntries(r.dias[k]!.rateio.map((x) => [r.itens[x.indice]!.nome.split(' ')[0], x.valorCentavos]))
+
+describe('calcularComissao — rateio diário (adendo E.3.3)', () => {
+  it('V1: 3 dias, extra e fallback', () => {
+    const r = calcularComissao(V1(0))
+    expect(r.dias.map((d) => [d.servicoBrutoCentavos, d.retencaoCentavos, d.baseCentavos])).toEqual([
+      [100_000, 20_000, 80_000],
+      [50_001, 10_000, 40_001],
+      [30_000, 6_000, 24_000],
+    ])
+    expect(valoresDia(r, 0)).toEqual({ Ana: 25_807, Bruno: 25_806, Carla: 15_484, Marcos: 12_903 })
+    expect(valoresDia(r, 1)).toEqual({ Ana: 17_022, Carla: 10_213, Marcos: 12_766 })
+    expect(valoresDia(r, 2)).toEqual({ Ana: 9_231, Bruno: 9_231, Carla: 5_538 })
+    expect(r.dias.map((d) => d.somaPontos)).toEqual([31, 23.5, 26])
+    expect(r.dias.map((d) => d.semPresenca)).toEqual([false, false, true])
+    expect(r.dias[2]!.rateio.every((x) => x.fallback)).toBe(true)
+    expect(valores(r)).toEqual({ 'Ana Souza': 52_060, 'Bruno Lima': 35_037, 'Carla Dias': 31_235, 'Marcos Freitas': 25_669 })
+    expect(r.baseCentavos).toBe(144_001)
+    expect(r.totalDistribuidoCentavos).toBe(144_001)
+    expect(r.retencaoCentavos).toBe(36_000)
+    expect(r.servicoZigCentavos).toBe(180_001)
+    expect(r.diasSemPresenca).toBe(1)
+    expect(r.diasSemParticipantes).toBe(0)
+    const marcos = r.itens.find((i) => i.nome === 'Marcos Freitas')!
+    expect(marcos.pontosEfetivos).toBe(12.5)
+    expect(r.itens.find((i) => i.nome === 'Ana Souza')!.pontosEfetivos).toBe(30)
+    expect(r.somaPontosEfetivos).toBe(80.5)
+    expect(r.valorPontoCentavos).toBe(1_788.832298)
+    // Carla (fração 0,871) e Ana (empata com Bruno, ganha pelo nome) levam o centavo no 01/09
+    expect(r.dias[0]!.rateio.filter((x) => x.centavoExtra).map((x) => r.itens[x.indice]!.nome)).toEqual(['Ana Souza', 'Carla Dias'])
   })
 
-  it('vetor 2: proporcional + Carla 1,5 extra (extras não são proporcionalizados)', () => {
-    const r = calcularComissao({ ...BASE, proporcionalDias: true, participantes: comExtras({ 'Carla Dias': 1.5 }) })
-    expect(Object.fromEntries(r.itens.map((i) => [i.nome, i.pontosEfetivos]))).toEqual({
-      'Ana Souza': 10,
-      'Bruno Lima': 10,
-      'Carla Dias': 7.5,
-      'Davi Rocha': 8,
-      'Eva Martins': 2,
-    })
-    expect(r.somaPontosEfetivos).toBe(37.5)
-    expect(valores(r)).toEqual({
-      'Ana Souza': 212_267,
-      'Bruno Lima': 212_267,
-      'Carla Dias': 159_200,
-      'Davi Rocha': 169_813,
-      'Eva Martins': 42_453,
-    })
-    expect(r.totalDistribuidoCentavos).toBe(796_000)
+  it('V2: ajuste +1000 repartido pelo serviço do dia', () => {
+    const r = calcularComissao(V1(1_000))
+    expect(r.dias.map((d) => d.ajusteCentavos)).toEqual([555, 278, 167])
+    expect(r.dias.map((d) => d.baseCentavos)).toEqual([80_444, 40_223, 24_134])
+    expect(r.dias.map((d) => d.retencaoCentavos)).toEqual([20_111, 10_056, 6_033])
+    expect(valoresDia(r, 0)).toEqual({ Ana: 25_950, Bruno: 25_949, Carla: 15_570, Marcos: 12_975 })
+    expect(valoresDia(r, 1)).toEqual({ Ana: 17_116, Carla: 10_270, Marcos: 12_837 })
+    expect(valoresDia(r, 2)).toEqual({ Ana: 9_282, Bruno: 9_282, Carla: 5_570 })
+    expect(valores(r)).toEqual({ 'Ana Souza': 52_348, 'Bruno Lima': 35_231, 'Carla Dias': 31_410, 'Marcos Freitas': 25_812 })
+    expect(r.totalDistribuidoCentavos).toBe(144_801)
+    expect(r.retencaoCentavos).toBe(36_200)
   })
 
-  it('vetor 3: não proporcional + Eva 1 extra + Fábio só com 3 extras', () => {
-    const r = calcularComissao({
-      ...BASE,
-      proporcionalDias: false,
-      participantes: [
-        ...comExtras({ 'Eva Martins': 1 }),
-        { ...P('Fábio Nunes', 'Garçom', 0, 'a0000000-0000-4000-8000-000000000306'), pontosExtras: 3 },
-      ],
-    })
-    expect(r.somaPontosEfetivos).toBe(42)
-    expect(valores(r)).toEqual({
-      'Ana Souza': 189_524,
-      'Bruno Lima': 189_524,
-      'Carla Dias': 113_714,
-      'Davi Rocha': 151_619,
-      'Eva Martins': 94_762,
-      'Fábio Nunes': 56_857,
-    })
-    expect(r.itens.filter((i) => i.centavoExtra).map((i) => i.nome).sort()).toEqual(['Ana Souza', 'Bruno Lima', 'Eva Martins'])
+  it('V3: ajuste −500', () => {
+    const r = calcularComissao(V1(-500))
+    expect(r.dias.map((d) => d.ajusteCentavos)).toEqual([-278, -139, -83])
+    expect(r.dias.map((d) => d.servicoBrutoCentavos)).toEqual([99_722, 49_862, 29_917])
+    expect(r.dias.map((d) => d.retencaoCentavos)).toEqual([19_944, 9_972, 5_983])
+    expect(r.dias.map((d) => d.baseCentavos)).toEqual([79_778, 39_890, 23_934])
+    expect(valores(r)).toEqual({ 'Ana Souza': 51_915, 'Bruno Lima': 34_940, 'Carla Dias': 31_149, 'Marcos Freitas': 25_598 })
+    expect(r.totalDistribuidoCentavos).toBe(143_602)
   })
 
-  it('não incluído com extras recebe 0', () => {
-    const r = calcularComissao({
-      ...BASE,
-      proporcionalDias: false,
-      participantes: [{ ...P('Ana', '', 0, 'a1', 30, false), pontosExtras: 5 }, P('Bia', '', 1, 'a2')],
+  it('V4: sem serviço, ajuste +100, retenção 0% (peso igual, sobra para o 1º dia)', () => {
+    const r = calcularComissao(V1(100, [0, 0, 0], 0))
+    expect(r.dias.map((d) => d.ajusteCentavos)).toEqual([34, 33, 33])
+    expect(valoresDia(r, 0)).toEqual({ Ana: 11, Bruno: 11, Carla: 7, Marcos: 5 })
+    expect(valoresDia(r, 1)).toEqual({ Ana: 14, Carla: 8, Marcos: 11 })
+    expect(valoresDia(r, 2)).toEqual({ Ana: 13, Bruno: 13, Carla: 7 })
+    expect(valores(r)).toEqual({ 'Ana Souza': 38, 'Bruno Lima': 24, 'Carla Dias': 22, 'Marcos Freitas': 16 })
+  })
+
+  it('V5: ajuste ≤ −serviço → tudo zero (presentes gravados com valor 0, sem fallback)', () => {
+    const r = calcularComissao(V1(-180_501))
+    expect(r.dias.every((d) => d.servicoBrutoCentavos === 0 && d.baseCentavos === 0)).toBe(true)
+    expect(r.itens.every((i) => i.valorCentavos === 0)).toBe(true)
+    expect(r.dias.map((d) => d.participantes)).toEqual([4, 3, 0])
+    expect(r.diasSemPresenca).toBe(0)
+    expect(r.diasSemParticipantes).toBe(0)
+  })
+
+  it('V6: modo período + extra (3 lançamentos de 5 pontos em 30 dias → pe 0,5)', () => {
+    const marcos: ParticipanteComissao = {
+      ...X('Marcos Freitas', MARCOS, { '2026-09-05': 5, '2026-09-12': 5, '2026-09-19': 5 }),
+      pontos: 5,
+    }
+    const r = calcularComissao({ ...BASE, modoRateio: 'periodo', proporcionalDias: false, participantes: [...EQUIPE, marcos] })
+    expect(r.itens.find((i) => i.nome === 'Marcos Freitas')!.pontosEfetivos).toBe(0.5)
+    expect(r.somaPontosEfetivos).toBe(38.5)
+    expect(valores(r)).toEqual({
+      'Ana Souza': 206_753,
+      'Bruno Lima': 206_753,
+      'Carla Dias': 124_052,
+      'Davi Rocha': 165_403,
+      'Eva Martins': 82_701,
+      'Marcos Freitas': 10_338,
     })
-    expect(valores(r)).toEqual({ Ana: 0, Bia: 796_000 })
+    expect(r.dias).toEqual([])
+  })
+
+  it('extra não entra pelo fallback; sem funcionários → dia sem participantes', () => {
+    const e = V1(0)
+    e.participantes = [X('Marcos Freitas', MARCOS, { '2026-09-01': 5 })]
+    const r = calcularComissao(e)
+    expect(r.dias.map((d) => [d.semPresenca, d.semParticipantes])).toEqual([
+      [false, false],
+      [false, true],
+      [false, true],
+    ])
+    expect(r.diasSemParticipantes).toBe(2)
+    expect(r.totalDistribuidoCentavos).toBe(80_000)
+  })
+
+  it('pontos manuais valem em todos os dias; não incluído fica de fora (inclusive do fallback)', () => {
+    const e = V1(0)
+    e.participantes = e.participantes.map((p) =>
+      p.nome === 'Ana Souza' ? { ...p, pontos: 20, pontosManual: true } : p.nome === 'Bruno Lima' ? { ...p, incluido: false } : p,
+    )
+    const r = calcularComissao(e)
+    expect(r.dias[0]!.somaPontos).toBe(31) // Ana 20 + Carla 6 + Marcos 5
+    expect(r.dias[2]!.somaPontos).toBe(26) // fallback: Ana 20 + Carla 6
+    expect(r.itens.find((i) => i.nome === 'Bruno Lima')!.valorCentavos).toBe(0)
+    expect(r.totalDistribuidoCentavos).toBe(144_001)
+  })
+
+  it('pontos vigentes por dia (mudança de pontos no meio do período)', () => {
+    const e = V1(0)
+    const ana = e.participantes[0]!
+    ana.entrada = ana.entrada!.map((l) => (l.data === '2026-09-02' ? { ...l, pontos: 12 } : l))
+    const r = calcularComissao(e)
+    expect(r.dias[1]!.somaPontos).toBe(25.5)
+    expect(r.dias[2]!.somaPontos).toBe(26) // 03/09 volta a 10
   })
 })
 
@@ -276,12 +395,13 @@ describe('auxiliares', () => {
   })
 })
 
-describe('CSV do fechamento — idêntico ao do N8N', () => {
-  const r = calcularComissao({ ...BASE, proporcionalDias: false, participantes: EQUIPE })
+describe('CSV do fechamento (adendo E.4) — idêntico ao do N8N', () => {
+  const r = calcularComissao(V1(0))
   const fechamento = {
     data_inicio: '2026-09-01',
-    data_fim: '2026-09-30',
+    data_fim: '2026-09-03',
     status: 'fechado' as const,
+    modo_rateio: 'diario' as const,
     servico_zig_centavos: r.servicoZigCentavos,
     servico_ajuste_centavos: r.servicoAjusteCentavos,
     servico_bruto_centavos: r.servicoBrutoCentavos,
@@ -289,74 +409,67 @@ describe('CSV do fechamento — idêntico ao do N8N', () => {
     retencao_centavos: r.retencaoCentavos,
     base_distribuivel_centavos: r.baseCentavos,
     valor_ponto_centavos: r.valorPontoCentavos,
+    dias_sem_presenca: r.diasSemPresenca,
   }
   const itens = [
     ...r.itens.map((i) => ({
       funcionario_nome: i.nome,
+      tipo: i.tipo ?? 'funcionario',
       cargo: i.cargo ?? null,
       incluido: i.incluido,
-      pontos: i.pontos,
-      dias_trabalhados: i.diasTrabalhados,
-      pontos_extras: i.pontosExtras ?? 0,
-      pontos_efetivos: i.pontosEfetivos,
+      pontos: i.tipo === 'extra' ? 6.25 : i.pontos,
+      dias_presentes: i.diasTrabalhados,
       valor_centavos: i.valorCentavos,
     })),
-    { funcionario_nome: 'Zé; "Fora"', cargo: null, incluido: false, pontos: 2.5, dias_trabalhados: 0, pontos_extras: 1, pontos_efetivos: 0, valor_centavos: 0 },
+    { funcionario_nome: 'Zé; "Fora"', tipo: 'funcionario' as const, cargo: null, incluido: false, pontos: 2.5, dias_presentes: 3, valor_centavos: 0 },
   ]
 
-  it('bate byte a byte com csvComissao (n8n/comum/lib/csv.mjs)', async () => {
+  const n8n = async () => {
     const caminho = new URL('../../../n8n/comum/lib/csv.mjs', import.meta.url).href
-    const n8n = (await import(/* @vite-ignore */ caminho)) as {
-      csvComissao(d: unknown): { nome: string; conteudo: string }
+    return (await import(/* @vite-ignore */ caminho)) as { csvComissao(d: unknown): { nome: string; conteudo: string } }
+  }
+
+  it('bate byte a byte com csvComissao (n8n/comum/lib/csv.mjs) — diário e período', async () => {
+    const m = await n8n()
+    for (const f of [fechamento, { ...fechamento, modo_rateio: 'periodo' as const, status: 'rascunho' as const, valor_ponto_centavos: null }]) {
+      const esperado = m.csvComissao({ fechamento: { ...f, empresa_nome: 'Bar Bossa Nova' }, itens })
+      const nosso = csvComissao(f, itens, 'Bar Bossa Nova')
+      expect(nosso.nome).toBe(esperado.nome)
+      expect(nosso.conteudo).toBe(esperado.conteudo)
     }
-    const esperado = n8n.csvComissao({ fechamento: { ...fechamento, empresa_nome: 'Bar Bossa Nova' }, itens })
-    const nosso = csvComissao(fechamento, itens, 'Bar Bossa Nova')
-    expect(nosso.nome).toBe(esperado.nome)
-    expect(nosso.conteudo).toBe(esperado.conteudo)
   })
 
-  it('conteúdo esperado', () => {
+  it('conteúdo esperado (modo diário)', () => {
     const { nome, conteudo } = csvComissao(fechamento, itens, 'Bar Bossa Nova')
-    expect(nome).toBe('comissao_bar-bossa-nova_2026-09-01_2026-09-30.csv')
-    const linhas = conteudo.replace(/^﻿/, '').split('\r\n')
-    expect(linhas.slice(0, 10)).toEqual([
-      'Período;01/09/2026 a 30/09/2026',
-      'Serviço Zig (R$);10000,00',
-      'Ajuste (R$);-50,00',
-      'Serviço bruto (R$);9950,00',
+    expect(nome).toBe('comissao_bar-bossa-nova_2026-09-01_2026-09-03.csv')
+    const linhas = conteudo.replace(/^\uFEFF/, '').split('\r\n')
+    expect(linhas.slice(0, 12)).toEqual([
+      'Período;01/09/2026 a 03/09/2026',
+      'Modo de rateio;Diário',
+      'Serviço Zig (R$);1800,01',
+      'Ajuste (R$);0,00',
+      'Serviço bruto (R$);1800,01',
       'Retenção (%);20',
-      'Retenção (R$);1990,00',
-      'Base distribuível (R$);7960,00',
-      'Valor do ponto (R$);209,47',
+      'Retenção (R$);360,00',
+      'Base distribuível (R$);1440,01',
+      'Valor do ponto (R$);17,89',
       'Status;Fechado',
+      'Dias sem presença registrada;1',
       '',
     ])
-    expect(linhas[10]).toBe('Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos extras;Pontos efetivos;Valor (R$)')
-    expect(linhas[11]).toBe('Ana Souza;Garçom;Sim;10;30;0;10;2094,74')
-    expect(linhas[16]).toBe('"Zé; ""Fora""";;Não;2,5;0;1;0;0,00')
-    expect(linhas[17]).toBe('Total;;;38;;0;38;7960,00')
+    expect(linhas[12]).toBe('Participante;Tipo;Cargo;Incluído;Pontos;Dias presentes;Valor (R$)')
+    expect(linhas[13]).toBe('Ana Souza;Funcionário;;Sim;10;2;520,60')
+    expect(linhas[16]).toBe('Marcos Freitas;Extra;;Sim;6,25;2;256,69')
+    expect(linhas[17]).toBe('"Zé; ""Fora""";Funcionário;;Não;2,5;3;0,00')
+    expect(linhas[18]).toBe('Total;;;;32,25;7;1440,01')
+    expect(linhas[19]).toBe('')
   })
 
-  it('coluna Pontos extras com extras (1,5 e 3) e total dos incluídos', () => {
-    const r2 = calcularComissao({
-      ...BASE,
-      proporcionalDias: true,
-      participantes: EQUIPE.map((p) => ({ ...p, pontosExtras: p.nome === 'Carla Dias' ? 1.5 : p.nome === 'Davi Rocha' ? 3 : 0 })),
-    })
-    const itens2 = r2.itens.map((i) => ({
-      funcionario_nome: i.nome,
-      cargo: i.cargo ?? null,
-      incluido: i.incluido,
-      pontos: i.pontos,
-      dias_trabalhados: i.diasTrabalhados,
-      pontos_extras: i.pontosExtras ?? 0,
-      pontos_efetivos: i.pontosEfetivos,
-      valor_centavos: i.valorCentavos,
-    }))
-    const linhas = csvComissao(fechamento, itens2, 'Bar').conteudo.split('\r\n')
-    expect(linhas[13]?.startsWith('Carla Dias;Cumim;Sim;6;30;1,5;7,5;')).toBe(true)
-    expect(linhas[14]?.startsWith('Davi Rocha;Bartender;Sim;8;30;3;11;')).toBe(true)
-    expect(linhas[16]).toBe('Total;;;38;;4,5;40,5;7960,00')
+  it('modo período: sem a linha de dias sem presença', () => {
+    const linhas = csvComissao({ ...fechamento, modo_rateio: 'periodo' }, itens, 'Bar').conteudo.split('\r\n')
+    expect(linhas[1]).toBe('Modo de rateio;Por período')
+    expect(linhas[10]).toBe('')
+    expect(linhas[11]).toBe('Participante;Tipo;Cargo;Incluído;Pontos;Dias presentes;Valor (R$)')
   })
 
   it('numeroCsv', () => {
@@ -365,6 +478,12 @@ describe('CSV do fechamento — idêntico ao do N8N', () => {
     expect(numeroCsv(7.333333)).toBe('7,333333')
     expect(numeroCsv(null)).toBe('')
     expect(numeroCsv(-0.0000001)).toBe('0')
+  })
+})
+
+describe('datasDoPeriodo', () => {
+  it('inclusivo e atravessa mês', () => {
+    expect(datasDoPeriodo('2026-09-29', '2026-10-02')).toEqual(['2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02'])
   })
 })
 

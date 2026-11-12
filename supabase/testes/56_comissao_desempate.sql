@@ -16,7 +16,7 @@ alter table public.comissao_itens alter column funcionario_nome type text collat
 
 create temp table fx (id uuid) on commit drop;
 insert into fx select public.comissao_criar_fechamento('2026-09-01', '2026-09-30', null, null, false,
-                                                       'e5600000-0000-4000-8000-00000000000a');
+                                                       'e5600000-0000-4000-8000-00000000000a', 'periodo');
 -- base = 100 centavos (só ajuste, retenção 0%), 3 participantes com 1 ponto: 33 + 33 + 33 e sobra 1 centavo
 select public.comissao_atualizar_fechamento((select id from fx), null, 100, 0, false, null);
 
@@ -42,7 +42,7 @@ select 'e5600000-0000-4000-8000-00000000000a', 'Extra ' || g, (array[999999.99, 
   from generate_series(1, 37) g;
 create temp table fx2 (id uuid) on commit drop;
 insert into fx2 select public.comissao_criar_fechamento('2026-09-01', '2026-09-30', null, null, false,
-                                                        'e5600000-0000-4000-8000-00000000000a');
+                                                        'e5600000-0000-4000-8000-00000000000a', 'periodo');
 select public.comissao_atualizar_fechamento((select id from fx2), null, 999999999999937, 13.37, false, null);
 select teste.ok('valores extremos: Σ valor_centavos = base distribuível',
   (select sum(i.valor_centavos) = f.base_distribuivel_centavos

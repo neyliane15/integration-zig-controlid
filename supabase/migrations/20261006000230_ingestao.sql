@@ -486,8 +486,12 @@ begin
     from public.comissao_fechamentos fc join public.empresas e on e.id = fc.empresa_id
    where fc.id = p_fechamento;
   if v_fech is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-  select coalesce(jsonb_agg(to_jsonb(it) order by it.funcionario_nome, it.funcionario_id), '[]'::jsonb) into v_itens
+  select coalesce(jsonb_agg(to_jsonb(it) order by it.funcionario_nome, (it.tipo = 'extra'),
+                            coalesce(it.funcionario_id, it.extra_id) nulls last, it.id), '[]'::jsonb) into v_itens
     from public.comissao_itens it where it.fechamento_id = p_fechamento;
-  return jsonb_build_object('fechamento', v_fech, 'itens', v_itens);
+  -- (adendo extras v2, E.3.4) detalhe diário do rateio (vazio no modo período)
+  return jsonb_build_object('fechamento', v_fech, 'itens', v_itens,
+    'dias', coalesce((select jsonb_agg(to_jsonb(rd) order by rd.data) from public.comissao_rateio_dias rd
+                       where rd.fechamento_id = p_fechamento), '[]'::jsonb));
 end $$;
-comment on function public.ingestao_fechamento_exportar(uuid) is '[servico] Fechamento + itens (por nome) para o CSV do N8N.';
+comment on function public.ingestao_fechamento_exportar(uuid) is '[servico] Fechamento + itens (por nome) + dias do rateio para o CSV do N8N.';

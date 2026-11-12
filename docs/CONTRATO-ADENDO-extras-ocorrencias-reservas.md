@@ -286,12 +286,12 @@ create table if not exists public.comissao_rateio_itens_dia (
 #### E.3.2 Regra (modo `diario`, padrão para fechamentos novos)
 Período `[data_inicio, data_fim]` com `D = dias_periodo` dias, loja opcional, `pct = percentual_retencao`, ajuste `A`.
 1. **Serviço do dia** `s_d` = Σ `valor_total` dos itens `Tip` com `data_operacao = d` (e loja). `servico_zig = Σ s_d` (igual a hoje).
-2. **Ajuste do dia** `a_d` (exato em centavos, maior resto): reparte `|A|` entre os dias com peso `s_d` (se `Σ s_d = 0`, peso 1 para
-   todos os dias): `piso_d = div(|A| × w_d, Σ w)`, sobra `|A| − Σ piso_d` → +1 para os dias em ordem de `mod(|A| × w_d, Σ w)` desc,
+2. **Ajuste do dia** `a_d` (exato em centavos, maior resto): reparte `|A|` entre os dias com peso `max(s_d, 0)` (se a soma dos pesos for 0,
+   peso 1 para todos os dias): `piso_d = div(|A| × w_d, Σ w)`, sobra `|A| − Σ piso_d` → +1 para os dias em ordem de `mod(|A| × w_d, Σ w)` desc,
    `data` asc; `a_d = sinal(A) × parte_d`. Assim `Σ a_d = A` sempre.
 3. `bruto_d = greatest(0, s_d + a_d)`; `retencao_d = round(bruto_d × pct / 100)` (meio para longe do zero); `base_d = bruto_d − retencao_d`.
-   Totais do fechamento: `servico_bruto = Σ bruto_d` (= `greatest(0, servico_zig + A)`, porque a parte do ajuste nunca passa do
-   serviço do dia quando `A ≥ −servico_zig`), **`retencao = Σ retencao_d`** (pode diferir em centavos de `round(bruto × pct/100)` do
+   Totais do fechamento: `servico_bruto = Σ bruto_d` (= `greatest(0, servico_zig + A)` quando nenhum dia tem serviço negativo,
+   porque a parte do ajuste nunca passa do serviço do dia quando `A ≥ −servico_zig`), **`retencao = Σ retencao_d`** (pode diferir em centavos de `round(bruto × pct/100)` do
    modo período — é a regra), `base_distribuivel = Σ base_d`.
 4. **Participantes do dia** (só itens `incluido = true`):
    - funcionário com `ponto_dias.batidas_validas > 0` no dia `d`, com `pontos_d` = `item.pontos` se `pontos_manual`, senão

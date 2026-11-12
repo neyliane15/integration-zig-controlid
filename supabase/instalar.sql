@@ -4798,7 +4798,7 @@ comment on function public.vendas_por_garcom(date, date, text, uuid) is '[api] V
 -- =====================================================================================================
 -- 20261006000220_comissoes.sql — backend-2
 -- Comissão: serviço (Tips da Zig) − retenção = base; rateio por pontos com maior resto; rascunho → fechado (imutável).
--- Contrato: §6 (DDL), §9 (regras), §10.6 (RPCs). Idempotente.
+-- Contrato: §6 (DDL), §9 (regras), §10.6 (RPCs); adendo extras v2 §E.3 (rateio diário, extras). Idempotente.
 -- =====================================================================================================
 
 create table if not exists public.comissao_fechamentos (
@@ -4851,25 +4851,64 @@ create table if not exists public.comissao_itens (
 create index if not exists comissao_itens_empresa_idx on public.comissao_itens (empresa_id);
 create index if not exists comissao_itens_funcionario_idx on public.comissao_itens (funcionario_id);
 comment on table public.comissao_itens is '[api:leitura] Itens (participantes) de um fechamento de comissão.';
--- (adendo extras) pontos extras somados aos pontos efetivos (não proporcionalizados).
-alter table public.comissao_itens add column if not exists pontos_extras numeric(10,2) not null default 0;
 
--- ================================================================ pontos extras (adendo E.1)
-create table if not exists public.comissao_pontos_extras (
-  id               uuid primary key default gen_random_uuid(),
-  empresa_id       uuid not null references public.empresas (id) on delete cascade,
-  funcionario_id   uuid not null references public.funcionarios (id) on delete cascade,
-  data             date not null,
-  pontos           numeric(8,2) not null check (pontos > 0 and pontos <= 9999.99),
-  motivo           text not null check (btrim(motivo) <> ''),
-  criado_por       uuid references public.perfis (id) on delete set null,
-  criado_por_nome  text not null,
-  criado_em        timestamptz not null default now()
+-- ================================================================ adendo extras v2 (E.3): rateio diário
+-- Fechamentos existentes ficam 'periodo' (coluna criada com esse default); novos nascem 'diario'.
+alter table public.comissao_fechamentos add column if not exists modo_rateio text not null default 'periodo';
+alter table public.comissao_fechamentos alter column modo_rateio set default 'diario';
+alter table public.comissao_fechamentos drop constraint if exists comissao_fechamentos_modo_rateio_check;
+alter table public.comissao_fechamentos add constraint comissao_fechamentos_modo_rateio_check
+  check (modo_rateio in ('diario', 'periodo'));
+alter table public.comissao_fechamentos add column if not exists dias_sem_presenca int not null default 0;
+alter table public.comissao_fechamentos add column if not exists dias_sem_participantes int not null default 0;
+
+-- Participante = funcionário OU extra (freela). Nome/cargo do participante: snapshot em funcionario_nome/cargo.
+-- FK de extra_id → extras e o check de participante ficam em …0260_extras.sql (a tabela extras nasce lá).
+alter table public.comissao_itens add column if not exists tipo text not null default 'funcionario';
+alter table public.comissao_itens drop constraint if exists comissao_itens_tipo_check;
+alter table public.comissao_itens add constraint comissao_itens_tipo_check check (tipo in ('funcionario', 'extra'));
+alter table public.comissao_itens add column if not exists extra_id uuid;
+alter table public.comissao_itens add column if not exists dias_presentes int not null default 0;
+alter table public.comissao_itens add column if not exists pontos_manual boolean not null default false;
+create unique index if not exists comissao_itens_extra_uk on public.comissao_itens (fechamento_id, extra_id);
+create index if not exists comissao_itens_extra_idx on public.comissao_itens (extra_id);
+
+-- v1 (removido): pontos extras de comissão. DROPs idempotentes para quem já rodou a v1.
+drop table if exists public.comissao_pontos_extras cascade;
+alter table public.comissao_itens drop column if exists pontos_extras;
+
+-- Detalhe do rateio diário (só no modo 'diario'; recalcular o rascunho apaga e regrava).
+create table if not exists public.comissao_rateio_dias (
+  fechamento_id           uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id              uuid not null references public.empresas (id) on delete cascade,
+  data                    date not null,
+  servico_zig_centavos    bigint not null default 0,
+  ajuste_centavos         bigint not null default 0,
+  servico_bruto_centavos  bigint not null default 0,
+  retencao_centavos       bigint not null default 0,
+  base_centavos           bigint not null default 0,
+  soma_pontos             numeric(18,2) not null default 0,
+  participantes           int not null default 0,
+  sem_presenca            boolean not null default false,
+  sem_participantes       boolean not null default false,
+  primary key (fechamento_id, data)
 );
-create index if not exists comissao_pontos_extras_empresa_idx on public.comissao_pontos_extras (empresa_id, data);
-create index if not exists comissao_pontos_extras_funcionario_idx on public.comissao_pontos_extras (funcionario_id, data);
-create index if not exists comissao_pontos_extras_criado_por_idx on public.comissao_pontos_extras (criado_por);
-comment on table public.comissao_pontos_extras is '[api:leitura] Pontos extras de comissão por funcionário e data (entram no fechamento do período).';
+create index if not exists comissao_rateio_dias_empresa_idx on public.comissao_rateio_dias (empresa_id, data);
+comment on table public.comissao_rateio_dias is '[api:leitura] Rateio diário da comissão: serviço, ajuste, retenção e base de cada dia.';
+
+create table if not exists public.comissao_rateio_itens_dia (
+  item_id         uuid not null references public.comissao_itens (id) on delete cascade,
+  fechamento_id   uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id      uuid not null references public.empresas (id) on delete cascade,
+  data            date not null,
+  pontos          numeric(8,2) not null,
+  valor_centavos  bigint not null default 0,
+  fallback        boolean not null default false,
+  primary key (item_id, data)
+);
+create index if not exists comissao_rateio_itens_dia_fechamento_idx on public.comissao_rateio_itens_dia (fechamento_id, data);
+create index if not exists comissao_rateio_itens_dia_empresa_idx on public.comissao_rateio_itens_dia (empresa_id, data);
+comment on table public.comissao_rateio_itens_dia is '[api:leitura] Rateio diário da comissão: pontos e valor de cada participante em cada dia.';
 
 alter table public.comissao_fechamentos enable row level security;
 alter table public.comissao_itens enable row level security;
@@ -4879,9 +4918,13 @@ create policy comissao_fechamentos_ler on public.comissao_fechamentos for select
 drop policy if exists comissao_itens_ler on public.comissao_itens;
 create policy comissao_itens_ler on public.comissao_itens for select to authenticated
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-alter table public.comissao_pontos_extras enable row level security;
-drop policy if exists comissao_pontos_extras_ler on public.comissao_pontos_extras;
-create policy comissao_pontos_extras_ler on public.comissao_pontos_extras for select to authenticated
+alter table public.comissao_rateio_dias enable row level security;
+alter table public.comissao_rateio_itens_dia enable row level security;
+drop policy if exists comissao_rateio_dias_ler on public.comissao_rateio_dias;
+create policy comissao_rateio_dias_ler on public.comissao_rateio_dias for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+drop policy if exists comissao_rateio_itens_dia_ler on public.comissao_rateio_itens_dia;
+create policy comissao_rateio_itens_dia_ler on public.comissao_rateio_itens_dia for select to authenticated
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
 
 -- ================================================================ gatilhos
@@ -4945,7 +4988,7 @@ begin
       return old;
     end if;
     if tg_op = 'UPDATE' and pg_trigger_depth() > 1
-       and public.comissao_so_anula_fks(to_jsonb(old), to_jsonb(new), array['funcionario_id']) then
+       and public.comissao_so_anula_fks(to_jsonb(old), to_jsonb(new), array['funcionario_id', 'extra_id']) then
       return new;
     end if;
     raise exception 'Fechamento já está fechado' using errcode = '22023';
@@ -4960,6 +5003,42 @@ comment on function public.comissao_itens_protecao() is '[interno] Itens de fech
 drop trigger if exists a_protecao on public.comissao_itens;
 create trigger a_protecao before insert or update or delete on public.comissao_itens
   for each row execute function public.comissao_itens_protecao();
+
+-- Detalhe do rateio: segue o status do fechamento (fechado = imutável); empresa_id do fechamento.
+create or replace function public.comissao_rateio_protecao()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_status text; v_empresa uuid; v_fech uuid;
+begin
+  v_fech := case when tg_op = 'DELETE' then old.fechamento_id else new.fechamento_id end;
+  select f.status, f.empresa_id into v_status, v_empresa from public.comissao_fechamentos f where f.id = v_fech;
+  if tg_op = 'INSERT' then
+    if v_empresa is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
+    if v_status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
+    new.empresa_id := v_empresa;
+    return new;
+  end if;
+  if tg_op = 'UPDATE' and old.fechamento_id is distinct from new.fechamento_id then
+    raise exception 'Item não pode mudar de fechamento' using errcode = '22023';
+  end if;
+  if v_status = 'fechado' then
+    if tg_op = 'DELETE' and pg_trigger_depth() > 1
+       and not exists (select 1 from public.empresas e where e.id = old.empresa_id) then
+      return old;
+    end if;
+    raise exception 'Fechamento já está fechado' using errcode = '22023';
+  end if;
+  if tg_op = 'DELETE' then return old; end if;
+  new.empresa_id := coalesce(v_empresa, old.empresa_id);
+  return new;
+end $$;
+comment on function public.comissao_rateio_protecao() is '[interno] Detalhe do rateio de fechamento fechado é imutável.';
+
+drop trigger if exists a_protecao on public.comissao_rateio_dias;
+create trigger a_protecao before insert or update or delete on public.comissao_rateio_dias
+  for each row execute function public.comissao_rateio_protecao();
+drop trigger if exists a_protecao on public.comissao_rateio_itens_dia;
+create trigger a_protecao before insert or update or delete on public.comissao_rateio_itens_dia
+  for each row execute function public.comissao_rateio_protecao();
 
 -- ================================================================ cálculo (§9)
 create or replace function public.comissao_pontos_vigentes(p_funcionario uuid, p_data date)
@@ -4984,78 +5063,217 @@ declare
   v_dias    int;
   v_soma    numeric;
   v_resto   bigint;
+  v_aj_abs  bigint;
+  v_sinal   int;
+  v_sp      int := 0;
+  v_spart   int := 0;
 begin
   select * into fc from public.comissao_fechamentos where id = p_fechamento for update;
   if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
   if fc.status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
+  v_dias := fc.data_fim - fc.data_inicio + 1;
 
-  -- 1–3. serviço, retenção, base
+  -- (adendo E.3.2 passo 8) extras com dia lançado no período entram; extra sem lançamento no período sai
+  insert into public.comissao_itens (empresa_id, fechamento_id, tipo, extra_id, funcionario_nome, cargo, pontos)
+  select fc.empresa_id, p_fechamento, 'extra', x.id, x.nome, x.funcao, x.pontos_padrao
+    from public.extras x
+   where x.empresa_id = fc.empresa_id
+     and exists (select 1 from public.diarias d
+                  where d.extra_id = x.id and d.data between fc.data_inicio and fc.data_fim)
+     and not exists (select 1 from public.comissao_itens it where it.fechamento_id = p_fechamento and it.extra_id = x.id);
+  delete from public.comissao_itens it
+   where it.fechamento_id = p_fechamento and it.tipo = 'extra'
+     and not exists (select 1 from public.diarias d
+                      where d.extra_id = it.extra_id and d.data between fc.data_inicio and fc.data_fim);
+  -- extras: snapshot atualizado, pontos = média dos lançamentos (2 casas), dias lançados
+  update public.comissao_itens it
+     set funcionario_nome = x.nome, cargo = x.funcao,
+         pontos = coalesce(l.media, x.pontos_padrao), dias_presentes = l.qtd, dias_trabalhados = l.qtd
+    from public.extras x,
+         lateral (select round(avg(d.pontos), 2) as media, count(*)::int as qtd from public.diarias d
+                   where d.extra_id = x.id and d.data between fc.data_inicio and fc.data_fim) l
+   where it.fechamento_id = p_fechamento and it.extra_id = x.id;
+  -- funcionários: dias com batida válida
+  update public.comissao_itens it set dias_presentes = 0, dias_trabalhados = 0
+   where it.fechamento_id = p_fechamento and it.tipo = 'funcionario';
+  update public.comissao_itens it
+     set dias_presentes = c.qtd, dias_trabalhados = c.qtd
+    from (select d.funcionario_id, count(*)::int as qtd from public.ponto_dias d
+           where d.data between fc.data_inicio and fc.data_fim and d.batidas_validas > 0
+           group by d.funcionario_id) c
+   where c.funcionario_id = it.funcionario_id and it.fechamento_id = p_fechamento and it.tipo = 'funcionario' and it.funcionario_id is not null;
+
+  -- 1. serviço do período
   select coalesce(sum(i.valor_total), 0) into v_zig
     from public.zig_vendas_itens i
    where i.empresa_id = fc.empresa_id and i.tipo = 'Tip'
      and i.data_operacao between fc.data_inicio and fc.data_fim
      and (fc.loja_id_externo is null or i.loja_id_externo = fc.loja_id_externo);
-  v_bruto := greatest(0, v_zig + fc.servico_ajuste_centavos);
-  v_ret := round(v_bruto::numeric * fc.percentual_retencao / 100);
-  v_base := v_bruto - v_ret;
-  v_dias := fc.data_fim - fc.data_inicio + 1;
 
-  -- 4b. (adendo E.1) quem tem pontos extras no período entra (pontos base 0) e os extras são relidos
-  insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, pontos)
-  select fc.empresa_id, p_fechamento, f.id, f.nome, f.cargo, 0
-    from public.funcionarios f
-   where f.empresa_id = fc.empresa_id
-     and exists (select 1 from public.comissao_pontos_extras x
-                  where x.funcionario_id = f.id and x.data between fc.data_inicio and fc.data_fim)
-     and not exists (select 1 from public.comissao_itens it where it.fechamento_id = p_fechamento and it.funcionario_id = f.id);
-  update public.comissao_itens it
-     set pontos_extras = coalesce((select sum(x.pontos) from public.comissao_pontos_extras x
-                                    where x.funcionario_id = it.funcionario_id
-                                      and x.data between fc.data_inicio and fc.data_fim), 0)
-   where it.fechamento_id = p_fechamento and it.funcionario_id is not null;
+  delete from public.comissao_rateio_itens_dia where fechamento_id = p_fechamento;
+  delete from public.comissao_rateio_dias where fechamento_id = p_fechamento;
 
-  -- 5–6. dias trabalhados e pontos efetivos (extras somados depois da proporção, sem proporcionalizar)
-  update public.comissao_itens it
-     set dias_trabalhados = case when it.funcionario_id is null then it.dias_trabalhados
-                                 else (select count(*) from public.ponto_dias d
-                                        where d.funcionario_id = it.funcionario_id
-                                          and d.data between fc.data_inicio and fc.data_fim
-                                          and d.batidas_validas > 0) end
-   where it.fechamento_id = p_fechamento;
-  update public.comissao_itens it
-     set pontos_efetivos = case when not it.incluido then 0
-                                when fc.proporcional_dias then round(it.pontos * it.dias_trabalhados / v_dias, 6) + it.pontos_extras
-                                else it.pontos + it.pontos_extras end
-   where it.fechamento_id = p_fechamento;
+  if fc.modo_rateio = 'periodo' then
+    -- ============================================== modo período (§9)
+    v_bruto := greatest(0, v_zig + fc.servico_ajuste_centavos);
+    v_ret := round(v_bruto::numeric * fc.percentual_retencao / 100);
+    v_base := v_bruto - v_ret;
+    update public.comissao_itens it
+       set pontos_efetivos = case
+             when not it.incluido then 0
+             when it.tipo = 'extra' then
+               round(coalesce((select sum(d.pontos) from public.diarias d
+                                where d.extra_id = it.extra_id and d.data between fc.data_inicio and fc.data_fim), 0) / v_dias, 6)
+             when fc.proporcional_dias then round(it.pontos * it.dias_trabalhados / v_dias, 6)
+             else it.pontos end
+     where it.fechamento_id = p_fechamento;
 
-  select coalesce(sum(it.pontos_efetivos), 0) into v_soma from public.comissao_itens it where it.fechamento_id = p_fechamento;
-
-  if v_soma = 0 then
-    update public.comissao_itens set valor_centavos = 0 where fechamento_id = p_fechamento;
+    select coalesce(sum(it.pontos_efetivos), 0) into v_soma from public.comissao_itens it where it.fechamento_id = p_fechamento;
+    if v_soma = 0 then
+      update public.comissao_itens set valor_centavos = 0 where fechamento_id = p_fechamento;
+    else
+      -- 9. maior resto — aritmética EXATA: piso = div(base × pe, soma) e resto = mod(base × pe, soma).
+      -- Desempate por nome com collate "C" (igual à prévia do front em web/src/lib/comissao.ts).
+      with c as (
+        select it.id, div(v_base * it.pontos_efetivos, v_soma) as piso
+          from public.comissao_itens it where it.fechamento_id = p_fechamento
+      )
+      update public.comissao_itens it set valor_centavos = c.piso::bigint
+        from c where it.id = c.id;
+      select v_base - coalesce(sum(valor_centavos), 0) into v_resto
+        from public.comissao_itens where fechamento_id = p_fechamento;
+      with ordem as (
+        select it.id
+          from public.comissao_itens it
+         where it.fechamento_id = p_fechamento and it.pontos_efetivos > 0
+         order by mod(v_base * it.pontos_efetivos, v_soma) desc,
+                  it.pontos_efetivos desc, it.funcionario_nome collate "C" asc, (it.tipo = 'extra') asc,
+                  coalesce(it.funcionario_id, it.extra_id) asc nulls last, it.id
+         limit v_resto
+      )
+      update public.comissao_itens it set valor_centavos = it.valor_centavos + 1
+        from ordem where it.id = ordem.id;
+    end if;
   else
-    -- 9. maior resto — aritmética EXATA: piso = div(base × pe, soma) e resto = mod(base × pe, soma)
-    -- (mesmo denominador para todos, então comparar o resto inteiro = comparar a parte fracionária; a divisão
-    -- numérica com escala finita podia arredondar o piso para cima em valores extremos).
-    -- Desempate por nome com collate "C" (ordem de código de caractere, igual à prévia do front em
-    -- web/src/lib/comissao.ts), independente da collation do banco do Supabase.
-    with c as (
-      select it.id, div(v_base * it.pontos_efetivos, v_soma) as piso
-        from public.comissao_itens it where it.fechamento_id = p_fechamento
+    -- ============================================== modo diário (adendo E.3.2)
+    -- funcionário automático: pontos exibidos = vigentes no fim
+    update public.comissao_itens it
+       set pontos = coalesce(public.comissao_pontos_vigentes(it.funcionario_id, fc.data_fim), 0)
+     where it.fechamento_id = p_fechamento and it.tipo = 'funcionario' and it.funcionario_id is not null
+       and not it.pontos_manual;
+
+    -- 1–2. serviço do dia e parte do ajuste (maior resto exato; peso = serviço do dia ≥ 0, ou 1 se o total for 0)
+    v_aj_abs := abs(fc.servico_ajuste_centavos);
+    v_sinal := case when fc.servico_ajuste_centavos < 0 then -1 else 1 end;
+    with g as (
+      select d::date as data from generate_series(fc.data_inicio::timestamp, fc.data_fim::timestamp, interval '1 day') d
+    ), s as (
+      select g.data,
+             coalesce((select sum(i.valor_total) from public.zig_vendas_itens i
+                        where i.empresa_id = fc.empresa_id and i.tipo = 'Tip' and i.data_operacao = g.data
+                          and (fc.loja_id_externo is null or i.loja_id_externo = fc.loja_id_externo)), 0)::bigint as servico
+        from g
+    ), w as (
+      select s.data, s.servico,
+             case when (select sum(greatest(s2.servico, 0)) from s s2) > 0 then greatest(s.servico, 0) else 1 end::numeric as peso
+        from s
+    ), p as (
+      select w.data, w.servico,
+             div(v_aj_abs * w.peso, t.tot) as piso, mod(v_aj_abs * w.peso, t.tot) as resto
+        from w, (select sum(peso) as tot from w) t
+    ), r as (
+      select p.*, row_number() over (order by p.resto desc, p.data) as rn,
+             v_aj_abs - sum(p.piso) over () as sobra
+        from p
     )
-    update public.comissao_itens it set valor_centavos = c.piso::bigint
-      from c where it.id = c.id;
-    select v_base - coalesce(sum(valor_centavos), 0) into v_resto
-      from public.comissao_itens where fechamento_id = p_fechamento;
-    with ordem as (
-      select it.id
-        from public.comissao_itens it
-       where it.fechamento_id = p_fechamento and it.pontos_efetivos > 0
-       order by mod(v_base * it.pontos_efetivos, v_soma) desc,
-                it.pontos_efetivos desc, it.funcionario_nome collate "C" asc, it.funcionario_id asc nulls last, it.id
-       limit v_resto
+    insert into public.comissao_rateio_dias (fechamento_id, empresa_id, data, servico_zig_centavos, ajuste_centavos)
+    select p_fechamento, fc.empresa_id, r.data, r.servico,
+           (v_sinal * (r.piso + case when r.rn <= r.sobra then 1 else 0 end))::bigint
+      from r;
+
+    -- 3. bruto, retenção e base do dia
+    update public.comissao_rateio_dias rd
+       set servico_bruto_centavos = greatest(0, rd.servico_zig_centavos + rd.ajuste_centavos)
+     where rd.fechamento_id = p_fechamento;
+    update public.comissao_rateio_dias rd
+       set retencao_centavos = round(rd.servico_bruto_centavos::numeric * fc.percentual_retencao / 100)::bigint
+     where rd.fechamento_id = p_fechamento;
+    update public.comissao_rateio_dias rd
+       set base_centavos = rd.servico_bruto_centavos - rd.retencao_centavos
+     where rd.fechamento_id = p_fechamento;
+
+    -- 4. presentes do dia: funcionários com batida válida (pontos vigentes na data ou manuais) e extras lançados
+    insert into public.comissao_rateio_itens_dia (item_id, fechamento_id, empresa_id, data, pontos, fallback)
+    select it.id, p_fechamento, fc.empresa_id, pd.data, x.pontos, false
+      from public.comissao_itens it
+      join public.ponto_dias pd on pd.funcionario_id = it.funcionario_id
+                               and pd.data between fc.data_inicio and fc.data_fim and pd.batidas_validas > 0
+      cross join lateral (select case when it.pontos_manual then it.pontos
+                                      else coalesce(public.comissao_pontos_vigentes(it.funcionario_id, pd.data), 0) end as pontos) x
+     where it.fechamento_id = p_fechamento and it.tipo = 'funcionario' and it.incluido and x.pontos > 0
+    union all
+    select it.id, p_fechamento, fc.empresa_id, d.data, d.pontos, false
+      from public.comissao_itens it
+      join public.diarias d on d.extra_id = it.extra_id and d.data between fc.data_inicio and fc.data_fim
+     where it.fechamento_id = p_fechamento and it.tipo = 'extra' and it.incluido and d.pontos > 0;
+
+    -- 5. fallback: dia com base > 0 e ninguém presente → todos os funcionários incluídos
+    insert into public.comissao_rateio_itens_dia (item_id, fechamento_id, empresa_id, data, pontos, fallback)
+    select it.id, p_fechamento, fc.empresa_id, rd.data, x.pontos, true
+      from public.comissao_rateio_dias rd
+      join public.comissao_itens it on it.fechamento_id = p_fechamento and it.tipo = 'funcionario' and it.incluido
+      cross join lateral (select case when it.pontos_manual or it.funcionario_id is null then it.pontos
+                                      else coalesce(public.comissao_pontos_vigentes(it.funcionario_id, rd.data), 0) end as pontos) x
+     where rd.fechamento_id = p_fechamento and rd.base_centavos > 0 and x.pontos > 0
+       and not exists (select 1 from public.comissao_rateio_itens_dia ri
+                        where ri.fechamento_id = p_fechamento and ri.data = rd.data);
+
+    update public.comissao_rateio_dias rd
+       set soma_pontos = a.soma, participantes = a.qtd, sem_presenca = a.fb
+      from (select ri.data, sum(ri.pontos) as soma, count(*)::int as qtd, bool_or(ri.fallback) as fb
+              from public.comissao_rateio_itens_dia ri where ri.fechamento_id = p_fechamento group by ri.data) a
+     where rd.fechamento_id = p_fechamento and rd.data = a.data;
+    update public.comissao_rateio_dias rd
+       set sem_participantes = rd.base_centavos > 0 and rd.participantes = 0
+     where rd.fechamento_id = p_fechamento;
+
+    -- 6. rateio do dia: maior resto exato (div/mod), desempate como no modo período
+    update public.comissao_rateio_itens_dia ri
+       set valor_centavos = div(rd.base_centavos * ri.pontos, rd.soma_pontos)::bigint
+      from public.comissao_rateio_dias rd
+     where ri.fechamento_id = p_fechamento and rd.fechamento_id = p_fechamento and rd.data = ri.data and rd.soma_pontos > 0;
+    with s as (
+      select rd.data, rd.base_centavos as base, rd.soma_pontos as soma,
+             rd.base_centavos - coalesce((select sum(ri.valor_centavos) from public.comissao_rateio_itens_dia ri
+                                           where ri.fechamento_id = p_fechamento and ri.data = rd.data), 0) as sobra
+        from public.comissao_rateio_dias rd
+       where rd.fechamento_id = p_fechamento and rd.soma_pontos > 0
+    ), o as (
+      select ri.item_id, ri.data, s.sobra,
+             row_number() over (partition by ri.data
+                                order by mod(s.base * ri.pontos, s.soma) desc, ri.pontos desc,
+                                         it.funcionario_nome collate "C" asc, (it.tipo = 'extra') asc,
+                                         coalesce(it.funcionario_id, it.extra_id) asc nulls last, it.id) as rn
+        from public.comissao_rateio_itens_dia ri
+        join s on s.data = ri.data
+        join public.comissao_itens it on it.id = ri.item_id
+       where ri.fechamento_id = p_fechamento
     )
-    update public.comissao_itens it set valor_centavos = it.valor_centavos + 1
-      from ordem where it.id = ordem.id;
+    update public.comissao_rateio_itens_dia ri set valor_centavos = ri.valor_centavos + 1
+      from o where ri.item_id = o.item_id and ri.data = o.data and o.rn <= o.sobra;
+
+    -- 7. itens e totais
+    update public.comissao_itens it set valor_centavos = 0, pontos_efetivos = 0 where it.fechamento_id = p_fechamento;
+    update public.comissao_itens it
+       set valor_centavos = a.valor, pontos_efetivos = a.pontos
+      from (select ri.item_id, sum(ri.valor_centavos) as valor, sum(ri.pontos) as pontos
+              from public.comissao_rateio_itens_dia ri where ri.fechamento_id = p_fechamento group by ri.item_id) a
+     where it.id = a.item_id;
+    select coalesce(sum(rd.servico_bruto_centavos), 0), coalesce(sum(rd.retencao_centavos), 0),
+           coalesce(sum(rd.base_centavos), 0), coalesce(sum(rd.soma_pontos), 0),
+           count(*) filter (where rd.sem_presenca), count(*) filter (where rd.sem_participantes)
+      into v_bruto, v_ret, v_base, v_soma, v_sp, v_spart
+      from public.comissao_rateio_dias rd where rd.fechamento_id = p_fechamento;
   end if;
 
   update public.comissao_fechamentos
@@ -5066,10 +5284,12 @@ begin
          dias_periodo = v_dias,
          soma_pontos_efetivos = v_soma,
          valor_ponto_centavos = case when v_soma = 0 then null else round(v_base / v_soma, 6) end,
+         dias_sem_presenca = v_sp,
+         dias_sem_participantes = v_spart,
          calculado_em = public.agora()
    where id = p_fechamento;
 end $$;
-comment on function public.comissao_calcular(uuid) is '[interno] Recalcula um fechamento em rascunho (§9).';
+comment on function public.comissao_calcular(uuid) is '[interno] Recalcula um fechamento em rascunho (§9 modo período; adendo E.3 modo diário).';
 
 -- Carrega o fechamento e checa permissão de operação (G A M) e status rascunho.
 create or replace function public.comissao_rascunho_para_editar(p_fechamento uuid)
@@ -5085,14 +5305,20 @@ end $$;
 comment on function public.comissao_rascunho_para_editar(uuid) is '[interno] Fechamento em rascunho editável pelo usuário?';
 
 -- ================================================================ RPCs
+-- assinaturas antigas (v1) ganharam p_modo_rateio: remove para não haver sobrecarga ambígua no PostgREST
+drop function if exists public.comissao_criar_fechamento(date, date, text, text, boolean, uuid);
+drop function if exists public.comissao_atualizar_fechamento(uuid, text, bigint, numeric, boolean, text);
+
 create or replace function public.comissao_criar_fechamento(p_data_inicio date, p_data_fim date, p_titulo text default null,
                                                             p_loja text default null, p_proporcional_dias boolean default false,
-                                                            p_empresa uuid default null)
+                                                            p_empresa uuid default null, p_modo_rateio text default 'diario')
 returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid; v_id uuid; v_pct numeric;
 begin
   v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
   perform public.ponto_validar_periodo(p_data_inicio, p_data_fim, 93);
+  p_modo_rateio := coalesce(p_modo_rateio, 'diario');
+  if p_modo_rateio not in ('diario', 'periodo') then raise exception 'Modo de rateio inválido' using errcode = '22023'; end if;
   p_loja := nullif(btrim(p_loja), '');
   if p_loja is not null and not exists (select 1 from public.zig_lojas l
                                          where l.empresa_id = v_empresa and l.loja_id_externo = p_loja) then
@@ -5101,11 +5327,11 @@ begin
   select e.comissao_percentual_retencao into v_pct from public.empresas e where e.id = v_empresa;
 
   insert into public.comissao_fechamentos (empresa_id, titulo, data_inicio, data_fim, loja_id_externo, percentual_retencao,
-                                           proporcional_dias, criado_por)
+                                           proporcional_dias, modo_rateio, criado_por)
   values (v_empresa,
           coalesce(nullif(btrim(p_titulo), ''),
                    'Comissão ' || to_char(p_data_inicio, 'DD/MM') || ' a ' || to_char(p_data_fim, 'DD/MM/YYYY')),
-          p_data_inicio, p_data_fim, p_loja, coalesce(v_pct, 20), coalesce(p_proporcional_dias, false), auth.uid())
+          p_data_inicio, p_data_fim, p_loja, coalesce(v_pct, 20), coalesce(p_proporcional_dias, false), p_modo_rateio, auth.uid())
   returning id into v_id;
 
   insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, pontos)
@@ -5120,11 +5346,12 @@ begin
   perform public.comissao_calcular(v_id);
   return v_id;
 end $$;
-comment on function public.comissao_criar_fechamento(date, date, text, text, boolean, uuid) is '[api] Cria rascunho de comissão com os participantes e calcula.';
+comment on function public.comissao_criar_fechamento(date, date, text, text, boolean, uuid, text) is
+  '[api] Cria rascunho de comissão (modo diário ou período) com funcionários e extras do período e calcula.';
 
 create or replace function public.comissao_atualizar_fechamento(p_fechamento uuid, p_titulo text, p_servico_ajuste_centavos bigint,
                                                                 p_percentual_retencao numeric, p_proporcional_dias boolean,
-                                                                p_observacoes text)
+                                                                p_observacoes text, p_modo_rateio text default null)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare fc public.comissao_fechamentos;
 begin
@@ -5132,16 +5359,21 @@ begin
   if p_percentual_retencao is not null and (p_percentual_retencao < 0 or p_percentual_retencao > 100) then
     raise exception 'Percentual de retenção inválido' using errcode = '22023';
   end if;
+  if p_modo_rateio is not null and p_modo_rateio not in ('diario', 'periodo') then
+    raise exception 'Modo de rateio inválido' using errcode = '22023';
+  end if;
   update public.comissao_fechamentos
      set titulo = coalesce(nullif(btrim(p_titulo), ''), titulo),
          servico_ajuste_centavos = coalesce(p_servico_ajuste_centavos, servico_ajuste_centavos),
          percentual_retencao = coalesce(p_percentual_retencao, percentual_retencao),
          proporcional_dias = coalesce(p_proporcional_dias, proporcional_dias),
+         modo_rateio = coalesce(p_modo_rateio, modo_rateio),
          observacoes = nullif(btrim(p_observacoes), '')
    where id = p_fechamento;
   perform public.comissao_calcular(p_fechamento);
 end $$;
-comment on function public.comissao_atualizar_fechamento(uuid, text, bigint, numeric, boolean, text) is '[api] Edita parâmetros do rascunho e recalcula.';
+comment on function public.comissao_atualizar_fechamento(uuid, text, bigint, numeric, boolean, text, text) is
+  '[api] Edita parâmetros do rascunho (inclusive o modo de rateio) e recalcula.';
 
 create or replace function public.comissao_definir_item(p_fechamento uuid, p_funcionario uuid, p_pontos numeric,
                                                         p_incluido boolean default true)
@@ -5155,30 +5387,47 @@ begin
   v_pontos := coalesce(p_pontos, public.comissao_pontos_vigentes(f.id, fc.data_fim));
   if v_pontos < 0 or v_pontos > 999999.99 then raise exception 'Pontos inválidos' using errcode = '22023'; end if;
 
-  insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, incluido, pontos)
-  values (fc.empresa_id, p_fechamento, f.id, f.nome, f.cargo, coalesce(p_incluido, true), v_pontos)
+  insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, incluido, pontos, pontos_manual)
+  values (fc.empresa_id, p_fechamento, f.id, f.nome, f.cargo, coalesce(p_incluido, true), v_pontos, p_pontos is not null)
   on conflict (fechamento_id, funcionario_id) do update
     set funcionario_nome = excluded.funcionario_nome, cargo = excluded.cargo,
-        incluido = excluded.incluido, pontos = excluded.pontos;
+        incluido = excluded.incluido, pontos = excluded.pontos, pontos_manual = excluded.pontos_manual;
   perform public.comissao_calcular(p_fechamento);
 end $$;
-comment on function public.comissao_definir_item(uuid, uuid, numeric, boolean) is '[api] Inclui/atualiza participante (snapshot de nome/cargo) e recalcula.';
+comment on function public.comissao_definir_item(uuid, uuid, numeric, boolean) is
+  '[api] Inclui/atualiza funcionário participante (p_pontos null = automático) e recalcula.';
+
+create or replace function public.comissao_definir_extra(p_fechamento uuid, p_extra uuid, p_incluido boolean)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos; x record;
+begin
+  fc := public.comissao_rascunho_para_editar(p_fechamento);
+  select * into x from public.extras where id = p_extra;
+  if not found then raise exception 'Extra não encontrado' using errcode = 'P0002'; end if;
+  if x.empresa_id <> fc.empresa_id then raise exception 'Extra de outra empresa' using errcode = '22023'; end if;
+  if not exists (select 1 from public.diarias d where d.extra_id = x.id and d.data between fc.data_inicio and fc.data_fim) then
+    if coalesce(p_incluido, true) then
+      raise exception 'Extra sem dias lançados no período' using errcode = '22023';
+    end if;
+    perform public.comissao_calcular(p_fechamento);
+    return;
+  end if;
+  insert into public.comissao_itens (empresa_id, fechamento_id, tipo, extra_id, funcionario_nome, cargo, incluido, pontos)
+  values (fc.empresa_id, p_fechamento, 'extra', x.id, x.nome, x.funcao, coalesce(p_incluido, true), x.pontos_padrao)
+  on conflict (fechamento_id, extra_id) do update set incluido = excluded.incluido;
+  perform public.comissao_calcular(p_fechamento);
+end $$;
+comment on function public.comissao_definir_extra(uuid, uuid, boolean) is '[api] Inclui/tira um extra (freela) do rascunho e recalcula.';
 
 create or replace function public.comissao_remover_item(p_fechamento uuid, p_funcionario uuid)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare fc public.comissao_fechamentos;
 begin
   fc := public.comissao_rascunho_para_editar(p_fechamento);
-  if exists (select 1 from public.comissao_pontos_extras x
-              where x.funcionario_id = p_funcionario and x.data between fc.data_inicio and fc.data_fim) then
-    -- com extras no período ele voltaria no próximo cálculo: só desmarca (adendo E.1)
-    update public.comissao_itens set incluido = false where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
-  else
-    delete from public.comissao_itens where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
-  end if;
+  delete from public.comissao_itens where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
   perform public.comissao_calcular(p_fechamento);
 end $$;
-comment on function public.comissao_remover_item(uuid, uuid) is '[api] Remove participante do rascunho (com extras no período: só desmarca) e recalcula.';
+comment on function public.comissao_remover_item(uuid, uuid) is '[api] Remove funcionário participante do rascunho e recalcula.';
 
 create or replace function public.comissao_recalcular(p_fechamento uuid)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -5187,7 +5436,7 @@ begin
   fc := public.comissao_rascunho_para_editar(p_fechamento);
   perform public.comissao_calcular(p_fechamento);
 end $$;
-comment on function public.comissao_recalcular(uuid) is '[api] Relê serviço e presença e recalcula o rascunho.';
+comment on function public.comissao_recalcular(uuid) is '[api] Relê serviço, presença e extras e recalcula o rascunho.';
 
 create or replace function public.comissao_fechar(p_fechamento uuid)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -5201,8 +5450,12 @@ begin
   end if;
   if fc.status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
   perform public.comissao_calcular(p_fechamento);
-  if not exists (select 1 from public.comissao_fechamentos where id = p_fechamento and soma_pontos_efetivos > 0) then
+  select * into fc from public.comissao_fechamentos where id = p_fechamento;
+  if fc.soma_pontos_efetivos <= 0 then
     raise exception 'Fechamento sem participantes' using errcode = '22023';
+  end if;
+  if fc.dias_sem_participantes > 0 then
+    raise exception 'Há dias com serviço sem participantes para ratear' using errcode = '22023';
   end if;
   update public.comissao_fechamentos
      set status = 'fechado', fechado_por = auth.uid(), fechado_em = public.agora()
@@ -5218,6 +5471,64 @@ begin
   delete from public.comissao_fechamentos where id = p_fechamento;
 end $$;
 comment on function public.comissao_excluir_rascunho(uuid) is '[api] Exclui um rascunho de comissão.';
+
+-- ================================================================ detalhe (adendo E.3.4)
+create or replace function public.comissao_detalhe(p_fechamento uuid)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos;
+begin
+  select * into fc from public.comissao_fechamentos where id = p_fechamento;
+  if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(fc.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  return jsonb_build_object(
+    'fechamento', to_jsonb(fc),
+    'servico_dias', (
+      select jsonb_agg(jsonb_build_object('data', g::date, 'servico_zig_centavos',
+               coalesce((select sum(i.valor_total) from public.zig_vendas_itens i
+                          where i.empresa_id = fc.empresa_id and i.tipo = 'Tip' and i.data_operacao = g::date
+                            and (fc.loja_id_externo is null or i.loja_id_externo = fc.loja_id_externo)), 0)::bigint)
+               order by g)
+        from generate_series(fc.data_inicio::timestamp, fc.data_fim::timestamp, interval '1 day') g),
+    'dias', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'data', rd.data, 'servico_zig_centavos', rd.servico_zig_centavos, 'ajuste_centavos', rd.ajuste_centavos,
+               'servico_bruto_centavos', rd.servico_bruto_centavos, 'retencao_centavos', rd.retencao_centavos,
+               'base_centavos', rd.base_centavos, 'soma_pontos', rd.soma_pontos, 'participantes', rd.participantes,
+               'sem_presenca', rd.sem_presenca, 'sem_participantes', rd.sem_participantes,
+               'rateio', coalesce((
+                 select jsonb_agg(jsonb_build_object('item_id', ri.item_id, 'pontos', ri.pontos,
+                                                     'valor_centavos', ri.valor_centavos, 'fallback', ri.fallback)
+                                  order by it.funcionario_nome collate "C", (it.tipo = 'extra'),
+                                           coalesce(it.funcionario_id, it.extra_id) nulls last, it.id)
+                   from public.comissao_rateio_itens_dia ri join public.comissao_itens it on it.id = ri.item_id
+                  where ri.fechamento_id = rd.fechamento_id and ri.data = rd.data), '[]'::jsonb))
+             order by rd.data)
+        from public.comissao_rateio_dias rd where rd.fechamento_id = fc.id), '[]'::jsonb),
+    'itens', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', it.id, 'tipo', it.tipo, 'funcionario_id', it.funcionario_id, 'extra_id', it.extra_id,
+               'nome', it.funcionario_nome, 'cargo', it.cargo, 'incluido', it.incluido, 'pontos', it.pontos,
+               'pontos_manual', it.pontos_manual, 'dias_presentes', it.dias_presentes,
+               'pontos_efetivos', it.pontos_efetivos, 'valor_centavos', it.valor_centavos,
+               'entrada', case
+                 when it.tipo = 'extra' then coalesce((
+                   select jsonb_agg(jsonb_build_object('data', d.data, 'presente', true, 'pontos', d.pontos) order by d.data)
+                     from public.diarias d
+                    where d.extra_id = it.extra_id and d.data between fc.data_inicio and fc.data_fim), '[]'::jsonb)
+                 when it.funcionario_id is null then '[]'::jsonb
+                 else (
+                   select jsonb_agg(jsonb_build_object(
+                            'data', g::date,
+                            'presente', coalesce((select pd.batidas_validas > 0 from public.ponto_dias pd
+                                                   where pd.funcionario_id = it.funcionario_id and pd.data = g::date), false),
+                            'pontos', coalesce(public.comissao_pontos_vigentes(it.funcionario_id, g::date), 0))
+                          order by g)
+                     from generate_series(fc.data_inicio::timestamp, fc.data_fim::timestamp, interval '1 day') g)
+               end)
+             order by it.funcionario_nome collate "C", (it.tipo = 'extra'), coalesce(it.funcionario_id, it.extra_id) nulls last, it.id)
+        from public.comissao_itens it where it.fechamento_id = fc.id), '[]'::jsonb));
+end $$;
+comment on function public.comissao_detalhe(uuid) is '[api] Fechamento com rateio por dia e entradas da prévia (G A M).';
 
 -- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000220_comissoes.sql
 
@@ -5710,11 +6021,15 @@ begin
     from public.comissao_fechamentos fc join public.empresas e on e.id = fc.empresa_id
    where fc.id = p_fechamento;
   if v_fech is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-  select coalesce(jsonb_agg(to_jsonb(it) order by it.funcionario_nome, it.funcionario_id), '[]'::jsonb) into v_itens
+  select coalesce(jsonb_agg(to_jsonb(it) order by it.funcionario_nome, (it.tipo = 'extra'),
+                            coalesce(it.funcionario_id, it.extra_id) nulls last, it.id), '[]'::jsonb) into v_itens
     from public.comissao_itens it where it.fechamento_id = p_fechamento;
-  return jsonb_build_object('fechamento', v_fech, 'itens', v_itens);
+  -- (adendo extras v2, E.3.4) detalhe diário do rateio (vazio no modo período)
+  return jsonb_build_object('fechamento', v_fech, 'itens', v_itens,
+    'dias', coalesce((select jsonb_agg(to_jsonb(rd) order by rd.data) from public.comissao_rateio_dias rd
+                       where rd.fechamento_id = p_fechamento), '[]'::jsonb));
 end $$;
-comment on function public.ingestao_fechamento_exportar(uuid) is '[servico] Fechamento + itens (por nome) para o CSV do N8N.';
+comment on function public.ingestao_fechamento_exportar(uuid) is '[servico] Fechamento + itens (por nome) + dias do rateio para o CSV do N8N.';
 
 -- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000230_ingestao.sql
 
@@ -6206,15 +6521,20 @@ comment on function public.ocorrencias_resumo(int, uuid) is '[api] Resumo das oc
 
 -- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 20261006000260_extras.sql
 -- =====================================================================================================
--- 20261006000260_extras.sql — backend (adendo extras/ocorrências/reservas, seção E)
--- Aba Extras: pontos extras de comissão (tabela em …0220), valor padrão de diária, diárias (funcionário ou avulso)
--- e gastos totais por período. Valores: só G A M. Idempotente.
+-- 20261006000260_extras.sql — backend (adendo extras/ocorrências/reservas, seção E — v2)
+-- Extras = freelas/diaristas: cadastro (pontuação e diária padrão), dias trabalhados (diarias: extra com pontos
+-- que entram no rateio diário da comissão, ou funcionário só como custo), valor padrão de diária do funcionário
+-- e gastos totais por período. Valores e dados pessoais: só G A M. Idempotente; atualiza por cima da v1.
 -- =====================================================================================================
 
--- ================================================================ pontos extras (tabela em …0220)
-drop trigger if exists a_empresa on public.comissao_pontos_extras;
-create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.comissao_pontos_extras
-  for each row execute function public.ponto_empresa_do_funcionario();
+-- ================================================================ v1 removida (pontos extras, diária avulsa)
+drop function if exists public.comissao_extra_lancar(uuid, date, numeric, text);
+drop function if exists public.comissao_extra_excluir(uuid);
+drop function if exists public.comissao_extras_listar(date, date, uuid, uuid);
+drop function if exists public.diaria_lancar(date, uuid, text, text, bigint, text, boolean, date, uuid);
+drop function if exists public.diaria_atualizar(uuid, date, uuid, text, text, bigint, text, boolean, date);
+drop function if exists public.diaria_preparar(uuid, date, uuid, text, text, bigint, boolean, date);
+drop function if exists public.diarias_listar(date, date, uuid, boolean, uuid);
 
 create or replace function public.comissao_periodo_fechado(p_empresa uuid, p_data date)
 returns boolean language sql stable security definer set search_path = public, extensions, pg_temp as $$
@@ -6223,66 +6543,43 @@ returns boolean language sql stable security definer set search_path = public, e
 $$;
 comment on function public.comissao_periodo_fechado(uuid, date) is '[interno] A data cai num fechamento de comissão fechado?';
 
-create or replace function public.comissao_extra_lancar(p_funcionario uuid, p_data date, p_pontos numeric, p_motivo text)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare f public.funcionarios; v_id uuid;
-begin
-  f := public.funcionario_para_operar(p_funcionario);
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  if p_pontos is null or p_pontos <= 0 or p_pontos > 9999.99 or p_pontos <> round(p_pontos, 2) then
-    raise exception 'Pontos extras inválidos' using errcode = '22023';
-  end if;
-  if nullif(btrim(coalesce(p_motivo, '')), '') is null then raise exception 'Informe o motivo' using errcode = '22023'; end if;
-  if public.comissao_periodo_fechado(f.empresa_id, p_data) then
-    raise exception 'Período de comissão já fechado' using errcode = '22023';
-  end if;
-  insert into public.comissao_pontos_extras (empresa_id, funcionario_id, data, pontos, motivo, criado_por, criado_por_nome)
-  values (f.empresa_id, f.id, p_data, p_pontos, btrim(p_motivo), public.meu_perfil_id(), public.ponto_nome_autor())
-  returning id into v_id;
-  return v_id;
-end $$;
-comment on function public.comissao_extra_lancar(uuid, date, numeric, text) is
-  '[api] Lança pontos extras de comissão para o funcionário numa data (G A M).';
+-- ================================================================ cadastro de extras (E.1)
+create table if not exists public.extras (
+  id                     uuid primary key default gen_random_uuid(),
+  empresa_id             uuid not null references public.empresas (id) on delete cascade,
+  nome                   text not null check (btrim(nome) <> ''),
+  funcao                 text,
+  telefone               text,
+  documento              text,
+  pontos_padrao          numeric(8,2) not null default 0 check (pontos_padrao between 0 and 9999.99),
+  valor_diaria_centavos  bigint check (valor_diaria_centavos between 0 and 100000000),
+  ativo                  boolean not null default true,
+  observacoes            text,
+  criado_por             uuid references public.perfis (id) on delete set null,
+  criado_em              timestamptz not null default now(),
+  atualizado_em          timestamptz not null default now()
+);
+create index if not exists extras_empresa_idx on public.extras (empresa_id, lower(nome));
+create index if not exists extras_criado_por_idx on public.extras (criado_por);
+comment on table public.extras is '[api:leitura] Extras (freelas/diaristas): pontuação e diária padrão, contato. Só G A M.';
 
-create or replace function public.comissao_extra_excluir(p_extra uuid)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare x public.comissao_pontos_extras;
-begin
-  select * into x from public.comissao_pontos_extras where id = p_extra;
-  if not found then raise exception 'Lançamento não encontrado' using errcode = 'P0002'; end if;
-  if public.pode_operar(x.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  if public.comissao_periodo_fechado(x.empresa_id, x.data) then
-    raise exception 'Período de comissão já fechado' using errcode = '22023';
-  end if;
-  delete from public.comissao_pontos_extras where id = x.id;
-end $$;
-comment on function public.comissao_extra_excluir(uuid) is '[api] Exclui um lançamento de pontos extras (G A M).';
+alter table public.extras enable row level security;
+drop policy if exists extras_ler on public.extras;
+create policy extras_ler on public.extras for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+drop trigger if exists extras_tocar on public.extras;
+create trigger extras_tocar before update on public.extras
+  for each row execute function public.tocar_atualizado_em();
 
-create or replace function public.comissao_extras_listar(p_inicio date, p_fim date, p_funcionario uuid default null,
-                                                         p_empresa uuid default null)
-returns table (id uuid, funcionario_id uuid, funcionario_nome text, cargo text, data date, pontos numeric, motivo text,
-               criado_por_nome text, criado_em timestamptz, fechado boolean)
-language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid;
-begin
-  if p_funcionario is not null then
-    v_empresa := (public.funcionario_para_operar(p_funcionario)).empresa_id;
-  else
-    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
-  end if;
-  perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
-  return query
-  select x.id, x.funcionario_id, f.nome, f.cargo, x.data, x.pontos, x.motivo, x.criado_por_nome, x.criado_em,
-         public.comissao_periodo_fechado(x.empresa_id, x.data)
-    from public.comissao_pontos_extras x
-    join public.funcionarios f on f.id = x.funcionario_id
-   where x.empresa_id = v_empresa and x.data between p_inicio and p_fim
-     and (p_funcionario is null or x.funcionario_id = p_funcionario)
-   order by x.data desc, x.criado_em desc, x.id;
-end $$;
-comment on function public.comissao_extras_listar(date, date, uuid, uuid) is '[api] Pontos extras lançados no período (G A M).';
+-- itens de comissão de extras (colunas em …0220)
+alter table public.comissao_itens drop constraint if exists comissao_itens_extra_fk;
+alter table public.comissao_itens add constraint comissao_itens_extra_fk
+  foreign key (extra_id) references public.extras (id) on delete set null;
+alter table public.comissao_itens drop constraint if exists comissao_itens_participante;
+alter table public.comissao_itens add constraint comissao_itens_participante
+  check ((tipo = 'funcionario' and extra_id is null) or (tipo = 'extra' and funcionario_id is null));
 
--- ================================================================ valor padrão da diária
+-- ================================================================ valor padrão da diária do funcionário
 create table if not exists public.funcionario_valores_diaria (
   funcionario_id         uuid primary key references public.funcionarios (id) on delete cascade,
   empresa_id             uuid not null references public.empresas (id) on delete cascade,
@@ -6295,14 +6592,17 @@ create index if not exists funcionario_valores_diaria_atualizado_por_idx on publ
 comment on table public.funcionario_valores_diaria is
   '[api:leitura] Valor padrão da diária do funcionário (fora de funcionarios: a leitura não vê valores).';
 
--- ================================================================ diárias
+-- ================================================================ dias trabalhados / diárias (E.2)
 create table if not exists public.diarias (
   id               uuid primary key default gen_random_uuid(),
   empresa_id       uuid not null references public.empresas (id) on delete cascade,
+  tipo             text not null default 'funcionario',
+  extra_id         uuid references public.extras (id),
   funcionario_id   uuid references public.funcionarios (id) on delete set null,
   pessoa_nome      text not null check (btrim(pessoa_nome) <> ''),
   data             date not null,
   funcao           text,
+  pontos           numeric(8,2),
   valor_centavos   bigint not null check (valor_centavos between 0 and 100000000),
   observacao       text,
   pago             boolean not null default false,
@@ -6313,10 +6613,56 @@ create table if not exists public.diarias (
   atualizado_em    timestamptz not null default now(),
   constraint diarias_pagamento check (pago or pago_em is null)
 );
+
+-- Atualização por cima da v1 (diarias sem "tipo"): cada diária avulsa vira um extra cadastrado (pontos 0).
+do $$
+declare r record; v_nome text; v_extra uuid;
+begin
+  if exists (select 1 from information_schema.columns
+              where table_schema = 'public' and table_name = 'diarias' and column_name = 'tipo') then
+    return;
+  end if;
+  alter table public.diarias add column tipo text not null default 'funcionario';
+  alter table public.diarias add column extra_id uuid references public.extras (id);
+  alter table public.diarias add column pontos numeric(8,2);
+  for r in
+    select d.id, d.empresa_id, btrim(d.pessoa_nome) as nome, d.funcao, d.valor_centavos,
+           row_number() over (partition by d.empresa_id, lower(btrim(d.pessoa_nome)), d.data order by d.criado_em, d.id) as rn
+      from public.diarias d
+     where d.funcionario_id is null
+     order by d.empresa_id, d.data desc, d.criado_em desc, d.id
+  loop
+    v_nome := r.nome || case when r.rn > 1 then ' (' || r.rn || ')' else '' end;
+    v_extra := null;
+    select x.id into v_extra from public.extras x
+     where x.empresa_id = r.empresa_id and lower(x.nome) = lower(v_nome) order by x.criado_em, x.id limit 1;
+    if v_extra is null then
+      insert into public.extras (empresa_id, nome, funcao, pontos_padrao, valor_diaria_centavos, observacoes)
+      values (r.empresa_id, v_nome, r.funcao, 0, r.valor_centavos, 'Cadastrado automaticamente a partir de diária avulsa.')
+      returning id into v_extra;
+    end if;
+    update public.diarias set tipo = 'extra', extra_id = v_extra, pontos = 0 where id = r.id;
+  end loop;
+end $$;
+
+alter table public.diarias add column if not exists tipo text not null default 'funcionario';
+alter table public.diarias add column if not exists extra_id uuid references public.extras (id);
+alter table public.diarias add column if not exists pontos numeric(8,2);
+alter table public.diarias drop constraint if exists diarias_tipo_check;
+alter table public.diarias add constraint diarias_tipo_check check (tipo in ('extra', 'funcionario'));
+alter table public.diarias drop constraint if exists diarias_pontos_check;
+alter table public.diarias add constraint diarias_pontos_check check (pontos between 0 and 9999.99);
+alter table public.diarias drop constraint if exists diarias_participante;
+alter table public.diarias add constraint diarias_participante check (
+  (tipo = 'extra' and extra_id is not null and funcionario_id is null and pontos is not null)
+  or (tipo = 'funcionario' and extra_id is null and pontos is null));
 create index if not exists diarias_empresa_idx on public.diarias (empresa_id, data);
 create index if not exists diarias_funcionario_idx on public.diarias (funcionario_id, data);
+create unique index if not exists diarias_extra_dia_uidx on public.diarias (extra_id, data) where extra_id is not null;
+create index if not exists diarias_extra_idx on public.diarias (extra_id);
 create index if not exists diarias_criado_por_idx on public.diarias (criado_por);
-comment on table public.diarias is '[api:leitura] Diárias pagas a funcionários ou avulsos (freelancers). Só G A M.';
+comment on table public.diarias is
+  '[api:leitura] Dias trabalhados: de extra (pontos entram na comissão do dia) ou de funcionário (só custo). Só G A M.';
 
 alter table public.funcionario_valores_diaria enable row level security;
 alter table public.diarias enable row level security;
@@ -6331,12 +6677,19 @@ drop trigger if exists a_empresa on public.funcionario_valores_diaria;
 create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.funcionario_valores_diaria
   for each row execute function public.ponto_empresa_do_funcionario();
 
--- diária: com funcionário, empresa_id dele (funcionário de outra empresa = erro); sem funcionário, mantém a informada.
+-- diária: empresa_id do extra ou do funcionário (divergente = erro); funcionário excluído mantém a empresa.
 create or replace function public.diarias_antes_gravar()
 returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid;
 begin
-  if new.funcionario_id is not null then
+  if new.extra_id is not null then
+    select x.empresa_id into v_empresa from public.extras x where x.id = new.extra_id;
+    if v_empresa is null then raise exception 'Extra não encontrado' using errcode = 'P0002'; end if;
+    if new.empresa_id is not null and new.empresa_id <> v_empresa then
+      raise exception 'Extra de outra empresa' using errcode = '22023';
+    end if;
+    new.empresa_id := v_empresa;
+  elsif new.funcionario_id is not null then
     select f.empresa_id into v_empresa from public.funcionarios f where f.id = new.funcionario_id;
     if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
     if new.empresa_id is not null and new.empresa_id <> v_empresa then
@@ -6345,18 +6698,106 @@ begin
     new.empresa_id := v_empresa;
   end if;
   if tg_op = 'UPDATE' then
-    if new.funcionario_id is null and old.funcionario_id is not null and new.empresa_id is distinct from old.empresa_id then
+    if new.funcionario_id is null and new.extra_id is null and new.empresa_id is distinct from old.empresa_id then
       new.empresa_id := old.empresa_id;
     end if;
     new.atualizado_em := now();
   end if;
   return new;
 end $$;
-comment on function public.diarias_antes_gravar() is '[interno] Gatilho de diarias: empresa do funcionário; atualizado_em.';
+comment on function public.diarias_antes_gravar() is '[interno] Gatilho de diarias: empresa do extra/funcionário; atualizado_em.';
 drop trigger if exists a_antes on public.diarias;
 create trigger a_antes before insert or update on public.diarias
   for each row execute function public.diarias_antes_gravar();
 
+-- ================================================================ RPCs do cadastro de extras
+create or replace function public.extra_para_operar(p_extra uuid)
+returns public.extras language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare x public.extras;
+begin
+  select * into x from public.extras where id = p_extra;
+  if not found then raise exception 'Extra não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(x.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  return x;
+end $$;
+comment on function public.extra_para_operar(uuid) is '[interno] Extra existente e operável (G A M).';
+
+create or replace function public.extra_validar(p_nome text, p_pontos numeric, p_valor bigint)
+returns void language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+begin
+  if nullif(btrim(coalesce(p_nome, '')), '') is null then raise exception 'Informe o nome' using errcode = '22023'; end if;
+  if p_pontos is null or p_pontos < 0 or p_pontos > 9999.99 or p_pontos <> round(p_pontos, 2) then
+    raise exception 'Pontos inválidos' using errcode = '22023';
+  end if;
+  if p_valor is not null and (p_valor < 0 or p_valor > 100000000) then raise exception 'Valor inválido' using errcode = '22023'; end if;
+end $$;
+comment on function public.extra_validar(text, numeric, bigint) is '[interno] Validação do cadastro de extra (E.1).';
+
+create or replace function public.extra_criar(p_nome text, p_funcao text default null, p_pontos_padrao numeric default 0,
+                                              p_valor_diaria_centavos bigint default null, p_telefone text default null,
+                                              p_documento text default null, p_observacoes text default null,
+                                              p_empresa uuid default null)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid; v_id uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  perform public.extra_validar(p_nome, coalesce(p_pontos_padrao, 0), p_valor_diaria_centavos);
+  insert into public.extras (empresa_id, nome, funcao, telefone, documento, pontos_padrao, valor_diaria_centavos, observacoes, criado_por)
+  values (v_empresa, btrim(p_nome), nullif(btrim(p_funcao), ''), nullif(btrim(p_telefone), ''), nullif(btrim(p_documento), ''),
+          coalesce(p_pontos_padrao, 0), p_valor_diaria_centavos, nullif(btrim(p_observacoes), ''), public.meu_perfil_id())
+  returning id into v_id;
+  return v_id;
+end $$;
+comment on function public.extra_criar(text, text, numeric, bigint, text, text, text, uuid) is '[api] Cadastra um extra (freela) (G A M).';
+
+create or replace function public.extra_atualizar(p_extra uuid, p_nome text, p_funcao text, p_pontos_padrao numeric,
+                                                  p_valor_diaria_centavos bigint, p_telefone text, p_documento text,
+                                                  p_ativo boolean, p_observacoes text)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare x public.extras;
+begin
+  x := public.extra_para_operar(p_extra);
+  perform public.extra_validar(p_nome, coalesce(p_pontos_padrao, 0), p_valor_diaria_centavos);
+  update public.extras
+     set nome = btrim(p_nome), funcao = nullif(btrim(p_funcao), ''), telefone = nullif(btrim(p_telefone), ''),
+         documento = nullif(btrim(p_documento), ''), pontos_padrao = coalesce(p_pontos_padrao, 0),
+         valor_diaria_centavos = p_valor_diaria_centavos, ativo = coalesce(p_ativo, true),
+         observacoes = nullif(btrim(p_observacoes), '')
+   where id = x.id;
+end $$;
+comment on function public.extra_atualizar(uuid, text, text, numeric, bigint, text, text, boolean, text) is
+  '[api] Substitui os dados do cadastro de um extra (G A M).';
+
+create or replace function public.extra_excluir(p_extra uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare x public.extras;
+begin
+  x := public.extra_para_operar(p_extra);
+  if exists (select 1 from public.diarias d where d.extra_id = x.id) then
+    raise exception 'Extra com dias lançados: desative em vez de excluir' using errcode = '22023';
+  end if;
+  delete from public.extras where id = x.id;
+end $$;
+comment on function public.extra_excluir(uuid) is '[api] Exclui um extra sem dias lançados (G A M).';
+
+create or replace function public.extras_listar(p_incluir_inativos boolean default false, p_empresa uuid default null)
+returns table (id uuid, nome text, funcao text, telefone text, documento text, pontos_padrao numeric, valor_diaria_centavos bigint,
+               ativo boolean, observacoes text, dias_lancados int, ultimo_dia date, criado_em timestamptz)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  return query
+  select x.id, x.nome, x.funcao, x.telefone, x.documento, x.pontos_padrao, x.valor_diaria_centavos, x.ativo, x.observacoes,
+         coalesce(l.qtd, 0)::int, l.ultimo, x.criado_em
+    from public.extras x
+    left join lateral (select count(*) as qtd, max(d.data) as ultimo from public.diarias d where d.extra_id = x.id) l on true
+   where x.empresa_id = v_empresa and (coalesce(p_incluir_inativos, false) or x.ativo)
+   order by lower(x.nome), x.id;
+end $$;
+comment on function public.extras_listar(boolean, uuid) is '[api] Extras cadastrados da empresa (G A M).';
+
+-- ================================================================ RPCs de valor padrão (funcionário)
 create or replace function public.funcionario_definir_valor_diaria(p_funcionario uuid, p_valor_centavos bigint)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare f public.funcionarios;
@@ -6387,66 +6828,85 @@ begin
 end $$;
 comment on function public.funcionario_valores_diaria_listar(uuid) is '[api] Valores padrão de diária da empresa (G A M).';
 
--- Normaliza e valida os campos de uma diária (adendo E.2).
-create or replace function public.diaria_preparar(p_empresa uuid, p_data date, p_funcionario uuid, p_pessoa_nome text,
-                                                  p_funcao text, p_valor_centavos bigint, p_pago boolean, p_pago_em date,
-                                                  out empresa_id uuid, out funcionario_id uuid, out pessoa_nome text,
-                                                  out funcao text, out valor_centavos bigint, out pago boolean, out pago_em date)
-language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare f public.funcionarios; v_hoje date;
+-- ================================================================ RPCs de dias trabalhados (E.2)
+create or replace function public.diaria_validar_valores(p_empresa uuid, p_data date, p_pontos numeric, p_valor bigint,
+                                                         p_extra boolean)
+returns void language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_hoje date;
 begin
-  empresa_id := p_empresa;
-  if p_funcionario is not null then
-    f := public.funcionario_para_operar(p_funcionario);
-    if p_empresa is not null and f.empresa_id <> p_empresa then
-      raise exception 'Funcionário de outra empresa' using errcode = '22023';
-    end if;
-    empresa_id := f.empresa_id;
-    funcionario_id := f.id;
-    pessoa_nome := f.nome;
-    funcao := coalesce(nullif(btrim(p_funcao), ''), f.cargo);
-    valor_centavos := coalesce(p_valor_centavos,
-                               (select v.valor_diaria_centavos from public.funcionario_valores_diaria v where v.funcionario_id = f.id));
-  else
-    pessoa_nome := nullif(btrim(coalesce(p_pessoa_nome, '')), '');
-    if pessoa_nome is null then raise exception 'Informe o funcionário ou o nome' using errcode = '22023'; end if;
-    funcao := nullif(btrim(p_funcao), '');
-    valor_centavos := p_valor_centavos;
-  end if;
   if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  v_hoje := public.dia_de_trabalho(public.agora(), empresa_id);
+  v_hoje := public.dia_de_trabalho(public.agora(), p_empresa);
   if p_data < v_hoje - 366 or p_data > v_hoje + 62 then raise exception 'Data fora do limite' using errcode = '22023'; end if;
-  if valor_centavos is null then raise exception 'Informe o valor da diária' using errcode = '22023'; end if;
-  if valor_centavos < 0 or valor_centavos > 100000000 then raise exception 'Valor inválido' using errcode = '22023'; end if;
-  pago := coalesce(p_pago, false);
-  pago_em := case when pago then coalesce(p_pago_em, v_hoje) end;
-end $$;
-comment on function public.diaria_preparar(uuid, date, uuid, text, text, bigint, boolean, date) is
-  '[interno] Validação/normalização de diária (adendo E.2).';
-
-create or replace function public.diaria_lancar(p_data date, p_funcionario uuid default null, p_pessoa_nome text default null,
-                                                p_funcao text default null, p_valor_centavos bigint default null,
-                                                p_observacao text default null, p_pago boolean default false,
-                                                p_pago_em date default null, p_empresa uuid default null)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v record; v_empresa uuid; v_id uuid;
-begin
-  if p_funcionario is null then
-    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
-  else
-    v_empresa := p_empresa;
+  if p_extra and (p_pontos is null or p_pontos < 0 or p_pontos > 9999.99 or p_pontos <> round(p_pontos, 2)) then
+    raise exception 'Pontos inválidos' using errcode = '22023';
   end if;
-  select * into v from public.diaria_preparar(v_empresa, p_data, p_funcionario, p_pessoa_nome, p_funcao, p_valor_centavos,
-                                              p_pago, p_pago_em);
-  insert into public.diarias (empresa_id, funcionario_id, pessoa_nome, data, funcao, valor_centavos, observacao, pago, pago_em,
-                              criado_por, criado_por_nome)
-  values (v.empresa_id, v.funcionario_id, v.pessoa_nome, p_data, v.funcao, v.valor_centavos, nullif(btrim(p_observacao), ''),
-          v.pago, v.pago_em, public.meu_perfil_id(), public.ponto_nome_autor())
+  if p_valor is null then raise exception 'Informe o valor da diária' using errcode = '22023'; end if;
+  if p_valor < 0 or p_valor > 100000000 then raise exception 'Valor inválido' using errcode = '22023'; end if;
+end $$;
+comment on function public.diaria_validar_valores(uuid, date, numeric, bigint, boolean) is '[interno] Validação de dia trabalhado (E.2).';
+
+create or replace function public.diaria_checar_trava(p_empresa uuid, p_data date)
+returns void language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+begin
+  if public.comissao_periodo_fechado(p_empresa, p_data) then
+    raise exception 'Período de comissão já fechado' using errcode = '22023';
+  end if;
+end $$;
+comment on function public.diaria_checar_trava(uuid, date) is '[interno] Dia de extra em fechamento fechado é recusado (E.2).';
+
+create or replace function public.diaria_checar_duplicada(p_extra uuid, p_data date, p_ignorar uuid default null)
+returns void language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+begin
+  if exists (select 1 from public.diarias d where d.extra_id = p_extra and d.data = p_data
+                                              and (p_ignorar is null or d.id <> p_ignorar)) then
+    raise exception 'Extra já tem dia lançado em %', to_char(p_data, 'DD/MM/YYYY') using errcode = '23505';
+  end if;
+end $$;
+comment on function public.diaria_checar_duplicada(uuid, date, uuid) is '[interno] Um lançamento por extra por dia (E.2).';
+
+create or replace function public.diaria_lancar(p_data date, p_extra uuid default null, p_funcionario uuid default null,
+                                                p_pontos numeric default null, p_valor_centavos bigint default null,
+                                                p_funcao text default null, p_observacao text default null,
+                                                p_pago boolean default false, p_pago_em date default null)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare x public.extras; f public.funcionarios; v_empresa uuid; v_pontos numeric; v_valor bigint; v_funcao text;
+        v_nome text; v_pago boolean; v_id uuid;
+begin
+  if (p_extra is null) = (p_funcionario is null) then
+    raise exception 'Informe o extra ou o funcionário' using errcode = '22023';
+  end if;
+  if p_extra is not null then
+    x := public.extra_para_operar(p_extra);
+    if not x.ativo then raise exception 'Extra inativo' using errcode = '22023'; end if;
+    v_empresa := x.empresa_id; v_nome := x.nome;
+    v_pontos := coalesce(p_pontos, x.pontos_padrao);
+    v_valor := coalesce(p_valor_centavos, x.valor_diaria_centavos);
+    v_funcao := coalesce(nullif(btrim(p_funcao), ''), x.funcao);
+  else
+    f := public.funcionario_para_operar(p_funcionario);
+    if p_pontos is not null then raise exception 'Diária de funcionário não tem pontos' using errcode = '22023'; end if;
+    v_empresa := f.empresa_id; v_nome := f.nome;
+    v_valor := coalesce(p_valor_centavos,
+                        (select v.valor_diaria_centavos from public.funcionario_valores_diaria v where v.funcionario_id = f.id));
+    v_funcao := coalesce(nullif(btrim(p_funcao), ''), f.cargo);
+  end if;
+  perform public.diaria_validar_valores(v_empresa, p_data, v_pontos, v_valor, p_extra is not null);
+  if p_extra is not null then
+    perform public.diaria_checar_trava(v_empresa, p_data);
+    perform public.diaria_checar_duplicada(x.id, p_data);
+  end if;
+  v_pago := coalesce(p_pago, false);
+  insert into public.diarias (empresa_id, tipo, extra_id, funcionario_id, pessoa_nome, data, funcao, pontos, valor_centavos,
+                              observacao, pago, pago_em, criado_por, criado_por_nome)
+  values (v_empresa, case when p_extra is not null then 'extra' else 'funcionario' end, x.id, f.id, v_nome, p_data, v_funcao,
+          v_pontos, v_valor, nullif(btrim(p_observacao), ''), v_pago,
+          case when v_pago then coalesce(p_pago_em, public.dia_de_trabalho(public.agora(), v_empresa)) end,
+          public.meu_perfil_id(), public.ponto_nome_autor())
   returning id into v_id;
   return v_id;
 end $$;
-comment on function public.diaria_lancar(date, uuid, text, text, bigint, text, boolean, date, uuid) is
-  '[api] Lança uma diária (funcionário ou avulso) (G A M).';
+comment on function public.diaria_lancar(date, uuid, uuid, numeric, bigint, text, text, boolean, date) is
+  '[api] Lança um dia trabalhado de extra (com pontos) ou diária de funcionário (G A M).';
 
 create or replace function public.diaria_para_operar(p_diaria uuid)
 returns public.diarias language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
@@ -6459,22 +6919,45 @@ begin
 end $$;
 comment on function public.diaria_para_operar(uuid) is '[interno] Diária existente e operável (G A M).';
 
-create or replace function public.diaria_atualizar(p_diaria uuid, p_data date, p_funcionario uuid, p_pessoa_nome text,
-                                                   p_funcao text, p_valor_centavos bigint, p_observacao text,
-                                                   p_pago boolean, p_pago_em date)
+create or replace function public.diaria_atualizar(p_diaria uuid, p_data date, p_pontos numeric, p_valor_centavos bigint,
+                                                   p_funcao text, p_observacao text, p_pago boolean, p_pago_em date)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare d public.diarias; v record;
+declare d public.diarias; v_data date; v_pontos numeric; v_valor bigint; v_funcao_padrao text;
 begin
   d := public.diaria_para_operar(p_diaria);
-  select * into v from public.diaria_preparar(d.empresa_id, p_data, p_funcionario, p_pessoa_nome, p_funcao, p_valor_centavos,
-                                              p_pago, p_pago_em);
+  if d.tipo = 'funcionario' and p_pontos is not null then
+    raise exception 'Diária de funcionário não tem pontos' using errcode = '22023';
+  end if;
+  v_data := coalesce(p_data, d.data);
+  v_pontos := case when d.tipo = 'extra' then coalesce(p_pontos, d.pontos) end;
+  v_valor := coalesce(p_valor_centavos, d.valor_centavos);
+  if v_data <> d.data then
+    perform public.diaria_validar_valores(d.empresa_id, v_data, v_pontos, v_valor, d.tipo = 'extra');
+  else
+    -- data inalterada: não reaplica o limite de data (lançamento antigo continua editável, ex.: marcar pago)
+    if d.tipo = 'extra' and (v_pontos < 0 or v_pontos > 9999.99 or v_pontos <> round(v_pontos, 2)) then
+      raise exception 'Pontos inválidos' using errcode = '22023';
+    end if;
+    if v_valor < 0 or v_valor > 100000000 then raise exception 'Valor inválido' using errcode = '22023'; end if;
+  end if;
+  if d.tipo = 'extra' and (v_data <> d.data or v_pontos <> d.pontos) then
+    perform public.diaria_checar_trava(d.empresa_id, d.data);
+    perform public.diaria_checar_trava(d.empresa_id, v_data);
+    if v_data <> d.data then perform public.diaria_checar_duplicada(d.extra_id, v_data, d.id); end if;
+  end if;
+  select coalesce((select x.funcao from public.extras x where x.id = d.extra_id),
+                  (select f.cargo from public.funcionarios f where f.id = d.funcionario_id)) into v_funcao_padrao;
   update public.diarias
-     set funcionario_id = v.funcionario_id, pessoa_nome = v.pessoa_nome, data = p_data, funcao = v.funcao,
-         valor_centavos = v.valor_centavos, observacao = nullif(btrim(p_observacao), ''), pago = v.pago, pago_em = v.pago_em
+     set data = v_data, pontos = v_pontos, valor_centavos = v_valor,
+         funcao = coalesce(nullif(btrim(p_funcao), ''), v_funcao_padrao),
+         observacao = nullif(btrim(p_observacao), ''),
+         pago = coalesce(p_pago, pago),
+         pago_em = case when p_pago is null then pago_em
+                        when p_pago then coalesce(p_pago_em, public.dia_de_trabalho(public.agora(), d.empresa_id)) end
    where id = d.id;
 end $$;
-comment on function public.diaria_atualizar(uuid, date, uuid, text, text, bigint, text, boolean, date) is
-  '[api] Substitui os dados de uma diária (G A M).';
+comment on function public.diaria_atualizar(uuid, date, numeric, bigint, text, text, boolean, date) is
+  '[api] Edita um dia trabalhado/diária (null mantém data, pontos, valor e pagamento) (G A M).';
 
 create or replace function public.diaria_marcar_paga(p_diaria uuid, p_pago boolean, p_pago_em date default null)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -6494,36 +6977,46 @@ returns void language plpgsql security definer set search_path = public, extensi
 declare d public.diarias;
 begin
   d := public.diaria_para_operar(p_diaria);
+  if d.tipo = 'extra' then perform public.diaria_checar_trava(d.empresa_id, d.data); end if;
   delete from public.diarias where id = d.id;
 end $$;
-comment on function public.diaria_excluir(uuid) is '[api] Exclui uma diária (G A M).';
+comment on function public.diaria_excluir(uuid) is '[api] Exclui um dia trabalhado/diária (G A M).';
 
-create or replace function public.diarias_listar(p_inicio date, p_fim date, p_funcionario uuid default null,
-                                                 p_pago boolean default null, p_empresa uuid default null)
-returns table (id uuid, data date, funcionario_id uuid, pessoa_nome text, avulso boolean, funcao text, valor_centavos bigint,
-               observacao text, pago boolean, pago_em date, criado_por_nome text, criado_em timestamptz)
+create or replace function public.diarias_listar(p_inicio date, p_fim date, p_tipo text default null, p_extra uuid default null,
+                                                 p_funcionario uuid default null, p_pago boolean default null,
+                                                 p_empresa uuid default null)
+returns table (id uuid, data date, tipo text, extra_id uuid, funcionario_id uuid, pessoa_nome text, funcao text, pontos numeric,
+               valor_centavos bigint, observacao text, pago boolean, pago_em date, fechado boolean, criado_por_nome text,
+               criado_em timestamptz)
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid;
 begin
-  if p_funcionario is not null then
+  if p_extra is not null then
+    v_empresa := (public.extra_para_operar(p_extra)).empresa_id;
+  elsif p_funcionario is not null then
     v_empresa := (public.funcionario_para_operar(p_funcionario)).empresa_id;
   else
     v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
   end if;
+  if p_tipo is not null and p_tipo not in ('extra', 'funcionario') then raise exception 'Tipo inválido' using errcode = '22023'; end if;
   perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
   return query
-  select d.id, d.data, d.funcionario_id, coalesce(f.nome, d.pessoa_nome), d.funcionario_id is null, d.funcao, d.valor_centavos,
-         d.observacao, d.pago, d.pago_em, d.criado_por_nome, d.criado_em
+  select d.id, d.data, d.tipo, d.extra_id, d.funcionario_id, coalesce(x.nome, f.nome, d.pessoa_nome), d.funcao, d.pontos,
+         d.valor_centavos, d.observacao, d.pago, d.pago_em,
+         d.tipo = 'extra' and public.comissao_periodo_fechado(d.empresa_id, d.data), d.criado_por_nome, d.criado_em
     from public.diarias d
+    left join public.extras x on x.id = d.extra_id
     left join public.funcionarios f on f.id = d.funcionario_id
    where d.empresa_id = v_empresa and d.data between p_inicio and p_fim
+     and (p_tipo is null or d.tipo = p_tipo)
+     and (p_extra is null or d.extra_id = p_extra)
      and (p_funcionario is null or d.funcionario_id = p_funcionario)
      and (p_pago is null or d.pago = p_pago)
-   order by d.data desc, coalesce(f.nome, d.pessoa_nome), d.criado_em, d.id;
+   order by d.data desc, coalesce(x.nome, f.nome, d.pessoa_nome), d.criado_em, d.id;
 end $$;
-comment on function public.diarias_listar(date, date, uuid, boolean, uuid) is '[api] Diárias do período (G A M).';
+comment on function public.diarias_listar(date, date, text, uuid, uuid, boolean, uuid) is '[api] Dias trabalhados/diárias do período (G A M).';
 
--- ================================================================ gastos por período (adendo E.3)
+-- ================================================================ gastos por período (E.5)
 create or replace function public.gastos_periodo(p_inicio date, p_fim date, p_empresa uuid default null)
 returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid;
@@ -6531,37 +7024,59 @@ begin
   v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
   perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
   return (
-    with fech as (
-      select fc.id, fc.titulo, fc.status, fc.data_inicio, fc.data_fim, fc.base_distribuivel_centavos
-        from public.comissao_fechamentos fc
-       where fc.empresa_id = v_empresa and fc.data_fim between p_inicio and p_fim
+    with fech as (   -- fechamentos que contribuem: diário que cruza o período; período com data_fim dentro
+      select fc.* from public.comissao_fechamentos fc
+       where fc.empresa_id = v_empresa
+         and ((fc.modo_rateio = 'diario' and fc.data_inicio <= p_fim and fc.data_fim >= p_inicio)
+              or (fc.modo_rateio = 'periodo' and fc.data_fim between p_inicio and p_fim))
     ),
-    lanc as (   -- uma linha por valor: (chave, funcionario_id, nome, avulso, data, coluna, valor)
-      select case when d.funcionario_id is not null then 'f:' || d.funcionario_id
-                  else 'a:' || lower(btrim(d.pessoa_nome)) end as chave,
-             d.funcionario_id, coalesce(f.nome, d.pessoa_nome) as nome, d.funcionario_id is null as avulso, d.data,
+    com as (         -- valores de comissão: diário pelo detalhe (no dia), período inteiro em data_fim
+      select fe.id as fechamento_id, fe.status, it.tipo, it.funcionario_id, it.extra_id, it.funcionario_nome, ri.data,
+             ri.valor_centavos as valor
+        from fech fe
+        join public.comissao_rateio_itens_dia ri on ri.fechamento_id = fe.id
+        join public.comissao_itens it on it.id = ri.item_id
+       where fe.modo_rateio = 'diario' and ri.data between p_inicio and p_fim
+      union all
+      select fe.id, fe.status, it.tipo, it.funcionario_id, it.extra_id, it.funcionario_nome, fe.data_fim, it.valor_centavos
+        from fech fe join public.comissao_itens it on it.fechamento_id = fe.id
+       where fe.modo_rateio = 'periodo'
+    ),
+    lanc as (        -- uma linha por valor: (chave, tipo, ids, nome, data, coluna, valor, qtd)
+      select case when d.extra_id is not null then 'x:' || d.extra_id
+                  when d.funcionario_id is not null then 'f:' || d.funcionario_id
+                  else 'n:' || lower(btrim(d.pessoa_nome)) end as chave,
+             d.tipo, d.funcionario_id, d.extra_id, coalesce(x.nome, f.nome, d.pessoa_nome) as nome, d.data,
              case when d.pago then 'diarias_pagas' else 'diarias_a_pagar' end as coluna, d.valor_centavos as valor, 1 as qtd
-        from public.diarias d left join public.funcionarios f on f.id = d.funcionario_id
+        from public.diarias d
+        left join public.extras x on x.id = d.extra_id
+        left join public.funcionarios f on f.id = d.funcionario_id
        where d.empresa_id = v_empresa and d.data between p_inicio and p_fim
       union all
-      select case when it.funcionario_id is not null then 'f:' || it.funcionario_id
-                  else 'a:' || lower(btrim(it.funcionario_nome)) end,
-             it.funcionario_id, coalesce(f.nome, it.funcionario_nome), it.funcionario_id is null, fe.data_fim,
-             case when fe.status = 'fechado' then 'comissoes_fechadas' else 'comissoes_previstas' end, it.valor_centavos, 0
-        from fech fe join public.comissao_itens it on it.fechamento_id = fe.id
-        left join public.funcionarios f on f.id = it.funcionario_id
+      select case when c.extra_id is not null then 'x:' || c.extra_id
+                  when c.funcionario_id is not null then 'f:' || c.funcionario_id
+                  else 'n:' || lower(btrim(c.funcionario_nome)) end,
+             c.tipo, c.funcionario_id, c.extra_id, coalesce(x.nome, f.nome, c.funcionario_nome), c.data,
+             case when c.status = 'fechado' then 'comissoes_fechadas' else 'comissoes_previstas' end, c.valor, 0
+        from com c
+        left join public.extras x on x.id = c.extra_id
+        left join public.funcionarios f on f.id = c.funcionario_id
     ),
     tot as (
       select coalesce(sum(valor) filter (where coluna = 'diarias_pagas'), 0) as dp,
              coalesce(sum(valor) filter (where coluna = 'diarias_a_pagar'), 0) as dap,
+             coalesce(sum(valor) filter (where qtd = 1 and tipo = 'extra'), 0) as dx,
+             coalesce(sum(valor) filter (where qtd = 1 and tipo = 'funcionario'), 0) as dfu,
              coalesce(sum(qtd), 0) as qtd,
              coalesce(sum(valor) filter (where coluna = 'comissoes_fechadas'), 0) as cf,
              coalesce(sum(valor) filter (where coluna = 'comissoes_previstas'), 0) as cp
         from lanc
     ),
     pessoa as (
-      select chave, (array_agg(funcionario_id) filter (where funcionario_id is not null))[1] as funcionario_id,
-             (array_agg(nome order by (funcionario_id is null), nome))[1] as nome, bool_and(avulso) as avulso,
+      select chave, (array_agg(tipo))[1] as tipo,
+             (array_agg(funcionario_id) filter (where funcionario_id is not null))[1] as funcionario_id,
+             (array_agg(extra_id) filter (where extra_id is not null))[1] as extra_id,
+             (array_agg(nome order by nome))[1] as nome,
              sum(qtd) as qtd,
              coalesce(sum(valor) filter (where coluna = 'diarias_pagas'), 0) as dp,
              coalesce(sum(valor) filter (where coluna = 'diarias_a_pagar'), 0) as dap,
@@ -6575,31 +7090,34 @@ begin
              coalesce(sum(l.valor) filter (where l.coluna = 'diarias_a_pagar'), 0) as dap,
              coalesce(sum(l.valor) filter (where l.coluna = 'comissoes_fechadas'), 0) as cf,
              coalesce(sum(l.valor) filter (where l.coluna = 'comissoes_previstas'), 0) as cp
-        from generate_series(p_inicio, p_fim, interval '1 day') g
+        from generate_series(p_inicio::timestamp, p_fim::timestamp, interval '1 day') g
         left join lanc l on l.data = g::date
        group by g
     )
     select jsonb_build_object(
       'empresa_id', v_empresa, 'inicio', p_inicio, 'fim', p_fim,
       'totais', (select jsonb_build_object('diarias_pagas', dp, 'diarias_a_pagar', dap, 'diarias', dp + dap, 'diarias_qtd', qtd,
+                                           'diarias_extras', dx, 'diarias_funcionarios', dfu,
                                            'comissoes_fechadas', cf, 'comissoes_previstas', cp,
                                            'total', dp + dap + cf, 'total_com_previsto', dp + dap + cf + cp) from tot),
       'por_pessoa', coalesce((select jsonb_agg(jsonb_build_object(
-                         'chave', chave, 'funcionario_id', funcionario_id, 'nome', nome, 'avulso', avulso, 'diarias_qtd', qtd,
-                         'diarias_pagas', dp, 'diarias_a_pagar', dap, 'comissoes_fechadas', cf, 'comissoes_previstas', cp,
-                         'total', dp + dap + cf) order by dp + dap + cf desc, nome collate "C", chave)
+                         'chave', chave, 'tipo', tipo, 'funcionario_id', funcionario_id, 'extra_id', extra_id, 'nome', nome,
+                         'diarias_qtd', qtd, 'diarias_pagas', dp, 'diarias_a_pagar', dap, 'comissoes_fechadas', cf,
+                         'comissoes_previstas', cp, 'total', dp + dap + cf) order by dp + dap + cf desc, nome collate "C", chave)
                        from pessoa where qtd > 0 or dp + dap + cf + cp > 0), '[]'::jsonb),
       'por_dia', (select jsonb_agg(jsonb_build_object('data', data, 'diarias_pagas', dp, 'diarias_a_pagar', dap,
                                                       'comissoes_fechadas', cf, 'comissoes_previstas', cp,
                                                       'total', dp + dap + cf) order by data) from dia),
-      'fechamentos', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'titulo', titulo, 'status', status,
-                                                                   'data_inicio', data_inicio, 'data_fim', data_fim,
-                                                                   'base_distribuivel_centavos', base_distribuivel_centavos)
-                                                order by data_fim, titulo, id) from fech), '[]'::jsonb))
+      'fechamentos', coalesce((select jsonb_agg(jsonb_build_object(
+                                 'id', fe.id, 'titulo', fe.titulo, 'status', fe.status, 'modo_rateio', fe.modo_rateio,
+                                 'data_inicio', fe.data_inicio, 'data_fim', fe.data_fim,
+                                 'base_distribuivel_centavos', fe.base_distribuivel_centavos,
+                                 'valor_no_periodo_centavos', coalesce((select sum(c.valor) from com c where c.fechamento_id = fe.id), 0))
+                               order by fe.data_fim, fe.titulo, fe.id) from fech fe), '[]'::jsonb))
   );
 end $$;
 comment on function public.gastos_periodo(date, date, uuid) is
-  '[api] Gastos do período: diárias (pagas/a pagar) e comissões (fechadas/previstas), por pessoa e por dia (G A M).';
+  '[api] Gastos do período: diárias (extras e funcionários, pagas/a pagar) e comissões (fechadas/previstas), por pessoa e por dia (G A M).';
 
 -- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000260_extras.sql
 

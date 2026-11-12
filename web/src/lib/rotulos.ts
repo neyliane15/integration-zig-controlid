@@ -9,7 +9,9 @@ import type {
   GatilhoExecucao,
   OperacaoEnvio,
   OrigemBatida,
+  ModoRateio,
   Papel,
+  TipoParticipanteComissao,
   Prioridade,
   Recorrencia,
   SituacaoDia,
@@ -239,4 +241,20 @@ export const rotuloOrigemReserva: Record<OrigemReserva, string> = {
   tagme: 'Tagme',
   manual: 'Manual',
   importacao: 'Importada (CSV)',
+}
+
+/** adendo E.3 */
+export const rotuloModoRateio: Record<ModoRateio, string> = {
+  diario: 'Diário',
+  periodo: 'Por período',
+}
+
+export const descricaoModoRateio: Record<ModoRateio, string> = {
+  diario: 'O serviço de cada dia é dividido entre quem trabalhou naquele dia (batida no ponto ou extra lançado), pelos pontos.',
+  periodo: 'O serviço do período inteiro é dividido pelos pontos de cada um (sem olhar a presença dia a dia).',
+}
+
+export const rotuloTipoParticipante: Record<TipoParticipanteComissao, string> = {
+  funcionario: 'Funcionário',
+  extra: 'Extra',
 }
