@@ -5,10 +5,16 @@
 //   54340  Zig            base http://127.0.0.1:54340/integration   header Authorization: token-mock
 //   54341  Control iD acesso (iDFace/iDAccess/iDFlex)   login admin/admin → sessão "sessao-mock"
 //   54342  Control iD REP (iDClass, AFD Portaria 671)  login admin/admin → sessão "sessao-rep-mock"
+//   54343  Tagme (reservas — formato INVENTADO: a Tagme não tem API pública; serve para testar o mapeamento configurável)
+//          GET|POST /api/v1/reservations  Authorization: Bearer tagme-token-mock
+//          query (GET) ou corpo (POST): start_date, end_date (AAAA-MM-DD, máx. 62 dias), page (1…), per_page (padrão 20)
+//          → { data: { reservations: [{ _id, scheduled_at (ISO -03:00), customer: {name, phone, email}, party_size, status, notes }] },
+//              meta: { page, per_page, total, total_pages } }   — 4 reservas por dia, status CONFIRMED/SEATED/CANCELED/NO_SHOW
+//          Só sobe quando pedido: `node n8n/mocks/servidor.mjs` (sempre) ou iniciarMocks({ tagme: 0 }).
 //
 // Variáveis opcionais:
 //   MOCK_AGORA=2026-10-06T12:00:00-03:00   fixa o relógio (padrão: hora real). Os dados são relativos a ele.
-//   MOCK_PORTA_ZIG / MOCK_PORTA_ACESSO / MOCK_PORTA_REP   (padrões 54340 / 54341 / 54342)
+//   MOCK_PORTA_ZIG / MOCK_PORTA_ACESSO / MOCK_PORTA_REP / MOCK_PORTA_TAGME   (padrões 54340 / 54341 / 54342 / 54343)
 //   MOCK_HOST (padrão 127.0.0.1)   MOCK_LOG=1 (registra cada chamada no console)
 //
 // Rotas de controle (em qualquer porta):
@@ -597,6 +603,46 @@ async function tratarRep(req, url, corpo) {
   return [404, { error: 'Not found', code: 1 }]
 }
 
+// ============================================================================= TAGME (54343)
+export const TAGME_MOCK = { token: 'tagme-token-mock', caminho: '/api/v1/reservations', por_pagina: 20 }
+const NOMES_TAGME = ['Marina Alves', 'João Pereira', 'Lúcia Fernandes', 'Rafael Costa', 'Patrícia Gomes', 'Otávio Ramos', 'Sofia Nunes', 'Caio Duarte']
+const STATUS_TAGME = ['CONFIRMED', 'CONFIRMED', 'SEATED', 'CANCELED', 'NO_SHOW', 'CONFIRMED']
+/** 4 reservas determinísticas por dia (19:00–22:30), com `_id` estável. */
+function reservasTagme(dia) {
+  const rnd = gerador(`tagme|${dia}`)
+  const lista = []
+  for (let i = 1; i <= 4; i++) {
+    const hora = 19 * 60 + inteiro(rnd, 0, 7) * 30
+    const nome = escolher(rnd, NOMES_TAGME)
+    lista.push({
+      _id: `tg-${dia.replace(/-/g, '')}-${i}`,
+      scheduled_at: `${dia}T${pad(Math.floor(hora / 60))}:${pad(hora % 60)}:00-03:00`,
+      customer: { name: nome, phone: `+55 11 9${pad(inteiro(rnd, 1000, 9999), 4)}-${pad(inteiro(rnd, 1000, 9999), 4)}`, email: `${nome.split(' ')[0].toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '')}@exemplo.com` },
+      party_size: inteiro(rnd, 2, 8),
+      status: escolher(rnd, STATUS_TAGME),
+      notes: i === 2 ? 'Aniversário; mesa perto da janela' : null,
+    })
+  }
+  return lista
+}
+function tratarTagme(req, url, corpo) {
+  if (url.pathname !== TAGME_MOCK.caminho) return [404, { message: 'Not found' }]
+  if (req.headers.authorization !== `Bearer ${TAGME_MOCK.token}`) return [401, { message: 'Unauthorized' }]
+  if (req.method !== 'GET' && req.method !== 'POST') return [405, { message: 'Method not allowed' }]
+  const q = req.method === 'POST' ? (corpo || {}) : Object.fromEntries(url.searchParams)
+  const ini = q.start_date
+  const fim = q.end_date
+  const re = /^\d{4}-\d{2}-\d{2}$/
+  if (!re.test(ini || '') || !re.test(fim || '') || fim < ini) return [400, { message: 'start_date/end_date inválidos (AAAA-MM-DD)' }]
+  if (somarDias(ini, 61) < fim) return [400, { message: 'Período máximo de 62 dias' }]
+  const todas = []
+  for (let d = ini; d <= fim; d = somarDias(d, 1)) todas.push(...reservasTagme(d))
+  const porPagina = Math.max(1, Number(q.per_page || TAGME_MOCK.por_pagina))
+  const pagina = Math.max(1, Number(q.page || 1))
+  const total = Math.max(1, Math.ceil(todas.length / porPagina))
+  return [200, { data: { reservations: todas.slice((pagina - 1) * porPagina, pagina * porPagina) }, meta: { page: pagina, per_page: porPagina, total: todas.length, total_pages: total } }]
+}
+
 // ============================================================================= HTTP
 function lerCorpo(req) {
   return new Promise((resolve) => {
@@ -658,10 +704,14 @@ function criarServidor(nome, porta, tratar) {
   })
 }
 
-/** Sobe os três mocks. Retorna `{ fechar(), portas }`. Portas 0 = aleatórias (útil em testes). */
-export async function iniciarMocks({ host = process.env.MOCK_HOST || '127.0.0.1', zig = Number(process.env.MOCK_PORTA_ZIG || 54340), acesso = Number(process.env.MOCK_PORTA_ACESSO || 54341), rep = Number(process.env.MOCK_PORTA_REP || 54342) } = {}) {
+/**
+ * Sobe os mocks. Retorna `{ fechar(), portas }`. Portas 0 = aleatórias (útil em testes).
+ * O da Tagme só sobe se `tagme` for informado (número; 0 = aleatória) — assim os testes antigos não disputam a porta 54343.
+ */
+export async function iniciarMocks({ host = process.env.MOCK_HOST || '127.0.0.1', zig = Number(process.env.MOCK_PORTA_ZIG || 54340), acesso = Number(process.env.MOCK_PORTA_ACESSO || 54341), rep = Number(process.env.MOCK_PORTA_REP || 54342), tagme = null } = {}) {
   reset()
   const defs = [['zig', zig, tratarZig], ['acesso', acesso, tratarAcesso], ['rep', rep, tratarRep]]
+  if (tagme !== null && tagme !== undefined) defs.push(['tagme', Number(tagme), tratarTagme])
   const servidores = {}
   const portas = {}
   for (const [nome, porta, tratar] of defs) {
@@ -678,15 +728,16 @@ export async function iniciarMocks({ host = process.env.MOCK_HOST || '127.0.0.1'
 }
 
 // exportados para testes
-export const _interno = { estado, vendasDoDia, zigFaturamento, zigSaidaProdutos, marcacoes, afd, diaDeTrabalho, agoraMs }
+export const _interno = { estado, vendasDoDia, zigFaturamento, zigSaidaProdutos, marcacoes, afd, diaDeTrabalho, agoraMs, reservasTagme }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const m = await iniciarMocks()
+  const m = await iniciarMocks({ tagme: Number(process.env.MOCK_PORTA_TAGME || 54343) })
   const h = m.host
   console.log('Mocks do Meu Dia de Gerente no ar:')
   console.log(`  Zig ............ http://${h}:${m.portas.zig}/integration   (Authorization: ${ZIG.token}, rede=rede-mock)`)
   console.log(`  Control iD acesso http://${h}:${m.portas.acesso}           (admin/admin)`)
   console.log(`  Control iD REP .. http://${h}:${m.portas.rep}           (admin/admin)`)
+  console.log(`  Tagme ........... http://${h}:${m.portas.tagme}${TAGME_MOCK.caminho}   (Authorization: Bearer ${TAGME_MOCK.token})`)
   console.log(`  Dia de trabalho do mock: ${diaDeTrabalho(agoraMs())}  (MOCK_AGORA=${process.env.MOCK_AGORA || 'relógio real'})`)
   const parar = () => m.fechar().then(() => process.exit(0))
   process.on('SIGINT', parar)

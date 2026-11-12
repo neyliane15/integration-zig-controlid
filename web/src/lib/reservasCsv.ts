@@ -181,7 +181,7 @@ export function lerHoraReserva(s: string): string | null {
   const t = s
     .trim()
     .toLowerCase()
-    .replace(/^(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})[\sT,]*/, '')
+    .replace(/^(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})[\st,]*/, '')
   const r = /^(\d{1,2})(?:\s*(?::|h)\s*(\d{2})?)?(?::\d{2}(?:\.\d+)?)?\s*(am|pm)?\s*(?:h|hs|hrs)?(?:[+-]\d{2}:?\d{2}|z)?$/.exec(t)
   if (!r) return null
   let h = Number(r[1])
