@@ -100,7 +100,7 @@ test('comissões: lista e detalhe com prévia', async ({ page }) => {
   await page.getByText(/^Comissão \d/).filter({ visible: true }).first().click()
   await expect(page).toHaveURL(/\/comissoes\/[0-9a-f-]{36}/)
   await expect(page.getByText('Base distribuível').filter({ visible: true }).first()).toBeVisible()
-  await expect(page.getByText('Rateio por funcionário')).toBeVisible()
+  await expect(page.getByText('Rateio por participante')).toBeVisible()
   await semRolagemHorizontal(page)
 })
 

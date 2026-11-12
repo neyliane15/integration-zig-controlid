@@ -189,7 +189,15 @@ export function useFecharComissao() {
 }
 
 export function useExcluirRascunho() {
-  return useMutacaoComissao((id: string) => chamarRpc('comissao_excluir_rascunho', { p_fechamento: id }))
+  const qc = useQueryClient()
+  // não invalida o detalhe do próprio fechamento (a página ainda montada o buscaria de novo → "Fechamento não encontrado")
+  return useMutation({
+    mutationFn: (id: string) => chamarRpc('comissao_excluir_rascunho', { p_fechamento: id }),
+    onSuccess: (_r, id) => {
+      qc.removeQueries({ queryKey: chaves.fechamento(id), exact: false, type: 'inactive' })
+      return invalidar(qc, 'comissoes', 'gastos')
+    },
+  })
 }
 
 /** "Enviar por e-mail": coloca na fila do N8N (escopo exportar_fechamento). */

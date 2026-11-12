@@ -687,6 +687,22 @@ export function Abas<T extends string>({
   )
 }
 
+// ---------------------------------------------------------------- mídia
+/** true enquanto a media query casar (ex.: `useMidia('(min-width: 768px)')`). Sem matchMedia (testes): `padrao`. */
+export function useMidia(consulta: string, padrao = true): boolean {
+  const ler = () => (typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(consulta).matches : padrao)
+  const [casa, setCasa] = useState(ler)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const m = window.matchMedia(consulta)
+    const mudar = () => setCasa(m.matches)
+    mudar()
+    m.addEventListener('change', mudar)
+    return () => m.removeEventListener('change', mudar)
+  }, [consulta])
+  return casa
+}
+
 // ---------------------------------------------------------- Opções em pílula
 /** Escolha única em pílulas (role radiogroup); setas ←/→ mudam a escolha. */
 export function Pilulas<T extends string>({

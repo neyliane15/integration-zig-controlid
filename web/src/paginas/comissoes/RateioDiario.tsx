@@ -50,7 +50,7 @@ export function RateioDiario({ dias, itens, previa }: { dias: DiaCalculado[]; it
       ) : (
         <ul className="border-t border-borda">
           {/* cabeçalho (desktop) */}
-          <li aria-hidden className="hidden grid-cols-[minmax(0,1.3fr)_repeat(4,minmax(0,1fr))_minmax(0,1.2fr)] gap-3 bg-cartao-2/70 px-6 py-2.5 text-[11px] font-bold tracking-[0.14em] text-lavanda uppercase md:grid">
+          <li aria-hidden className="hidden grid-cols-[minmax(0,2.1fr)_repeat(4,minmax(0,1fr))_minmax(0,1.3fr)] gap-3 bg-cartao-2/70 px-6 py-2.5 text-[11px] font-bold tracking-[0.14em] text-lavanda uppercase md:grid">
             <span>Dia</span>
             <span className="text-right">Serviço</span>
             <span className="text-right">Retenção</span>
@@ -68,9 +68,9 @@ export function RateioDiario({ dias, itens, previa }: { dias: DiaCalculado[]; it
                   aria-expanded={aberto}
                   aria-controls={idPainel}
                   onClick={() => alternar(d.data)}
-                  className={clsx('grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-5 py-3 text-left text-sm hover:bg-cartao-2/50 sm:px-6 md:grid-cols-[minmax(0,1.3fr)_repeat(4,minmax(0,1fr))_minmax(0,1.2fr)]', FOCO)}
+                  className={clsx('grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-5 py-3 text-left text-sm hover:bg-cartao-2/50 sm:px-6 md:grid-cols-[minmax(0,2.1fr)_repeat(4,minmax(0,1fr))_minmax(0,1.3fr)]', FOCO)}
                 >
-                  <span className="col-span-2 flex min-w-0 items-center gap-2 md:col-span-1">
+                  <span className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 md:col-span-1">
                     {aberto ? <ChevronDown aria-hidden className="size-4 shrink-0 text-lavanda" /> : <ChevronRight aria-hidden className="size-4 shrink-0 text-lavanda" />}
                     <span className="numero font-semibold text-creme">{formatarData(d.data)}</span>
                     <span className="text-xs text-lavanda">{diaSemanaCurto(d.data)}</span>

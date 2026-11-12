@@ -590,7 +590,7 @@ function AbaComissao({
           <Campo
             rotulo="Valor padrão da diária"
             htmlFor={`${id}-diaria`}
-            ajuda="Pré-preenche o valor ao lançar uma diária em Extras. Em branco: sem valor padrão."
+            ajuda="Pré-preenche o valor da diária do funcionário em Extras → Dias trabalhados (só custo, sem pontos). Em branco: sem valor padrão."
           >
             <EntradaMoeda id={`${id}-diaria`} centavos={diaria} aoMudar={aoMudarDiaria} />
           </Campo>

@@ -17,6 +17,7 @@ import {
   Interruptor,
   Pilulas,
   Selecao,
+  useMidia,
   Selo,
   Vazio,
 } from '@/componentes/ui'
@@ -264,6 +265,7 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
     }
   }
 
+  const telaLarga = useMidia('(min-width: 768px)')
   const ocupado = atualizar.isPending || definirItens.isPending || definirExtra.isPending || removerItem.isPending || recalcular.isPending
   const somaIncluidos = previa.itens.reduce((s, i) => s + (i.incluido ? i.pontos : 0), 0)
   const diasIncluidos = previa.itens.reduce((s, i) => s + (i.incluido ? i.diasTrabalhados : 0), 0)
@@ -502,116 +504,27 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
                 <Vazio titulo="Sem participantes" descricao="Inclua funcionários abaixo ou lance dias de extras no período e recalcule." />
               </div>
             ) : (
-              <div className="relative overflow-x-auto">
-                <table className="w-full min-w-[620px] text-sm">
-                  <thead>
-                    <tr className="bg-cartao-2/70 text-[11px] font-bold tracking-[0.14em] whitespace-nowrap text-lavanda uppercase">
-                      <th scope="col" className="px-5 py-3 text-left">Participante</th>
-                      <th scope="col" className="px-3 py-3 text-center">Incluído</th>
-                      <th scope="col" className="px-3 py-3 text-right" title={diario ? 'Vazio = automático: pontos vigentes de cada dia' : undefined}>
-                        Pontos
-                      </th>
-                      <th scope="col" className="px-3 py-3 text-right">Dias presentes</th>
-                      <th scope="col" className="px-3 py-3 text-right">{diario ? 'Pts nos dias' : 'Pts efetivos'}</th>
-                      <th scope="col" className="px-3 py-3 text-right">Valor</th>
-                      {rascunho && (
-                        <th scope="col" className="px-3 py-3">
-                          <span className="sr-only">Ações</span>
-                        </th>
-                      )}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {itens.map((i, k) => {
-                      const p = previa.itens[k]
-                      const e = edicoes[i.id]
-                      const incluido = e ? e.incluido : i.incluido
-                      const alterado = mudou(i, e)
-                      return (
-                        <tr key={i.id} className={clsx('border-t border-borda', !incluido && 'opacity-60', alterado && 'bg-ouro/5')}>
-                          <td className="px-5 py-3">
-                            <p className="flex flex-wrap items-center gap-1.5 font-semibold text-creme">
-                              <span>{i.nome}</span>
-                              {i.tipo === 'extra' && <Selo tom="info">Extra</Selo>}
-                            </p>
-                            {i.cargo && <p className="text-xs text-lavanda">{i.cargo}</p>}
-                          </td>
-                          <td className="px-3 py-3 text-center">
-                            {rascunho && editaIncluido(i) ? (
-                              <Caixa rotulo={<span className="sr-only">Incluir {i.nome}</span>} marcado={incluido} aoMudar={(v) => editar(i, { incluido: v })} />
-                            ) : incluido ? (
-                              'Sim'
-                            ) : (
-                              'Não'
-                            )}
-                          </td>
-                          <td className="px-3 py-3 text-right">
-                            {rascunho && editaPontos(i) ? (
-                              <Entrada
-                                aria-label={`Pontos de ${i.nome}`}
-                                className="numero ml-auto h-9 w-20 text-right"
-                                inputMode="decimal"
-                                placeholder={diario ? 'auto' : fmtPontos(i.pontos)}
-                                title={diario ? 'Vazio = automático (pontos vigentes de cada dia)' : 'Vazio = pontos vigentes no fim do período'}
-                                value={e?.pontos ?? edicaoOriginal(i).pontos}
-                                onChange={(ev) => editar(i, { pontos: ev.target.value.replace(/[^\d,.]/g, '') })}
-                              />
-                            ) : (
-                              <span className="numero" title={i.tipo === 'extra' ? 'Média dos pontos dos dias lançados' : undefined}>
-                                {fmtPontos(i.pontos)}
-                              </span>
-                            )}
-                          </td>
-                          <td className="numero px-3 py-3 text-right text-lavanda">
-                            {i.tipo === 'extra' ? `${i.dias_presentes} dia(s)` : `${i.dias_presentes}/${f.dias_periodo}`}
-                          </td>
-                          <td className="numero px-3 py-3 text-right">{fmtPontos(p?.pontosEfetivos ?? 0, 6)}</td>
-                          <td className="numero px-3 py-3 text-right font-semibold whitespace-nowrap text-ouro-claro">
-                            {formatarCentavos(p?.valorCentavos ?? 0)}
-                            {p?.centavoExtra && (
-                              <span className="ml-1 text-[10px] text-lavanda" title="Recebeu +1 centavo no arredondamento pelo maior resto">
-                                +1¢
-                              </span>
-                            )}
-                          </td>
-                          {rascunho && (
-                            <td className="px-3 py-3 text-right">
-                              {i.tipo === 'funcionario' && i.funcionario_id && (
-                                <Botao
-                                  variante="fantasma"
-                                  tamanho="p"
-                                  aria-label={`Remover ${i.nome}`}
-                                  icone={<X aria-hidden className="size-4" />}
-                                  disabled={ocupado}
-                                  onClick={async () => {
-                                    if (!(await avisos.confirmar({ titulo: `Remover ${i.nome} do fechamento?`, textoConfirmar: 'Remover', perigo: true }))) return
-                                    try {
-                                      await removerItem.mutateAsync({ id: f.id, funcionarioId: i.funcionario_id! })
-                                    } catch (err) {
-                                      avisos.erro(err)
-                                    }
-                                  }}
-                                />
-                              )}
-                            </td>
-                          )}
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                  <tfoot>
-                    <tr className="border-t-2 border-borda-forte font-semibold">
-                      <td className="px-5 py-3 text-creme">Total</td>
-                      <td />
-                      <td className="numero px-3 py-3 text-right">{fmtPontos(somaIncluidos)}</td>
-                      <td className="numero px-3 py-3 text-right text-lavanda">{diasIncluidos}</td>
-                      <td className="numero px-3 py-3 text-right">{fmtPontos(previa.somaPontosEfetivos, 6)}</td>
-                      <td className="numero px-3 py-3 text-right text-ouro-claro">{formatarCentavos(previa.totalDistribuidoCentavos)}</td>
-                      {rascunho && <td />}
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
+              <ListaParticipantes
+                larga={telaLarga}
+                itens={itens}
+                previa={previa}
+                rascunho={rascunho}
+                diario={diario}
+                diasPeriodo={f.dias_periodo}
+                edicoes={edicoes}
+                editar={editar}
+                ocupado={ocupado}
+                somaIncluidos={somaIncluidos}
+                diasIncluidos={diasIncluidos}
+                aoRemover={async (i) => {
+                  if (!(await avisos.confirmar({ titulo: `Remover ${i.nome} do fechamento?`, textoConfirmar: 'Remover', perigo: true }))) return
+                  try {
+                    await removerItem.mutateAsync({ id: f.id, funcionarioId: i.funcionario_id! })
+                  } catch (err) {
+                    avisos.erro(err)
+                  }
+                }}
+              />
             )}
             {rascunho && (
               <div className="flex flex-wrap items-end gap-2 border-t border-borda p-5">
@@ -645,6 +558,171 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
           {diario && <RateioDiario dias={previa.dias} itens={previa.itens} previa={sujo} />}
         </div>
       </div>
+    </div>
+  )
+}
+
+interface PropsLista {
+  larga: boolean
+  itens: ComissaoDetalheItem[]
+  previa: ResultadoComissao
+  rascunho: boolean
+  diario: boolean
+  diasPeriodo: number
+  edicoes: Record<string, EdicaoItem>
+  editar(i: ComissaoDetalheItem, parcial: Partial<EdicaoItem>): void
+  ocupado: boolean
+  somaIncluidos: number
+  diasIncluidos: number
+  aoRemover(i: ComissaoDetalheItem): void
+}
+
+/** Participantes: tabela (≥ 768 px) ou cartões (celular). Um só é montado, para não duplicar rótulos acessíveis. */
+function ListaParticipantes(props: PropsLista) {
+  const { larga, itens, previa, rascunho, diario, diasPeriodo, edicoes, editar, ocupado } = props
+
+  const incluidoDe = (i: ComissaoDetalheItem) => (edicoes[i.id] ? edicoes[i.id]!.incluido : i.incluido)
+  const ctrlIncluido = (i: ComissaoDetalheItem, comTexto = false) =>
+    rascunho && editaIncluido(i) ? (
+      <Caixa rotulo={
+          comTexto ? (
+            <>
+              <span aria-hidden>Incluído</span>
+              <span className="sr-only">Incluir {i.nome}</span>
+            </>
+          ) : (
+            <span className="sr-only">Incluir {i.nome}</span>
+          )
+        } marcado={incluidoDe(i)} aoMudar={(v) => editar(i, { incluido: v })} />
+    ) : (
+      <span className="text-lavanda">{comTexto ? (incluidoDe(i) ? 'Incluído' : 'Não incluído') : incluidoDe(i) ? 'Sim' : 'Não'}</span>
+    )
+  const ctrlPontos = (i: ComissaoDetalheItem) =>
+    rascunho && editaPontos(i) ? (
+      <Entrada
+        aria-label={`Pontos de ${i.nome}`}
+        className="numero ml-auto h-9 w-24 text-right"
+        inputMode="decimal"
+        placeholder={diario ? 'auto' : fmtPontos(i.pontos)}
+        title={diario ? 'Vazio = automático (pontos vigentes de cada dia)' : 'Vazio = pontos vigentes no fim do período'}
+        value={edicoes[i.id]?.pontos ?? edicaoOriginal(i).pontos}
+        onChange={(ev) => editar(i, { pontos: ev.target.value.replace(/[^\d,.]/g, '') })}
+      />
+    ) : (
+      <span className="numero" title={i.tipo === 'extra' ? 'Média dos pontos dos dias lançados' : undefined}>
+        {fmtPontos(i.pontos)}
+      </span>
+    )
+  const ctrlRemover = (i: ComissaoDetalheItem) =>
+    rascunho && i.tipo === 'funcionario' && i.funcionario_id ? (
+      <Botao variante="fantasma" tamanho="p" aria-label={`Remover ${i.nome}`} icone={<X aria-hidden className="size-4" />} disabled={ocupado} onClick={() => props.aoRemover(i)} />
+    ) : null
+  const dias = (i: ComissaoDetalheItem) => (i.tipo === 'extra' ? `${i.dias_presentes} dia(s)` : `${i.dias_presentes}/${diasPeriodo}`)
+  const valor = (k: number) => {
+    const p = previa.itens[k]
+    return (
+      <>
+        {formatarCentavos(p?.valorCentavos ?? 0)}
+        {p?.centavoExtra && (
+          <span className="ml-1 text-[10px] text-lavanda" title="Recebeu +1 centavo no arredondamento pelo maior resto">
+            +1¢
+          </span>
+        )}
+      </>
+    )
+  }
+  const nome = (i: ComissaoDetalheItem) => (
+    <p className="flex flex-wrap items-center gap-1.5 font-semibold text-creme">
+      <span>{i.nome}</span>
+      {i.tipo === 'extra' && <Selo tom="info">Extra</Selo>}
+    </p>
+  )
+  const classeLinha = (i: ComissaoDetalheItem) => clsx('border-t border-borda', !incluidoDe(i) && 'opacity-60', mudou(i, edicoes[i.id]) && 'bg-ouro/5')
+
+  if (!larga)
+    return (
+      <ul aria-label="Participantes">
+        {itens.map((i, k) => (
+          <li key={i.id} className={clsx(classeLinha(i), 'px-5 py-3.5')}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                {nome(i)}
+                <p className="text-xs text-lavanda">
+                  {[
+                    i.cargo,
+                    i.tipo === 'extra' ? `${i.dias_presentes} dia(s) trabalhado(s)` : `presente ${i.dias_presentes} de ${diasPeriodo} dias`,
+                    `${fmtPontos(previa.itens[k]?.pontosEfetivos ?? 0)} pts ${diario ? 'nos dias' : 'efetivos'}`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
+              </div>
+              <span className="numero shrink-0 text-right font-semibold whitespace-nowrap text-ouro-claro">{valor(k)}</span>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              {ctrlIncluido(i, true)}
+              <span className="flex items-center gap-2 text-sm text-lavanda">
+                Pontos {ctrlPontos(i)}
+                {ctrlRemover(i)}
+              </span>
+            </div>
+          </li>
+        ))}
+        <li className="flex items-center justify-between gap-3 border-t-2 border-borda-forte px-5 py-3 font-semibold">
+          <span className="text-creme">Total · {fmtPontos(props.somaIncluidos)} pts</span>
+          <span className="numero text-ouro-claro">{formatarCentavos(previa.totalDistribuidoCentavos)}</span>
+        </li>
+      </ul>
+    )
+
+  return (
+    <div className="relative overflow-x-auto">
+      <table className="w-full min-w-[620px] text-sm">
+        <thead>
+          <tr className="bg-cartao-2/70 text-[11px] font-bold tracking-[0.14em] whitespace-nowrap text-lavanda uppercase">
+            <th scope="col" className="px-5 py-3 text-left">Participante</th>
+            <th scope="col" className="px-3 py-3 text-center">Incluído</th>
+            <th scope="col" className="px-3 py-3 text-right" title={diario ? 'Vazio = automático: pontos vigentes de cada dia' : undefined}>
+              Pontos
+            </th>
+            <th scope="col" className="px-3 py-3 text-right">Dias presentes</th>
+            <th scope="col" className="px-3 py-3 text-right">{diario ? 'Pts nos dias' : 'Pts efetivos'}</th>
+            <th scope="col" className="px-3 py-3 text-right">Valor</th>
+            {rascunho && (
+              <th scope="col" className="px-3 py-3">
+                <span className="sr-only">Ações</span>
+              </th>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {itens.map((i, k) => (
+            <tr key={i.id} className={classeLinha(i)}>
+              <td className="px-5 py-3">
+                {nome(i)}
+                {i.cargo && <p className="text-xs text-lavanda">{i.cargo}</p>}
+              </td>
+              <td className="px-3 py-3 text-center">{ctrlIncluido(i)}</td>
+              <td className="px-3 py-3 text-right">{ctrlPontos(i)}</td>
+              <td className="numero px-3 py-3 text-right text-lavanda">{dias(i)}</td>
+              <td className="numero px-3 py-3 text-right">{fmtPontos(previa.itens[k]?.pontosEfetivos ?? 0, 6)}</td>
+              <td className="numero px-3 py-3 text-right font-semibold whitespace-nowrap text-ouro-claro">{valor(k)}</td>
+              {rascunho && <td className="px-3 py-3 text-right">{ctrlRemover(i)}</td>}
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr className="border-t-2 border-borda-forte font-semibold">
+            <td className="px-5 py-3 text-creme">Total</td>
+            <td />
+            <td className="numero px-3 py-3 text-right">{fmtPontos(props.somaIncluidos)}</td>
+            <td className="numero px-3 py-3 text-right text-lavanda">{props.diasIncluidos}</td>
+            <td className="numero px-3 py-3 text-right">{fmtPontos(previa.somaPontosEfetivos, 6)}</td>
+            <td className="numero px-3 py-3 text-right text-ouro-claro">{formatarCentavos(previa.totalDistribuidoCentavos)}</td>
+            {rascunho && <td />}
+          </tr>
+        </tfoot>
+      </table>
     </div>
   )
 }
