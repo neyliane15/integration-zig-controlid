@@ -11,6 +11,7 @@ import type {
   ParametrosControlIdRep,
   ParametrosEnvioControlId,
   ParametrosIntegracao,
+  ParametrosTagme,
   ParametrosZig,
   TipoIntegracao,
 } from '@/tipos/banco'
@@ -26,7 +27,15 @@ import {
 } from '@/consultas/integracoes'
 import { rotuloAoDesligar, rotuloTipoIntegracao } from '@/lib/rotulos'
 import { useAvisos } from '../avisos'
-import { Botao, Caixa, Campo, Entrada, Interruptor, Selecao, Selo } from '../ui'
+import { AreaTexto, Botao, Caixa, Campo, Entrada, Interruptor, Selecao, Selo } from '../ui'
+
+/** Chaves da Tagme com campo próprio; as demais vão no bloco "Avançado (JSON)" (adendo R.1). */
+const CHAVES_TAGME = new Set(['url_base', 'restaurante_id', 'dias_retroativos', 'dias_a_frente'])
+
+function textoAvancado(p: Record<string, unknown>): string {
+  const extra = Object.fromEntries(Object.entries(p).filter(([k]) => !CHAVES_TAGME.has(k)))
+  return JSON.stringify(extra, null, 2)
+}
 
 const INTERVALOS = [15, 30, 60, 120, 240, 360, 720, 1440]
 
@@ -83,12 +92,31 @@ export function FormularioIntegracao({
   const [segredos, setSegredos] = useState<Partial<Record<ChaveSegredo, string>>>({})
   const [remover, setRemover] = useState<Set<ChaveSegredo>>(new Set())
   const [erro, setErro] = useState<string | null>(null)
+  const [avancado, setAvancado] = useState(() => textoAvancado(parametros))
+  const [avancadoErro, setAvancadoErro] = useState<string | null>(null)
+
+  function mudarAvancado(texto: string) {
+    setAvancado(texto)
+    let obj: unknown
+    try {
+      obj = texto.trim() === '' ? {} : JSON.parse(texto)
+    } catch {
+      return setAvancadoErro('JSON inválido')
+    }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return setAvancadoErro('Precisa ser um objeto JSON ({ … })')
+    setAvancadoErro(null)
+    setParametros((a) => ({
+      ...Object.fromEntries(Object.entries(a).filter(([k]) => CHAVES_TAGME.has(k))),
+      ...Object.fromEntries(Object.entries(obj as Record<string, unknown>).filter(([k]) => !CHAVES_TAGME.has(k))),
+    }))
+  }
 
   const p = parametros as ParametrosZig & ParametrosControlIdAcesso & ParametrosControlIdRep
   const envio = (p.envio ?? {}) as ParametrosEnvioControlId
   const definir = (k: string, v: unknown) => setParametros((a) => ({ ...a, [k]: v }))
   const definirEnvio = (k: keyof ParametrosEnvioControlId, v: unknown) => setParametros((a) => ({ ...a, envio: { ...(a.envio as object), [k]: v } }))
-  const ehControlId = tipo !== 'zig'
+  const ehControlId = tipo === 'controlid_acesso' || tipo === 'controlid_rep'
+  const ehTagme = tipo === 'tagme'
   const ehAcesso = tipo === 'controlid_acesso'
   const ehFace = ehAcesso && /idface/i.test(p.modelo ?? '')
   const carregando = salvar.isPending || definirSegredos.isPending
@@ -101,6 +129,11 @@ export function FormularioIntegracao({
     const dias = Number(p.dias_retroativos ?? 2)
     if (!Number.isInteger(dias) || dias < 0 || dias > 31) return setErro('Dias retroativos: de 0 a 31.')
     if (tipo === 'zig' && !String(p.rede ?? '').trim()) return setErro('Informe o id da rede na Zig.')
+    if (ehTagme) {
+      const frente = Number((parametros as ParametrosTagme).dias_a_frente ?? 7)
+      if (!Number.isInteger(frente) || frente < 0 || frente > 62) return setErro('Dias à frente: de 0 a 62.')
+      if (avancadoErro) return setErro(avancadoErro)
+    }
     if (ehAcesso && (!Array.isArray(p.eventos_validos) || p.eventos_validos.length === 0)) return setErro('Informe ao menos um evento válido (ex.: 7).')
     const finalParametros = { ...parametros, dias_retroativos: dias } as ParametrosIntegracao
     try {
@@ -133,6 +166,18 @@ export function FormularioIntegracao({
         </p>
       )}
 
+      {ehTagme && (
+        <div className="rounded-entrada border border-info/35 bg-info/5 px-4 py-3 text-sm leading-relaxed text-creme">
+          <p className="font-semibold">A Tagme só libera API para parceiros.</p>
+          <p className="mt-1 text-lavanda">
+            Para a sincronização automática, peça o acesso à API ao suporte da Tagme (contrato de parceiro) e preencha o endereço, o id do
+            restaurante e as credenciais abaixo; a configuração do N8N está em <span className="numero text-creme">docs/IMPLANTACAO-N8N-HOSTINGER.md</span>.
+            Enquanto isso, exporte as reservas no painel <span className="numero text-creme">waitlist.tagme.com.br</span> (Reservas → exportar) e
+            importe o CSV em <strong className="text-creme">Reservas → Importar CSV</strong>, ou lance as reservas à mão.
+          </p>
+        </div>
+      )}
+
       <Secao titulo="Geral" descricao={rotuloTipoIntegracao[tipo]}>
         <div className="grid gap-5 sm:grid-cols-2">
           <Campo rotulo="Nome" htmlFor={`${id}-nome`} obrigatorio ajuda={ehControlId ? 'Ex.: iDFace porta dos fundos' : undefined}>
@@ -162,6 +207,41 @@ export function FormularioIntegracao({
                 ))}
               </datalist>
             </Campo>
+          )}
+          {ehTagme && (
+            <>
+              <Campo rotulo="Endereço da API" htmlFor={`${id}-url`} ajuda="Informado pela Tagme no contrato de parceiro. Em branco enquanto não houver.">
+                <Entrada
+                  id={`${id}-url`}
+                  type="url"
+                  placeholder="https://…"
+                  value={String((parametros as ParametrosTagme).url_base ?? '')}
+                  onChange={(e) => definir('url_base', e.target.value)}
+                  disabled={ro}
+                />
+              </Campo>
+              <Campo rotulo="Id do restaurante na Tagme" htmlFor={`${id}-rest`}>
+                <Entrada
+                  id={`${id}-rest`}
+                  value={String((parametros as ParametrosTagme).restaurante_id ?? '')}
+                  onChange={(e) => definir('restaurante_id', e.target.value)}
+                  disabled={ro}
+                />
+              </Campo>
+              <Campo rotulo="Dias à frente" htmlFor={`${id}-frente`} ajuda="Quantos dias futuros cada sincronização busca (0 a 62).">
+                <Entrada
+                  id={`${id}-frente`}
+                  type="number"
+                  min={0}
+                  max={62}
+                  inputMode="numeric"
+                  className="numero"
+                  value={String((parametros as ParametrosTagme).dias_a_frente ?? 7)}
+                  onChange={(e) => definir('dias_a_frente', e.target.value === '' ? '' : Number(e.target.value))}
+                  disabled={ro}
+                />
+              </Campo>
+            </>
           )}
           {tipo === 'zig' && (
             <Campo rotulo="Id da rede na Zig" htmlFor={`${id}-rede`} obrigatorio>
@@ -223,6 +303,26 @@ export function FormularioIntegracao({
           )}
         </div>
       </Secao>
+
+      {ehTagme && (
+        <Secao titulo="Avançado" descricao="Campos opcionais lidos pelo N8N (caminho, metodo, consulta, paginacao, mapeamento, autenticacao).">
+          <Campo
+            rotulo="Parâmetros avançados (JSON)"
+            htmlFor={`${id}-avancado`}
+            erro={avancadoErro}
+            ajuda='Objeto JSON. Ex.: {"caminho": "/api/reservas", "mapeamento": {"lista": "data.items"}}. Deixe {} se não souber.'
+          >
+            <AreaTexto
+              id={`${id}-avancado`}
+              className="numero text-sm"
+              spellCheck={false}
+              value={avancado}
+              onChange={(e) => mudarAvancado(e.target.value)}
+              disabled={ro}
+            />
+          </Campo>
+        </Secao>
+      )}
 
       {ehControlId && (
         <Secao

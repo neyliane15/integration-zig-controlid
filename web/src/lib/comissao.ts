@@ -13,6 +13,8 @@ export interface ParticipanteComissao {
   /** numeric(8,2) */
   pontos: number
   diasTrabalhados: number
+  /** adendo E.1: Σ pontos extras do período (2 casas); somados DEPOIS da proporcionalidade. Padrão 0. */
+  pontosExtras?: number
 }
 
 export interface EntradaComissao {
@@ -102,13 +104,14 @@ export function calcularComissao(e: EntradaComissao): ResultadoComissao {
   const base = bruto - retencao
   // 5. dias do período
   const diasPeriodo = diasDoPeriodo(e.dataInicio, e.dataFim)
-  // 6. pontos efetivos (escala 10⁶)
+  // 6. pontos efetivos (escala 10⁶) = base (proporcional ou não) + extras (adendo E.1: extras não são proporcionalizados)
   const efetivos = e.participantes.map((p) => {
     if (!p.incluido) return 0n
     const pontos6 = escalar(p.pontos, 2) * 10_000n
-    if (!e.proporcionalDias) return pontos6
-    if (diasPeriodo <= 0) return 0n
-    return dividirArredondando(pontos6 * BigInt(Math.trunc(p.diasTrabalhados)), BigInt(diasPeriodo))
+    const extras6 = escalar(p.pontosExtras ?? 0, 2) * 10_000n
+    if (!e.proporcionalDias) return pontos6 + extras6
+    if (diasPeriodo <= 0) return extras6
+    return dividirArredondando(pontos6 * BigInt(Math.trunc(p.diasTrabalhados)), BigInt(diasPeriodo)) + extras6
   })
   // 7. soma
   const soma = efetivos.reduce((s, v) => s + v, 0n)
@@ -240,11 +243,13 @@ export interface ItemCsv {
   incluido: boolean
   pontos: number
   dias_trabalhados: number
+  /** adendo E.1 */
+  pontos_extras: number
   pontos_efetivos: number
   valor_centavos: number
 }
 
-export const COLUNAS_CSV_COMISSAO = ['Funcionário', 'Cargo', 'Incluído', 'Pontos', 'Dias trabalhados', 'Pontos efetivos', 'Valor (R$)']
+export const COLUNAS_CSV_COMISSAO = ['Funcionário', 'Cargo', 'Incluído', 'Pontos', 'Dias trabalhados', 'Pontos extras', 'Pontos efetivos', 'Valor (R$)']
 
 /**
  * CSV do fechamento (§13) — mesma saída, byte a byte, de `csvComissao` em n8n/comum/lib/csv.mjs.
@@ -264,10 +269,12 @@ export function csvComissao(f: FechamentoCsv, itens: ItemCsv[], empresaNome: str
     ['Status', f.status === 'fechado' ? 'Fechado' : 'Rascunho'],
   ]
   let somaPontos = 0
+  let somaExtras = 0
   let somaPe = 0
   const linhas: unknown[][] = itens.map((i) => {
     const incluido = i.incluido !== false
     if (incluido) somaPontos += Number(i.pontos) || 0
+    if (incluido) somaExtras += Number(i.pontos_extras) || 0
     somaPe += Number(i.pontos_efetivos) || 0
     return [
       i.funcionario_nome ?? '',
@@ -275,11 +282,21 @@ export function csvComissao(f: FechamentoCsv, itens: ItemCsv[], empresaNome: str
       incluido,
       numeroCsv(i.pontos, 2),
       i.dias_trabalhados ?? 0,
+      numeroCsv(i.pontos_extras ?? 0, 2),
       numeroCsv(i.pontos_efetivos, 6),
       centavosCsv(i.valor_centavos ?? 0),
     ]
   })
-  linhas.push(['Total', '', '', numeroCsv(somaPontos, 2), '', numeroCsv(somaPe, 6), centavosCsv(f.base_distribuivel_centavos ?? 0)])
+  linhas.push([
+    'Total',
+    '',
+    '',
+    numeroCsv(somaPontos, 2),
+    '',
+    numeroCsv(somaExtras, 2),
+    numeroCsv(somaPe, 6),
+    centavosCsv(f.base_distribuivel_centavos ?? 0),
+  ])
   return {
     nome: nomeArquivoCsv('comissao', empresaNome || 'empresa', f.data_inicio, f.data_fim),
     conteudo: gerarCsv(COLUNAS_CSV_COMISSAO, linhas, preambulo),

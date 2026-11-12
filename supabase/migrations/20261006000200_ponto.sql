@@ -47,7 +47,7 @@ create table if not exists public.ponto_dias (
   primeira_batida     timestamptz,
   ultima_batida       timestamptz,
   situacao            text not null check (situacao in ('completo', 'incompleto', 'ausente', 'folga',
-                                                        'sem_escala', 'abonado', 'em_andamento')),
+                                                        'sem_escala', 'abonado', 'suspenso', 'em_andamento')),
   encerrado           boolean not null,
   alarmes_abertos     smallint not null default 0,
   apurado_em          timestamptz not null default now(),
@@ -109,8 +109,10 @@ create table if not exists public.ponto_abonos (
   empresa_id      uuid not null references public.empresas (id) on delete cascade,
   funcionario_id  uuid references public.funcionarios (id) on delete cascade,
   data            date not null,
-  tipo            text not null check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro')),
+  tipo            text not null check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro',
+                                                'suspensao')),
   motivo          text,
+  ocorrencia_id   uuid,          -- abono gerado por suspensão (FK para funcionario_ocorrencias criada em …0250)
   criado_por      uuid references public.perfis (id) on delete set null,
   criado_em       timestamptz not null default now(),
   constraint ponto_abonos_uk unique nulls not distinct (empresa_id, funcionario_id, data)
@@ -118,6 +120,15 @@ create table if not exists public.ponto_abonos (
 create index if not exists ponto_abonos_funcionario_idx on public.ponto_abonos (funcionario_id, data);
 create index if not exists ponto_abonos_criado_por_idx on public.ponto_abonos (criado_por);
 comment on table public.ponto_abonos is '[api:leitura] Abonos (folga, feriado, férias, atestado...). funcionario_id null = empresa toda.';
+-- (adendo extras/ocorrências/reservas) suspensão: abono 'suspensao' gerado pela ocorrência; situação 'suspenso'.
+alter table public.ponto_abonos add column if not exists ocorrencia_id uuid;
+create index if not exists ponto_abonos_ocorrencia_idx on public.ponto_abonos (ocorrencia_id);
+alter table public.ponto_abonos drop constraint if exists ponto_abonos_tipo_check;
+alter table public.ponto_abonos add constraint ponto_abonos_tipo_check
+  check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro', 'suspensao'));
+alter table public.ponto_dias drop constraint if exists ponto_dias_situacao_check;
+alter table public.ponto_dias add constraint ponto_dias_situacao_check
+  check (situacao in ('completo', 'incompleto', 'ausente', 'folga', 'sem_escala', 'abonado', 'suspenso', 'em_andamento'));
 
 -- ======================================================= banco_horas_lancamentos
 create table if not exists public.banco_horas_lancamentos (
@@ -511,6 +522,7 @@ begin
 
   -- 7. Situação
   if not v_encerrado then v_situacao := 'em_andamento';
+  elsif v_abono = 'suspensao' then v_situacao := 'suspenso';
   elsif v_abono is not null then v_situacao := 'abonado';
   elsif v_k = 0 and v_n = 0 then v_situacao := case when j.id is null then 'sem_escala' else 'folga' end;
   elsif v_n = 0 then v_situacao := 'ausente';
@@ -1073,6 +1085,11 @@ begin
   if p_tipo is null or p_tipo not in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro') then
     raise exception 'Tipo de abono inválido' using errcode = '22023';
   end if;
+  if p_funcionario is not null and exists (
+       select 1 from public.ponto_abonos a
+        where a.funcionario_id = p_funcionario and a.data between p_inicio and p_fim and a.ocorrencia_id is not null) then
+    raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
 
   insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por)
   select v_empresa, p_funcionario, g::date, p_tipo, nullif(btrim(p_motivo), ''), auth.uid()
@@ -1097,6 +1114,9 @@ begin
   select * into a from public.ponto_abonos where id = p_abono;
   if not found then raise exception 'Abono não encontrado' using errcode = 'P0002'; end if;
   if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if a.ocorrencia_id is not null then
+    raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
   delete from public.ponto_abonos where id = p_abono;
   if a.funcionario_id is not null then
     perform public.ponto_apurar(a.funcionario_id, a.data, a.data);
@@ -1172,7 +1192,7 @@ declare
   v_saldo   bigint;
   r         record;
   v_rotulos constant jsonb := '{"completo":"Completo","incompleto":"Incompleto","ausente":"Ausente","folga":"Folga",
-     "sem_escala":"Sem escala","abonado":"Abonado","em_andamento":"Em andamento"}'::jsonb;
+     "sem_escala":"Sem escala","abonado":"Abonado","suspenso":"Suspenso","em_andamento":"Em andamento"}'::jsonb;
 begin
   select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
   if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;

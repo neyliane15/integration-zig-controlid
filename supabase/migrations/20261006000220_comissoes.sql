@@ -54,6 +54,25 @@ create table if not exists public.comissao_itens (
 create index if not exists comissao_itens_empresa_idx on public.comissao_itens (empresa_id);
 create index if not exists comissao_itens_funcionario_idx on public.comissao_itens (funcionario_id);
 comment on table public.comissao_itens is '[api:leitura] Itens (participantes) de um fechamento de comissão.';
+-- (adendo extras) pontos extras somados aos pontos efetivos (não proporcionalizados).
+alter table public.comissao_itens add column if not exists pontos_extras numeric(10,2) not null default 0;
+
+-- ================================================================ pontos extras (adendo E.1)
+create table if not exists public.comissao_pontos_extras (
+  id               uuid primary key default gen_random_uuid(),
+  empresa_id       uuid not null references public.empresas (id) on delete cascade,
+  funcionario_id   uuid not null references public.funcionarios (id) on delete cascade,
+  data             date not null,
+  pontos           numeric(8,2) not null check (pontos > 0 and pontos <= 9999.99),
+  motivo           text not null check (btrim(motivo) <> ''),
+  criado_por       uuid references public.perfis (id) on delete set null,
+  criado_por_nome  text not null,
+  criado_em        timestamptz not null default now()
+);
+create index if not exists comissao_pontos_extras_empresa_idx on public.comissao_pontos_extras (empresa_id, data);
+create index if not exists comissao_pontos_extras_funcionario_idx on public.comissao_pontos_extras (funcionario_id, data);
+create index if not exists comissao_pontos_extras_criado_por_idx on public.comissao_pontos_extras (criado_por);
+comment on table public.comissao_pontos_extras is '[api:leitura] Pontos extras de comissão por funcionário e data (entram no fechamento do período).';
 
 alter table public.comissao_fechamentos enable row level security;
 alter table public.comissao_itens enable row level security;
@@ -62,6 +81,10 @@ create policy comissao_fechamentos_ler on public.comissao_fechamentos for select
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
 drop policy if exists comissao_itens_ler on public.comissao_itens;
 create policy comissao_itens_ler on public.comissao_itens for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+alter table public.comissao_pontos_extras enable row level security;
+drop policy if exists comissao_pontos_extras_ler on public.comissao_pontos_extras;
+create policy comissao_pontos_extras_ler on public.comissao_pontos_extras for select to authenticated
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
 
 -- ================================================================ gatilhos
@@ -180,7 +203,21 @@ begin
   v_base := v_bruto - v_ret;
   v_dias := fc.data_fim - fc.data_inicio + 1;
 
-  -- 5–6. dias trabalhados e pontos efetivos
+  -- 4b. (adendo E.1) quem tem pontos extras no período entra (pontos base 0) e os extras são relidos
+  insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, pontos)
+  select fc.empresa_id, p_fechamento, f.id, f.nome, f.cargo, 0
+    from public.funcionarios f
+   where f.empresa_id = fc.empresa_id
+     and exists (select 1 from public.comissao_pontos_extras x
+                  where x.funcionario_id = f.id and x.data between fc.data_inicio and fc.data_fim)
+     and not exists (select 1 from public.comissao_itens it where it.fechamento_id = p_fechamento and it.funcionario_id = f.id);
+  update public.comissao_itens it
+     set pontos_extras = coalesce((select sum(x.pontos) from public.comissao_pontos_extras x
+                                    where x.funcionario_id = it.funcionario_id
+                                      and x.data between fc.data_inicio and fc.data_fim), 0)
+   where it.fechamento_id = p_fechamento and it.funcionario_id is not null;
+
+  -- 5–6. dias trabalhados e pontos efetivos (extras somados depois da proporção, sem proporcionalizar)
   update public.comissao_itens it
      set dias_trabalhados = case when it.funcionario_id is null then it.dias_trabalhados
                                  else (select count(*) from public.ponto_dias d
@@ -190,8 +227,8 @@ begin
    where it.fechamento_id = p_fechamento;
   update public.comissao_itens it
      set pontos_efetivos = case when not it.incluido then 0
-                                when fc.proporcional_dias then round(it.pontos * it.dias_trabalhados / v_dias, 6)
-                                else it.pontos end
+                                when fc.proporcional_dias then round(it.pontos * it.dias_trabalhados / v_dias, 6) + it.pontos_extras
+                                else it.pontos + it.pontos_extras end
    where it.fechamento_id = p_fechamento;
 
   select coalesce(sum(it.pontos_efetivos), 0) into v_soma from public.comissao_itens it where it.fechamento_id = p_fechamento;
@@ -335,10 +372,16 @@ returns void language plpgsql security definer set search_path = public, extensi
 declare fc public.comissao_fechamentos;
 begin
   fc := public.comissao_rascunho_para_editar(p_fechamento);
-  delete from public.comissao_itens where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
+  if exists (select 1 from public.comissao_pontos_extras x
+              where x.funcionario_id = p_funcionario and x.data between fc.data_inicio and fc.data_fim) then
+    -- com extras no período ele voltaria no próximo cálculo: só desmarca (adendo E.1)
+    update public.comissao_itens set incluido = false where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
+  else
+    delete from public.comissao_itens where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
+  end if;
   perform public.comissao_calcular(p_fechamento);
 end $$;
-comment on function public.comissao_remover_item(uuid, uuid) is '[api] Remove participante do rascunho e recalcula.';
+comment on function public.comissao_remover_item(uuid, uuid) is '[api] Remove participante do rascunho (com extras no período: só desmarca) e recalcula.';
 
 create or replace function public.comissao_recalcular(p_fechamento uuid)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$

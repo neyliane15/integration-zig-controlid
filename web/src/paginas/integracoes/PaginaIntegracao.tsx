@@ -52,7 +52,7 @@ export function PaginaIntegracao() {
       />
     )
 
-  const ehControlId = i.tipo !== 'zig'
+  const ehControlId = i.tipo === 'controlid_acesso' || i.tipo === 'controlid_rep'
   const executando = (abertas.data ?? []).some((s) => s.integracao_id === i.id)
   const abas: { id: Aba; rotulo: string }[] = [
     { id: 'geral', rotulo: 'Visão geral' },

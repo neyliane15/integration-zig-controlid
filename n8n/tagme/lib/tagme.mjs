@@ -1,29 +1,34 @@
-// Importação de reservas da Tagme (adendo extras/ocorrências/reservas) — funções puras, sem import.
+// Importação de reservas da Tagme (docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md §R) — funções puras, sem import.
 // Copiada no nó Code do workflow "MDG · Tagme · Importar" com `// @lib tagme/lib/tagme.mjs` (conferida por `npm run n8n:verificar`).
 //
 // A Tagme NÃO tem API pública (só para parceiros, sob contrato). Por isso nada aqui assume endpoint ou nome de campo:
 // tudo vem da integração tipo 'tagme' (tela Integrações):
 //
-//   segredos   { token?, cookie?, url? }                         ← nunca nos parâmetros (que o front lê)
-//   parametros {
-//     base_url:  'https://waitlist.tagme.com.br'                  (exemplo; ou segredos.url; ou variável TAGME_BASE_URL)
-//     caminho:   '/api/...'                                       (obrigatório: o endpoint que devolve a lista de reservas)
+//   segredos   { token, cliente_id, cliente_segredo }             ← só essas chaves (o banco restringe); nunca nos parâmetros
+//   parametros {                                                  (padrão do banco: url_base, restaurante_id, dias_retroativos, dias_a_frente)
+//     url_base:  'https://waitlist.tagme.com.br'                  (exemplo; ou variável TAGME_BASE_URL do N8N)
+//     restaurante_id: '123'                                       (opcional: substitui `{restaurante_id}` no caminho e/ou vai
+//                                                                  no parâmetro `consulta.param_restaurante`)
+//     dias_retroativos: 1, dias_a_frente: 7                       (janela padrão: [hoje − retro, hoje + a frente], máx. 62 dias)
+//     --- avançados (opcionais) ---
+//     caminho:   '/api/.../{restaurante_id}/reservations'         (obrigatório na prática: o endpoint que devolve a lista; pode
+//                                                                  ser URL completa)
 //     metodo:    'GET' | 'POST'                                   (padrão GET; em POST os parâmetros vão no corpo JSON)
-//     autenticacao: { cabecalho: 'Authorization', prefixo: 'Bearer' }   (o valor vem de segredos.token; prefixo '' = só o token)
-//                   segredos.cookie (se houver) vai no cabeçalho Cookie
+//     autenticacao: { cabecalho: 'Authorization', prefixo: 'Bearer' }   (o VALOR vem de segredos.token; ex. sessão do painel:
+//                   { cabecalho: 'Cookie', prefixo: '' } com token = "nome=valor"; { modo: 'basic' } = cliente_id:cliente_segredo)
 //     consulta: { modo: 'periodo' | 'dia', param_inicio: 'start_date', param_fim: 'end_date', param_dia: 'date',
+//                 param_restaurante: 'restaurant_id',
 //                 formato_data: 'AAAA-MM-DD' | 'DD/MM/AAAA' | 'AAAAMMDD' | 'iso' | 'epoch' | 'epoch_ms', extras: {...} }
 //     paginacao: { param_pagina: 'page', inicio: 1, param_tamanho: 'per_page', tamanho: 100, max_paginas: 50,
 //                  caminho_total_paginas: 'meta.total_pages' }   (opcional; sem `param_pagina` = uma chamada só)
 //     mapeamento: { lista: 'data.reservations', id: 'id', data: 'date', hora: 'time', data_hora: 'datetime', nome: 'customer.name',
-//                   telefone, email, pessoas, status, observacao, mesa, status_map: { 'seated': 'sentada', ... } }
+//                   telefone, email, pessoas, status, observacao, area, mesa, status_map: { 'seated': 'sentada', ... } }
 //                 cada campo aceita um caminho ("a.b.0.c") ou uma lista de caminhos (o 1º preenchido vence);
 //                 o que não for informado usa MAPEAMENTO_PADRAO_TAGME (nomes comuns em inglês e português).
-//     dias_retroativos: 1, dias_futuros: 30                      (período padrão: [hoje − retro, hoje + futuros], máx. 62 dias)
 //   }
 //
 // Quando a Tagme liberar a API de parceiro (ou se descobrir o endpoint interno do painel), basta preencher
-// base_url/caminho/autenticacao/consulta/mapeamento — sem mexer neste código. Ver docs/IMPLANTACAO-N8N-HOSTINGER.md §6.
+// url_base/caminho/autenticacao/consulta/mapeamento — sem mexer neste código. Ver docs/IMPLANTACAO-N8N-HOSTINGER.md §6.
 
 export const TAGME_BASE_EXEMPLO = 'https://waitlist.tagme.com.br'
 export const TAGME_MAX_DIAS = 62
@@ -42,7 +47,8 @@ export const MAPEAMENTO_PADRAO_TAGME = {
   pessoas: ['party_size', 'partySize', 'people', 'guests', 'pax', 'covers', 'seats', 'pessoas', 'quantidade_pessoas'],
   status: ['status', 'state', 'situacao'],
   observacao: ['notes', 'note', 'observation', 'observations', 'comments', 'comment', 'observacao', 'obs'],
-  mesa: ['table.name', 'table', 'table_name', 'tableName', 'mesa'],
+  area: ['area.name', 'area', 'area_name', 'areaName', 'sector', 'setor', 'environment', 'ambiente', 'salao'],
+  mesa: ['table.name', 'table', 'table_name', 'tableName', 'table_number', 'mesa'],
 }
 
 /** Tradução de status (minúsculas, sem acento) → status do sistema. `status_map` da integração complementa/sobrepõe. */
@@ -75,17 +81,18 @@ function inteiroEntre(v, padrao, min, max) {
 }
 
 /**
- * Período a importar: padrão `[dia_trabalho_atual − dias_retroativos, dia_trabalho_atual + dias_futuros]` (reservas futuras
+ * Período a importar: padrão `[dia_trabalho_atual − dias_retroativos, dia_trabalho_atual + dias_a_frente]` (reservas futuras
  * também importam). Pedido manual com `data_inicio`/`data_fim` usa as datas pedidas. Mais de 62 dias → os 62 primeiros a partir
  * do início (`truncado = true`).
  */
 export function periodoTagme(entrada, config, max) {
+  // padrão: [hoje − dias_retroativos (1), hoje + dias_a_frente (7)]
   const limite = max ?? TAGME_MAX_DIAS
   const hoje = config && config.dia_trabalho_atual
   if (!dataValidaTagme(hoje)) throw new Error('Configuração sem dia_trabalho_atual')
   const p = (config && config.parametros) || {}
   const retro = inteiroEntre(p.dias_retroativos, 1, 0, limite - 1)
-  const futuros = inteiroEntre(p.dias_futuros, 30, 0, limite - 1)
+  const futuros = inteiroEntre(p.dias_a_frente, 7, 0, limite - 1)
   let inicio = entrada && entrada.data_inicio ? entrada.data_inicio : null
   let fim = entrada && entrada.data_fim ? entrada.data_fim : null
   if (inicio !== null && !dataValidaTagme(inicio)) throw new Error(`Data inicial inválida: ${inicio}`)
@@ -204,7 +211,8 @@ function texto(v, max) {
 
 /**
  * Converte um item da Tagme no item de `ingestao_reservas`:
- * `{id_externo, data, hora, nome, telefone, email, pessoas, status, observacao, origem: 'tagme', bruto}`.
+ * `{id_externo, data, hora, nome, telefone, email, pessoas, status, observacao, area, mesa, origem: 'tagme', bruto}`
+ * (`bruto` vai junto só para diagnóstico: o banco NÃO o grava).
  * Sem id ou sem data → `null` (ignorado).
  */
 export function normalizarReservaTagme(item, mapa) {
@@ -218,8 +226,6 @@ export function normalizarReservaTagme(item, mapa) {
   if (!preenchido(id) || !data) return null
   const pessoas = Math.trunc(Number(primeiroValor(item, m.pessoas)))
   const statusOriginal = primeiroValor(item, m.status)
-  const mesa = texto(primeiroValor(item, m.mesa), 60)
-  const obs = texto(primeiroValor(item, m.observacao), 1000)
   return {
     id_externo: String(id),
     data,
@@ -229,7 +235,9 @@ export function normalizarReservaTagme(item, mapa) {
     email: texto(primeiroValor(item, m.email), 200),
     pessoas: Number.isFinite(pessoas) && pessoas > 0 ? pessoas : null,
     status: normalizarStatusTagme(statusOriginal, m.status_map),
-    observacao: mesa ? (obs ? `Mesa ${mesa} — ${obs}` : `Mesa ${mesa}`).slice(0, 1000) : obs,
+    observacao: texto(primeiroValor(item, m.observacao), 1000),
+    area: texto(primeiroValor(item, m.area), 100),
+    mesa: texto(primeiroValor(item, m.mesa), 60),
     origem: 'tagme',
     bruto: item,
   }
@@ -256,10 +264,11 @@ export function janelasConsulta(periodo, consulta) {
 }
 
 /** Parâmetros (query ou corpo) de uma janela + página. */
-export function parametrosConsulta(janela, consulta, paginacao, pagina) {
+export function parametrosConsulta(janela, consulta, paginacao, pagina, restauranteId) {
   const c = consulta || {}
   const fmt = c.formato_data || 'AAAA-MM-DD'
   const params = { ...(c.extras || {}) }
+  if (c.param_restaurante && preenchido(restauranteId)) params[c.param_restaurante] = String(restauranteId)
   if (c.modo === 'dia') params[c.param_dia || 'date'] = formatarDataTagme(janela.inicio, fmt)
   else {
     params[c.param_inicio || 'start_date'] = formatarDataTagme(janela.inicio, fmt)
@@ -272,24 +281,44 @@ export function parametrosConsulta(janela, consulta, paginacao, pagina) {
   return params
 }
 
-/** Cabeçalhos: autenticação vinda dos segredos (token com cabeçalho/prefixo configuráveis, cookie) + `segredos.cabecalhos`. */
+/** Base64 sem depender de Buffer/btoa (o nó Code do N8N tem Buffer; testes também — mas fica puro). */
+function base64(texto) {
+  const bytes = unescape(encodeURIComponent(texto))
+  const tabela = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  let saida = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const [a, b, c] = [bytes.charCodeAt(i), bytes.charCodeAt(i + 1), bytes.charCodeAt(i + 2)]
+    const n = (a << 16) | ((b || 0) << 8) | (c || 0)
+    saida += tabela[(n >> 18) & 63] + tabela[(n >> 12) & 63] + (i + 1 < bytes.length ? tabela[(n >> 6) & 63] : '=') + (i + 2 < bytes.length ? tabela[n & 63] : '=')
+  }
+  return saida
+}
+
+/**
+ * Cabeçalhos de autenticação. O valor SEMPRE vem dos segredos (`token`; ou `cliente_id`/`cliente_segredo` no modo basic);
+ * `parametros.autenticacao` só diz em que cabeçalho e com que prefixo: padrão `Authorization: Bearer <token>`;
+ * sessão do painel: `{ cabecalho: 'Cookie', prefixo: '' }`; chave: `{ cabecalho: 'x-api-key', prefixo: '' }`.
+ */
 export function cabecalhosTagme(parametros, segredos) {
   const a = (parametros && parametros.autenticacao) || {}
   const s = segredos || {}
   const h = { Accept: 'application/json' }
+  if (a.modo === 'basic') {
+    if (preenchido(s.cliente_id) && preenchido(s.cliente_segredo)) h[a.cabecalho || 'Authorization'] = `Basic ${base64(`${s.cliente_id}:${s.cliente_segredo}`)}`
+    return h
+  }
   if (preenchido(s.token)) {
-    const prefixo = a.prefixo === undefined || a.prefixo === null ? 'Bearer' : String(a.prefixo)
+    const prefixo = (a.prefixo === undefined || a.prefixo === null ? 'Bearer' : String(a.prefixo)).trim()
     h[a.cabecalho || 'Authorization'] = prefixo ? `${prefixo} ${s.token}` : String(s.token)
   }
-  if (preenchido(s.cookie)) h.Cookie = String(s.cookie)
-  if (s.cabecalhos && typeof s.cabecalhos === 'object') for (const [k, v] of Object.entries(s.cabecalhos)) if (preenchido(v)) h[k] = String(v)
+  if (preenchido(s.cliente_id) && preenchido(a.cabecalho_cliente_id)) h[a.cabecalho_cliente_id] = String(s.cliente_id)
   return h
 }
 
 /** URL completa (base + caminho + query). */
-export function urlTagme(base, caminho, params) {
+export function urlTagme(base, caminho, params, restauranteId) {
   const raiz = String(base).replace(/\/+$/, '')
-  const cam = String(caminho || '')
+  const cam = String(caminho || '').replace(/\{restaurante_id\}/g, encodeURIComponent(String(restauranteId ?? '')))
   const qs = Object.entries(params || {})
     .filter(([, v]) => v !== undefined && v !== null && v !== '')
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
@@ -305,9 +334,9 @@ export function requisicaoTagme(base, parametros, segredos, params, timeoutMs) {
   const headers = cabecalhosTagme(parametros, segredos)
   if (metodo === 'POST') {
     headers['Content-Type'] = 'application/json'
-    return { method: 'POST', url: urlTagme(base, parametros.caminho), headers, corpo: params, timeoutMs: timeoutMs || 60000 }
+    return { method: 'POST', url: urlTagme(base, parametros.caminho, null, parametros.restaurante_id), headers, corpo: params, timeoutMs: timeoutMs || 60000 }
   }
-  return { method: 'GET', url: urlTagme(base, parametros.caminho, params), headers, timeoutMs: timeoutMs || 60000 }
+  return { method: 'GET', url: urlTagme(base, parametros.caminho, params, parametros.restaurante_id), headers, timeoutMs: timeoutMs || 60000 }
 }
 
 /** Confere a configuração e devolve `{ base, caminho }`. */
@@ -315,14 +344,17 @@ export function validarConfigTagme(config, baseVariavel) {
   if (!config || config.tipo !== 'tagme') throw new Error('Tipo de integração incompatível')
   const p = config.parametros || {}
   const s = config.segredos || {}
-  const base = (preenchido(p.base_url) && p.base_url) || (preenchido(s.url) && s.url) || (preenchido(baseVariavel) && baseVariavel) || null
+  const base = (preenchido(p.url_base) && p.url_base) || (preenchido(baseVariavel) && baseVariavel) || null
   if (!preenchido(p.caminho) && !(base && /^https?:\/\/[^/]+\/./.test(base))) {
     throw new Error('Endpoint de reservas da Tagme não configurado (Integrações → Tagme → parâmetros "caminho"). A Tagme só libera a API para parceiros — veja a documentação de implantação; enquanto isso, importe o CSV de reservas pelo sistema.')
   }
-  if (!base && !/^https?:\/\//.test(String(p.caminho))) throw new Error(`URL base da Tagme não configurada (parâmetro "base_url", ex.: ${TAGME_BASE_EXEMPLO})`)
-  if (!preenchido(s.token) && !preenchido(s.cookie) && !(s.cabecalhos && Object.keys(s.cabecalhos).length)) {
-    throw new Error('Credencial da Tagme não configurada (Integrações → Tagme → segredos: token ou cookie)')
+  if (!base && !/^https?:\/\//.test(String(p.caminho))) throw new Error(`URL base da Tagme não configurada (parâmetro "url_base", ex.: ${TAGME_BASE_EXEMPLO})`)
+  const basic = p.autenticacao && p.autenticacao.modo === 'basic'
+  if (basic ? !(preenchido(s.cliente_id) && preenchido(s.cliente_segredo)) : !preenchido(s.token)) {
+    throw new Error(basic ? 'Credencial da Tagme não configurada (Integrações → Tagme → segredos: cliente_id e cliente_segredo)'
+      : 'Credencial da Tagme não configurada (Integrações → Tagme → segredos: token)')
   }
+  if (/\{restaurante_id\}/.test(String(p.caminho || '')) && !preenchido(p.restaurante_id)) throw new Error('O caminho usa {restaurante_id}, mas o parâmetro "restaurante_id" está vazio')
   return { base: base || '', caminho: p.caminho || '' }
 }
 
@@ -352,7 +384,7 @@ export async function importarTagme(config, entrada, deps) {
     for (let n = 0; n < maxPaginas; n++) {
       const pagina = (pag ? inteiroEntre(pag.inicio, 1, 0, 1) : 1) + n
       if (chamadas > 0 && pausa > 0) await dormir(pausa)
-      const req = requisicaoTagme(base, p, config.segredos, parametrosConsulta(janela, p.consulta, pag, pagina), deps.timeoutMs)
+      const req = requisicaoTagme(base, p, config.segredos, parametrosConsulta(janela, p.consulta, pag, pagina, p.restaurante_id), deps.timeoutMs)
       const r = await deps.requisitar(req, opcoesHttp)
       chamadas++
       tentativasMax = Math.max(tentativasMax, r.tentativas || 1)
@@ -392,12 +424,14 @@ export async function importarTagme(config, entrada, deps) {
     ingestao: ret,
   }
   if (!brutos.length) detalhes.aviso = 'A Tagme não devolveu reservas no período'
+  const errosBanco = Array.isArray(ret.erros) ? ret.erros : []
+  const recusados = errosBanco.length ? Math.max(errosBanco.length, Number(ret.ignorados) || 0) : 0
   return {
-    status: 'sucesso',
+    status: recusados ? 'parcial' : 'sucesso',
     lidos: brutos.length,
     gravados: Number(ret.gravados) || 0,
     ignorados: ignoradosLocais + (Number(ret.ignorados) || 0),
-    erro: null,
+    erro: recusados ? `${recusados} reserva(s) recusada(s) pelo banco: ` + errosBanco.slice(0, 3).map((e) => `#${e.indice}: ${e.motivo}`).join(' | ') : null,
     detalhes,
     tentativas: tentativasMax,
   }

@@ -16,7 +16,7 @@ export type Minutos = number
 
 // ---------------------------------------------------------------------- enums
 export type Papel = 'master' | 'administrador' | 'gerente' | 'leitura'
-export type TipoIntegracao = 'zig' | 'controlid_acesso' | 'controlid_rep'
+export type TipoIntegracao = 'zig' | 'controlid_acesso' | 'controlid_rep' | 'tagme'
 export type StatusUltimaExecucao = 'sucesso' | 'parcial' | 'erro'
 export type EscopoSync =
   | 'tudo'
@@ -26,6 +26,7 @@ export type EscopoSync =
   | 'exportar_funcionarios'
   | 'apurar_ponto'
   | 'exportar_fechamento'
+  | 'reservas'
 export type StatusSolicitacao = 'pendente' | 'em_andamento' | 'concluida' | 'erro' | 'cancelada'
 export type TipoExecucao =
   | 'zig_lojas'
@@ -39,6 +40,7 @@ export type TipoExecucao =
   | 'apurar_ponto'
   | 'tarefas_gerar'
   | 'exportar_fechamento'
+  | 'tagme_importar'
 export type GatilhoExecucao = 'agendado' | 'manual' | 'webhook'
 export type StatusExecucao = 'executando' | 'sucesso' | 'parcial' | 'erro'
 export type VinculoControlId = 'automatico' | 'manual'
@@ -46,12 +48,12 @@ export type Recorrencia = 'diaria' | 'semanal' | 'mensal'
 export type Prioridade = 'baixa' | 'normal' | 'alta'
 export type StatusTarefa = 'pendente' | 'em_andamento' | 'concluida' | 'cancelada'
 export type OrigemBatida = 'controlid_acesso' | 'controlid_rep' | 'manual'
-export type SituacaoDia = 'completo' | 'incompleto' | 'ausente' | 'folga' | 'sem_escala' | 'abonado' | 'em_andamento'
+export type SituacaoDia = 'completo' | 'incompleto' | 'ausente' | 'folga' | 'sem_escala' | 'abonado' | 'em_andamento' | 'suspenso'
 export type TipoAlarme = 'batida_faltando' | 'batidas_impares' | 'sem_batida_dia_escalado' | 'atraso'
 export type BatidaEsperada = 'entrada' | 'saida_intervalo' | 'volta_intervalo' | 'saida'
 export type StatusAlarme = 'aberto' | 'justificado' | 'resolvido'
 export type AcaoAjuste = 'incluir' | 'desconsiderar' | 'restaurar'
-export type TipoAbono = 'folga' | 'feriado' | 'ferias' | 'atestado' | 'compensacao' | 'outro'
+export type TipoAbono = 'folga' | 'feriado' | 'ferias' | 'atestado' | 'compensacao' | 'outro' | 'suspensao'
 export type TipoLancamento = 'saldo_inicial' | 'ajuste' | 'compensacao' | 'pagamento'
 export type TipoZig = 'Normal' | 'Couvert' | 'ZigCard' | 'Entrance' | 'Tip' | 'Outro'
 export type StatusFechamento = 'rascunho' | 'fechado'
@@ -59,6 +61,10 @@ export type StatusFechamento = 'rascunho' | 'fechado'
 export type StatusEnvioControlId = 'pendente' | 'enviando' | 'enviado' | 'erro' | 'aguardando'
 export type OperacaoEnvio = 'salvar' | 'remover' | 'bloquear'
 export type AlvoEnvio = 'funcionario' | 'horarios'
+/** Adendo extras/ocorrências/reservas. */
+export type TipoOcorrencia = 'advertencia' | 'suspensao'
+export type StatusReserva = 'confirmada' | 'pendente' | 'cancelada' | 'sentada' | 'concluida' | 'nao_compareceu'
+export type OrigemReserva = 'tagme' | 'manual' | 'importacao'
 
 // ---------------------------------------------------------- tabelas (backend-1)
 export interface Empresa {
@@ -190,12 +196,21 @@ export interface ParametrosControlIdRep {
   dias_retroativos?: number
   identificador?: 'cpf' | 'pis'
 }
-export type ParametrosIntegracao = ParametrosZig | ParametrosControlIdAcesso | ParametrosControlIdRep
+/** Adendo R.1 — o N8N pode acrescentar chaves (ex.: `mapeamento`); o front preserva as desconhecidas. */
+export interface ParametrosTagme {
+  url_base?: string
+  restaurante_id?: string
+  dias_retroativos?: number
+  dias_a_frente?: number
+  [chave: string]: unknown
+}
+export type ParametrosIntegracao = ParametrosZig | ParametrosControlIdAcesso | ParametrosControlIdRep | ParametrosTagme
 
 /** Chaves de segredo permitidas por tipo (§11.1). Valores nunca voltam ao front. */
 export type ChaveSegredoZig = 'token'
 export type ChaveSegredoControlId = 'url' | 'login' | 'senha'
-export type ChaveSegredo = ChaveSegredoZig | ChaveSegredoControlId
+export type ChaveSegredoTagme = 'token' | 'cliente_id' | 'cliente_segredo'
+export type ChaveSegredo = ChaveSegredoZig | ChaveSegredoControlId | ChaveSegredoTagme
 
 export interface Integracao {
   id: Uuid
@@ -576,9 +591,208 @@ export interface ComissaoItem {
   incluido: boolean
   pontos: number
   dias_trabalhados: number
+  /** adendo E.1: Σ pontos extras do período (numeric(10,2)) */
+  pontos_extras: number
   pontos_efetivos: number
   valor_centavos: Centavos
   criado_em: InstanteISO
+}
+
+// ---------------------------------------- adendo extras / ocorrências / reservas
+export interface AnexoOcorrencia {
+  id: Uuid
+  caminho: string
+  nome_arquivo: string | null
+  criado_em: InstanteISO
+}
+
+/** Item de `ocorrencias_listar` (O.4). */
+export interface Ocorrencia {
+  id: Uuid
+  funcionario_id: Uuid
+  tipo: TipoOcorrencia
+  data: DataISO
+  motivo: string
+  descricao: string | null
+  dias_suspensao: number | null
+  suspensao_inicio: DataISO | null
+  suspensao_fim: DataISO | null
+  criado_por_nome: string
+  criado_em: InstanteISO
+  atualizado_em: InstanteISO
+  anexos: AnexoOcorrencia[]
+}
+
+export interface ContagemOcorrencias {
+  funcionario_id: Uuid
+  advertencias: number
+  suspensoes: number
+  dias_suspensao: number
+  ultima_data: DataISO | null
+}
+
+export interface OcorrenciaRecente {
+  id: Uuid
+  funcionario_id: Uuid
+  funcionario_nome: string
+  tipo: TipoOcorrencia
+  data: DataISO
+  motivo: string
+  dias_suspensao: number | null
+  suspensao_inicio: DataISO | null
+  suspensao_fim: DataISO | null
+}
+
+/** `ocorrencias_resumo` e bloco `ocorrencias` do painel. */
+export interface ResumoOcorrencias {
+  desde: DataISO
+  ate: DataISO
+  advertencias: number
+  suspensoes: number
+  suspensos_hoje: number
+  recentes: OcorrenciaRecente[]
+}
+
+/** Linha de `comissao_extras_listar` (E.1). */
+export interface PontoExtra {
+  id: Uuid
+  funcionario_id: Uuid
+  funcionario_nome: string
+  cargo: string | null
+  data: DataISO
+  pontos: number
+  motivo: string
+  criado_por_nome: string
+  criado_em: InstanteISO
+  /** data dentro de fechamento fechado (não pode excluir) */
+  fechado: boolean
+}
+
+/** Linha de `diarias_listar` (E.2). */
+export interface Diaria {
+  id: Uuid
+  data: DataISO
+  funcionario_id: Uuid | null
+  pessoa_nome: string
+  avulso: boolean
+  funcao: string | null
+  valor_centavos: Centavos
+  observacao: string | null
+  pago: boolean
+  pago_em: DataISO | null
+  criado_por_nome: string
+  criado_em: InstanteISO
+}
+
+export interface ValorDiaria {
+  funcionario_id: Uuid
+  valor_diaria_centavos: Centavos
+}
+
+export interface GastosTotais {
+  diarias_pagas: Centavos
+  diarias_a_pagar: Centavos
+  diarias: Centavos
+  diarias_qtd: number
+  comissoes_fechadas: Centavos
+  comissoes_previstas: Centavos
+  total: Centavos
+  total_com_previsto: Centavos
+}
+
+export interface GastosPessoa {
+  chave: string
+  funcionario_id: Uuid | null
+  nome: string
+  avulso: boolean
+  diarias_qtd: number
+  diarias_pagas: Centavos
+  diarias_a_pagar: Centavos
+  comissoes_fechadas: Centavos
+  comissoes_previstas: Centavos
+  total: Centavos
+}
+
+export interface GastosDia {
+  data: DataISO
+  diarias_pagas: Centavos
+  diarias_a_pagar: Centavos
+  comissoes_fechadas: Centavos
+  comissoes_previstas: Centavos
+  total: Centavos
+}
+
+/** `gastos_periodo` (E.3). */
+export interface GastosPeriodo {
+  empresa_id: Uuid
+  inicio: DataISO
+  fim: DataISO
+  totais: GastosTotais
+  por_pessoa: GastosPessoa[]
+  por_dia: GastosDia[]
+  fechamentos: {
+    id: Uuid
+    titulo: string
+    status: StatusFechamento
+    data_inicio: DataISO
+    data_fim: DataISO
+    base_distribuivel_centavos: Centavos
+  }[]
+}
+
+/** Linha de `reservas_listar` (R.3). `telefone`/`email` = null para leitura. */
+export interface Reserva {
+  id: Uuid
+  origem: OrigemReserva
+  data: DataISO
+  horario: HoraISO | null
+  nome_cliente: string
+  pessoas: number
+  status: StatusReserva
+  area: string | null
+  mesa: string | null
+  observacao: string | null
+  telefone: string | null
+  email: string | null
+  criado_em: InstanteISO
+  atualizado_em: InstanteISO
+}
+
+/** Linha enviada a `reservas_importar`. */
+export interface LinhaImportacaoReserva {
+  id_externo: string | null
+  data: DataISO
+  horario: string | null
+  nome: string
+  pessoas: number | null
+  telefone: string | null
+  email: string | null
+  status: StatusReserva | null
+  area: string | null
+  mesa: string | null
+  observacao: string | null
+}
+
+export interface RetornoImportacaoReservas {
+  lidos: number
+  gravados: number
+  ignorados: number
+  inseridos: number
+  atualizados: number
+  erros: { indice: number; motivo: string }[]
+}
+
+export interface ReservaPainel {
+  id: Uuid
+  horario: HoraISO | null
+  nome_cliente: string
+  pessoas: number
+  status: StatusReserva
+  area: string | null
+  mesa: string | null
+  observacao: string | null
+  origem: OrigemReserva
+  telefone: string | null
 }
 
 // ------------------------------------------------------- retornos de RPC (b2)
@@ -717,6 +931,18 @@ export interface PainelDoDia {
     ultimo_erro: string | null
     executando: boolean
   }[]
+  /** adendo R.4 */
+  reservas?: {
+    total: number
+    pessoas: number
+    canceladas: number
+    nao_compareceu: number
+    sentadas: number
+    tem_tagme: boolean
+    proximas: ReservaPainel[]
+  }
+  /** adendo R.4: null para leitura */
+  ocorrencias?: ResumoOcorrencias | null
 }
 
 // --------------------------------------------------------- mapa das RPCs [api]
@@ -845,6 +1071,122 @@ export interface Rpcs {
   comissao_excluir_rascunho: { args: { p_fechamento: Uuid }; retorno: null }
   // painel (b2)
   painel_do_dia: { args: { p_empresa?: Uuid | null }; retorno: PainelDoDia }
+  // ocorrências (adendo O.4)
+  ocorrencia_criar: {
+    args: {
+      p_funcionario: Uuid
+      p_tipo: TipoOcorrencia
+      p_data: DataISO
+      p_motivo: string
+      p_descricao?: string | null
+      p_dias_suspensao?: number | null
+      p_suspensao_inicio?: DataISO | null
+    }
+    retorno: Uuid
+  }
+  ocorrencia_atualizar: {
+    args: {
+      p_ocorrencia: Uuid
+      p_tipo: TipoOcorrencia
+      p_data: DataISO
+      p_motivo: string
+      p_descricao: string | null
+      p_dias_suspensao?: number | null
+      p_suspensao_inicio?: DataISO | null
+    }
+    retorno: null
+  }
+  ocorrencia_excluir: { args: { p_ocorrencia: Uuid }; retorno: string[] | null }
+  ocorrencia_adicionar_anexo: { args: { p_ocorrencia: Uuid; p_caminho: string; p_nome_arquivo?: string | null }; retorno: Uuid }
+  ocorrencia_remover_anexo: { args: { p_anexo: Uuid }; retorno: string }
+  ocorrencias_listar: { args: { p_funcionario: Uuid }; retorno: Ocorrencia[] }
+  ocorrencias_contagem: { args: { p_funcionario?: Uuid | null; p_empresa?: Uuid | null }; retorno: ContagemOcorrencias[] }
+  ocorrencias_resumo: { args: { p_dias?: number; p_empresa?: Uuid | null }; retorno: ResumoOcorrencias }
+  // extras (adendo E)
+  comissao_extra_lancar: { args: { p_funcionario: Uuid; p_data: DataISO; p_pontos: number; p_motivo: string }; retorno: Uuid }
+  comissao_extra_excluir: { args: { p_extra: Uuid }; retorno: null }
+  comissao_extras_listar: {
+    args: { p_inicio: DataISO; p_fim: DataISO; p_funcionario?: Uuid | null; p_empresa?: Uuid | null }
+    retorno: PontoExtra[]
+  }
+  funcionario_definir_valor_diaria: { args: { p_funcionario: Uuid; p_valor_centavos: Centavos | null }; retorno: null }
+  funcionario_valores_diaria_listar: { args: { p_empresa?: Uuid | null }; retorno: ValorDiaria[] }
+  diaria_lancar: {
+    args: {
+      p_data: DataISO
+      p_funcionario?: Uuid | null
+      p_pessoa_nome?: string | null
+      p_funcao?: string | null
+      p_valor_centavos?: Centavos | null
+      p_observacao?: string | null
+      p_pago?: boolean
+      p_pago_em?: DataISO | null
+      p_empresa?: Uuid | null
+    }
+    retorno: Uuid
+  }
+  diaria_atualizar: {
+    args: {
+      p_diaria: Uuid
+      p_data: DataISO
+      p_funcionario: Uuid | null
+      p_pessoa_nome: string | null
+      p_funcao: string | null
+      p_valor_centavos: Centavos | null
+      p_observacao: string | null
+      p_pago: boolean
+      p_pago_em: DataISO | null
+    }
+    retorno: null
+  }
+  diaria_marcar_paga: { args: { p_diaria: Uuid; p_pago: boolean; p_pago_em?: DataISO | null }; retorno: null }
+  diaria_excluir: { args: { p_diaria: Uuid }; retorno: null }
+  diarias_listar: {
+    args: { p_inicio: DataISO; p_fim: DataISO; p_funcionario?: Uuid | null; p_pago?: boolean | null; p_empresa?: Uuid | null }
+    retorno: Diaria[]
+  }
+  gastos_periodo: { args: { p_inicio: DataISO; p_fim: DataISO; p_empresa?: Uuid | null }; retorno: GastosPeriodo }
+  // reservas (adendo R.3)
+  reserva_criar: {
+    args: {
+      p_data: DataISO
+      p_horario: string | null
+      p_nome_cliente: string
+      p_pessoas?: number
+      p_telefone?: string | null
+      p_area?: string | null
+      p_mesa?: string | null
+      p_observacao?: string | null
+      p_status?: StatusReserva
+      p_email?: string | null
+      p_empresa?: Uuid | null
+    }
+    retorno: Uuid
+  }
+  reserva_atualizar: {
+    args: {
+      p_reserva: Uuid
+      p_data: DataISO
+      p_horario: string | null
+      p_nome_cliente: string
+      p_pessoas: number
+      p_telefone: string | null
+      p_area: string | null
+      p_mesa: string | null
+      p_observacao: string | null
+      p_status: StatusReserva
+      p_email: string | null
+    }
+    retorno: null
+  }
+  reserva_mudar_status: { args: { p_reserva: Uuid; p_status: StatusReserva }; retorno: null }
+  reserva_cancelar: { args: { p_reserva: Uuid }; retorno: null }
+  reserva_excluir: { args: { p_reserva: Uuid }; retorno: null }
+  reservas_listar: {
+    args: { p_inicio: DataISO; p_fim?: DataISO | null; p_status?: StatusReserva[] | null; p_empresa?: Uuid | null }
+    retorno: Reserva[]
+  }
+  reservas_importar: { args: { p_linhas: LinhaImportacaoReserva[]; p_empresa?: Uuid | null }; retorno: RetornoImportacaoReservas }
 }
 
 export type NomeRpc = keyof Rpcs

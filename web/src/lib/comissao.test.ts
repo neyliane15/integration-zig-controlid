@@ -77,6 +77,71 @@ describe('calcularComissao — proporcional aos dias (§9)', () => {
   })
 })
 
+describe('calcularComissao — pontos extras (adendo E.1)', () => {
+  const comExtras = (extras: Record<string, number>) => EQUIPE.map((p) => ({ ...p, pontosExtras: extras[p.nome] ?? 0 }))
+
+  it('vetor 1: sem extras, valores inalterados', () => {
+    const r = calcularComissao({ ...BASE, proporcionalDias: false, participantes: comExtras({}) })
+    expect(valores(r)).toEqual({
+      'Ana Souza': 209_474,
+      'Bruno Lima': 209_474,
+      'Carla Dias': 125_684,
+      'Davi Rocha': 167_579,
+      'Eva Martins': 83_789,
+    })
+  })
+
+  it('vetor 2: proporcional + Carla 1,5 extra (extras não são proporcionalizados)', () => {
+    const r = calcularComissao({ ...BASE, proporcionalDias: true, participantes: comExtras({ 'Carla Dias': 1.5 }) })
+    expect(Object.fromEntries(r.itens.map((i) => [i.nome, i.pontosEfetivos]))).toEqual({
+      'Ana Souza': 10,
+      'Bruno Lima': 10,
+      'Carla Dias': 7.5,
+      'Davi Rocha': 8,
+      'Eva Martins': 2,
+    })
+    expect(r.somaPontosEfetivos).toBe(37.5)
+    expect(valores(r)).toEqual({
+      'Ana Souza': 212_267,
+      'Bruno Lima': 212_267,
+      'Carla Dias': 159_200,
+      'Davi Rocha': 169_813,
+      'Eva Martins': 42_453,
+    })
+    expect(r.totalDistribuidoCentavos).toBe(796_000)
+  })
+
+  it('vetor 3: não proporcional + Eva 1 extra + Fábio só com 3 extras', () => {
+    const r = calcularComissao({
+      ...BASE,
+      proporcionalDias: false,
+      participantes: [
+        ...comExtras({ 'Eva Martins': 1 }),
+        { ...P('Fábio Nunes', 'Garçom', 0, 'a0000000-0000-4000-8000-000000000306'), pontosExtras: 3 },
+      ],
+    })
+    expect(r.somaPontosEfetivos).toBe(42)
+    expect(valores(r)).toEqual({
+      'Ana Souza': 189_524,
+      'Bruno Lima': 189_524,
+      'Carla Dias': 113_714,
+      'Davi Rocha': 151_619,
+      'Eva Martins': 94_762,
+      'Fábio Nunes': 56_857,
+    })
+    expect(r.itens.filter((i) => i.centavoExtra).map((i) => i.nome).sort()).toEqual(['Ana Souza', 'Bruno Lima', 'Eva Martins'])
+  })
+
+  it('não incluído com extras recebe 0', () => {
+    const r = calcularComissao({
+      ...BASE,
+      proporcionalDias: false,
+      participantes: [{ ...P('Ana', '', 0, 'a1', 30, false), pontosExtras: 5 }, P('Bia', '', 1, 'a2')],
+    })
+    expect(valores(r)).toEqual({ Ana: 0, Bia: 796_000 })
+  })
+})
+
 describe('calcularComissao — regras de borda', () => {
   it('ajuste negativo maior que o serviço → bruto 0, tudo zero', () => {
     const r = calcularComissao({ ...BASE, servicoAjusteCentavos: -2_000_000, proporcionalDias: false, participantes: EQUIPE })
@@ -232,10 +297,11 @@ describe('CSV do fechamento — idêntico ao do N8N', () => {
       incluido: i.incluido,
       pontos: i.pontos,
       dias_trabalhados: i.diasTrabalhados,
+      pontos_extras: i.pontosExtras ?? 0,
       pontos_efetivos: i.pontosEfetivos,
       valor_centavos: i.valorCentavos,
     })),
-    { funcionario_nome: 'Zé; "Fora"', cargo: null, incluido: false, pontos: 2.5, dias_trabalhados: 0, pontos_efetivos: 0, valor_centavos: 0 },
+    { funcionario_nome: 'Zé; "Fora"', cargo: null, incluido: false, pontos: 2.5, dias_trabalhados: 0, pontos_extras: 1, pontos_efetivos: 0, valor_centavos: 0 },
   ]
 
   it('bate byte a byte com csvComissao (n8n/comum/lib/csv.mjs)', async () => {
@@ -265,10 +331,32 @@ describe('CSV do fechamento — idêntico ao do N8N', () => {
       'Status;Fechado',
       '',
     ])
-    expect(linhas[10]).toBe('Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos efetivos;Valor (R$)')
-    expect(linhas[11]).toBe('Ana Souza;Garçom;Sim;10;30;10;2094,74')
-    expect(linhas[16]).toBe('"Zé; ""Fora""";;Não;2,5;0;0;0,00')
-    expect(linhas[17]).toBe('Total;;;38;;38;7960,00')
+    expect(linhas[10]).toBe('Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos extras;Pontos efetivos;Valor (R$)')
+    expect(linhas[11]).toBe('Ana Souza;Garçom;Sim;10;30;0;10;2094,74')
+    expect(linhas[16]).toBe('"Zé; ""Fora""";;Não;2,5;0;1;0;0,00')
+    expect(linhas[17]).toBe('Total;;;38;;0;38;7960,00')
+  })
+
+  it('coluna Pontos extras com extras (1,5 e 3) e total dos incluídos', () => {
+    const r2 = calcularComissao({
+      ...BASE,
+      proporcionalDias: true,
+      participantes: EQUIPE.map((p) => ({ ...p, pontosExtras: p.nome === 'Carla Dias' ? 1.5 : p.nome === 'Davi Rocha' ? 3 : 0 })),
+    })
+    const itens2 = r2.itens.map((i) => ({
+      funcionario_nome: i.nome,
+      cargo: i.cargo ?? null,
+      incluido: i.incluido,
+      pontos: i.pontos,
+      dias_trabalhados: i.diasTrabalhados,
+      pontos_extras: i.pontosExtras ?? 0,
+      pontos_efetivos: i.pontosEfetivos,
+      valor_centavos: i.valorCentavos,
+    }))
+    const linhas = csvComissao(fechamento, itens2, 'Bar').conteudo.split('\r\n')
+    expect(linhas[13]?.startsWith('Carla Dias;Cumim;Sim;6;30;1,5;7,5;')).toBe(true)
+    expect(linhas[14]?.startsWith('Davi Rocha;Bartender;Sim;8;30;3;11;')).toBe(true)
+    expect(linhas[16]).toBe('Total;;;38;;4,5;40,5;7960,00')
   })
 
   it('numeroCsv', () => {
