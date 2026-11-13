@@ -214,6 +214,13 @@ function verificarArquivo(p, nomesVistos) {
     if (porNome.has(n.name)) erro(arq, `nome de nó repetido: "${n.name}"`)
     porNome.set(n.name, n)
     if (typeof n.type !== 'string' || !n.type) erro(arq, `${onde} sem type`)
+    // O N8N atual ignora workflowId em string no Execute Workflow ("No information about the workflow to execute").
+    if (n.type === 'n8n-nodes-base.executeWorkflow' && n.parameters?.source !== 'parameter') {
+      const wid = n.parameters?.workflowId
+      if (!wid || typeof wid !== 'object' || !wid.__rl || (n.typeVersion ?? 1) < 1.2) {
+        erro(arq, `${onde}: Execute Workflow precisa de typeVersion ≥ 1.2 e workflowId no formato {__rl, value, mode}`)
+      }
+    }
     if (typeof n.typeVersion !== 'number') erro(arq, `${onde} sem typeVersion numérico`)
     if (!Array.isArray(n.position) || n.position.length !== 2) erro(arq, `${onde} sem position [x, y]`)
     if (!n.parameters || typeof n.parameters !== 'object') erro(arq, `${onde} sem parameters`)

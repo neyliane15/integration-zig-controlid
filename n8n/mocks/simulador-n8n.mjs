@@ -222,7 +222,9 @@ async function executarNo(no, entrada, dados, ctx, execucaoId) {
   if (t === 'n8n-nodes-base.executeWorkflow') {
     const out = []
     for (const it of entrada) {
-      const id = avaliar(no.parameters.workflowId, it, env)
+      // typeVersion ≥ 1.2 usa resource locator ({__rl, value, mode}); o N8N atual não aceita mais a string pura.
+      const wf = no.parameters.workflowId
+      const id = avaliar(wf && typeof wf === 'object' ? wf.value : wf, it, env)
       const sub = ctx.workflows[id]
       if (!sub) throw new Error(`Workflow ${id} não encontrado`)
       const r = await executarWorkflow(sub, [{ json: it.json }], ctx)
