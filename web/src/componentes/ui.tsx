@@ -1,7 +1,7 @@
 /**
  * Design system — componentes compartilhados (contrato §14.5).
  * Dono: frontend-1. As PROPS são contrato: frontend-2 usa estes componentes em paralelo.
- * Estética: azul-noite, cartões marinho com borda sutil, dourado como acento (não enfeite), títulos em Fraunces.
+ * Estética: creme + verde-oliva + terracota (claro e escuro), cartões com borda sutil, acento sem enfeite, títulos em Fraunces.
  */
 import {
   forwardRef,

@@ -48,10 +48,10 @@ function BlocoUsuario() {
   )
 }
 
-const OPCOES_TEMA: { id: Tema; rotulo: string; icone: typeof Sun }[] = [
-  { id: 'claro', rotulo: 'Claro', icone: Sun },
-  { id: 'escuro', rotulo: 'Escuro', icone: Moon },
-  { id: 'auto', rotulo: 'Automático', icone: Monitor },
+const OPCOES_TEMA: { id: Tema; rotulo: string; curto: string; icone: typeof Sun }[] = [
+  { id: 'claro', rotulo: 'Claro', curto: 'Claro', icone: Sun },
+  { id: 'escuro', rotulo: 'Escuro', curto: 'Escuro', icone: Moon },
+  { id: 'auto', rotulo: 'Automático (do sistema)', curto: 'Auto', icone: Monitor },
 ]
 
 function AlternadorTema() {
@@ -64,6 +64,7 @@ function AlternadorTema() {
           type="button"
           role="radio"
           aria-checked={tema === o.id}
+          aria-label={`Tema ${o.rotulo.toLowerCase()}`}
           title={`Tema ${o.rotulo.toLowerCase()}`}
           onClick={() => definir(o.id)}
           className={clsx(
@@ -73,7 +74,7 @@ function AlternadorTema() {
           )}
         >
           <o.icone aria-hidden className="size-3.5" />
-          {o.rotulo}
+          {o.curto}
         </button>
       ))}
     </div>

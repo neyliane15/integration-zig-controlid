@@ -1,6 +1,6 @@
 /**
  * Moldura das telas de acesso (login, recuperar, criar conta, começar). Dono: frontend-1.
- * Cartão central de 420px no fundo azul-noite; sobrancelha dourada; título serifado em duas linhas.
+ * Cartão central de 420px no fundo creme (ou oliva-escuro no modo escuro); sobrancelha no acento; título serifado em duas linhas.
  */
 import { forwardRef, useState, type InputHTMLAttributes, type ReactNode } from 'react'
 import clsx from 'clsx'
@@ -96,6 +96,6 @@ export function AlertaAcesso({ tom = 'perigo', children }: { tom?: 'perigo' | 's
   )
 }
 
-/** Classes dos links do rodapé: lavanda sublinhado (secundário) e dourado (ação). */
+/** Classes dos links do rodapé: texto secundário sublinhado e acento verde-oliva (ação). */
 export const LINK_SECUNDARIO = clsx('rounded text-lavanda underline decoration-lavanda/60 hover:text-creme', FOCO)
 export const LINK_OURO = clsx('rounded font-bold text-ouro hover:text-ouro-claro', FOCO)
