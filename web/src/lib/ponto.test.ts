@@ -255,3 +255,13 @@ describe('lerDuracao', () => {
   ])('%s → %i', (t, m) => expect(lerDuracao(t)).toBe(m))
   it.each(['', 'abc', '1h75', '1:7', '10:99'])('%s → null', (t) => expect(lerDuracao(t)).toBeNull())
 })
+
+describe('suspensão (adendo O.3)', () => {
+  it('rótulos e situação não problemática', async () => {
+    const { rotuloSituacaoDia, rotuloTipoAbono } = await import('./rotulos')
+    const { situacaoProblematica } = await import('./ponto')
+    expect(rotuloSituacaoDia.suspenso).toBe('Suspenso')
+    expect(rotuloTipoAbono.suspensao).toBe('Suspensão')
+    expect(situacaoProblematica('suspenso')).toBe(false)
+  })
+})

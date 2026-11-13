@@ -4,20 +4,20 @@ import { campoCsv, gerarCsv, centavosCsv, minutosCsv, dataCsv, numeroCsv, slug, 
 
 const { test } = process.env.VITEST ? await import('vitest') : await import('node:test')
 
-// Vetor do contrato §9 (como sairia de ingestao_fechamento_exportar).
+// Vetor V1 do adendo E.3.3 (modo diário; como sairia de ingestao_fechamento_exportar).
 const FECHAMENTO = {
   fechamento: {
-    id: 'f1', empresa_nome: 'Bar Bossa Nova', titulo: 'Comissão 01/09 a 30/09/2026', data_inicio: '2026-09-01', data_fim: '2026-09-30',
-    status: 'fechado', servico_zig_centavos: 1000000, servico_ajuste_centavos: -5000, servico_bruto_centavos: 995000,
-    percentual_retencao: 20, retencao_centavos: 199000, base_distribuivel_centavos: 796000, valor_ponto_centavos: 20947.368421,
+    id: 'f1', empresa_nome: 'Bar Bossa Nova', titulo: 'Comissão 01/09 a 03/09/2026', data_inicio: '2026-09-01', data_fim: '2026-09-03',
+    status: 'fechado', modo_rateio: 'diario', servico_zig_centavos: 180001, servico_ajuste_centavos: 0, servico_bruto_centavos: 180001,
+    percentual_retencao: 20, retencao_centavos: 36000, base_distribuivel_centavos: 144001, valor_ponto_centavos: 1788.832298,
+    dias_sem_presenca: 1, dias_sem_participantes: 0,
   },
   itens: [
-    { funcionario_nome: 'Ana Souza', cargo: 'Garçom', incluido: true, pontos: 10, dias_trabalhados: 30, pontos_efetivos: 10, valor_centavos: 209474 },
-    { funcionario_nome: 'Bruno Lima', cargo: 'Garçom', incluido: true, pontos: 10, dias_trabalhados: 30, pontos_efetivos: 10, valor_centavos: 209474 },
-    { funcionario_nome: 'Carla Dias', cargo: 'Cumim', incluido: true, pontos: 6, dias_trabalhados: 30, pontos_efetivos: 6, valor_centavos: 125684 },
-    { funcionario_nome: 'Davi Rocha', cargo: 'Bartender', incluido: true, pontos: 8, dias_trabalhados: 30, pontos_efetivos: 8, valor_centavos: 167579 },
-    { funcionario_nome: 'Eva Martins', cargo: 'Cozinha', incluido: true, pontos: 4, dias_trabalhados: 15, pontos_efetivos: 4, valor_centavos: 83789 },
-    { funcionario_nome: 'Fulano "Zé"; Silva', cargo: null, incluido: false, pontos: 2.5, dias_trabalhados: 0, pontos_efetivos: 0, valor_centavos: 0 },
+    { funcionario_nome: 'Ana Souza', tipo: 'funcionario', cargo: 'Garçom', incluido: true, pontos: 10, dias_presentes: 2, dias_trabalhados: 2, pontos_efetivos: 30, valor_centavos: 52060 },
+    { funcionario_nome: 'Bruno Lima', tipo: 'funcionario', cargo: 'Garçom', incluido: true, pontos: 10, dias_presentes: 1, dias_trabalhados: 1, pontos_efetivos: 20, valor_centavos: 35037 },
+    { funcionario_nome: 'Carla Dias', tipo: 'funcionario', cargo: 'Cumim', incluido: true, pontos: '6.00', dias_presentes: 2, dias_trabalhados: 2, pontos_efetivos: 18, valor_centavos: 31235 },
+    { funcionario_nome: 'Marcos Freitas', tipo: 'extra', cargo: 'Garçom', incluido: true, pontos: '6.25', dias_presentes: 2, dias_trabalhados: 2, pontos_efetivos: 12.5, valor_centavos: 25669 },
+    { funcionario_nome: 'Fulano "Zé"; Silva', tipo: 'funcionario', cargo: null, incluido: false, pontos: 2.5, dias_presentes: 0, dias_trabalhados: 0, pontos_efetivos: 0, valor_centavos: 0 },
   ],
 }
 
@@ -55,25 +55,37 @@ test('formatadores', () => {
   assert.equal(nomeArquivoCsv('ponto', 'X', '2026-09-01', '2026-09-01'), 'ponto_x_2026-09-01.csv')
 })
 
-test('csvComissao: vetor do §9', () => {
+test('csvComissao: vetor V1 (modo diário, adendo E.4)', () => {
   const r = csvComissao(FECHAMENTO)
-  assert.equal(r.nome, 'comissao_bar-bossa-nova_2026-09-01_2026-09-30.csv')
-  assert.equal(r.linhas, 6)
+  assert.equal(r.nome, 'comissao_bar-bossa-nova_2026-09-01_2026-09-03.csv')
+  assert.equal(r.linhas, 5)
   const linhas = r.conteudo.split('\r\n')
-  assert.ok(r.conteudo.startsWith('﻿Período;01/09/2026 a 30/09/2026\r\n'))
+  assert.ok(r.conteudo.startsWith('\ufeffPeríodo;01/09/2026 a 03/09/2026\r\n'))
   assert.ok(r.conteudo.endsWith('\r\n'))
-  assert.deepEqual(linhas.slice(1, 10), [
-    'Serviço Zig (R$);10000,00', 'Ajuste (R$);-50,00', 'Serviço bruto (R$);9950,00', 'Retenção (%);20', 'Retenção (R$);1990,00',
-    'Base distribuível (R$);7960,00', 'Valor do ponto (R$);209,47', 'Status;Fechado', '',
+  assert.deepEqual(linhas.slice(1, 12), [
+    'Modo de rateio;Diário', 'Serviço Zig (R$);1800,01', 'Ajuste (R$);0,00', 'Serviço bruto (R$);1800,01', 'Retenção (%);20',
+    'Retenção (R$);360,00', 'Base distribuível (R$);1440,01', 'Valor do ponto (R$);17,89', 'Status;Fechado', 'Dias sem presença registrada;1', '',
   ])
-  assert.equal(linhas[10], 'Funcionário;Cargo;Incluído;Pontos;Dias trabalhados;Pontos efetivos;Valor (R$)')
-  assert.equal(linhas[11], 'Ana Souza;Garçom;Sim;10;30;10;2094,74')
-  assert.equal(linhas[14], 'Davi Rocha;Bartender;Sim;8;30;8;1675,79')
-  assert.equal(linhas[16], '"Fulano ""Zé""; Silva";;Não;2,5;0;0;0,00')
-  assert.equal(linhas[17], 'Total;;;38;;38;7960,00')
-  // Σ valores = base
-  const soma = FECHAMENTO.itens.reduce((s, i) => s + i.valor_centavos, 0)
-  assert.equal(soma, 796000)
+  assert.equal(linhas[12], 'Participante;Tipo;Cargo;Incluído;Pontos;Dias presentes;Valor (R$)')
+  assert.equal(linhas[13], 'Ana Souza;Funcionário;Garçom;Sim;10;2;520,60')
+  assert.equal(linhas[15], 'Carla Dias;Funcionário;Cumim;Sim;6;2;312,35')
+  assert.equal(linhas[16], 'Marcos Freitas;Extra;Garçom;Sim;6,25;2;256,69')
+  assert.equal(linhas[17], '"Fulano ""Zé""; Silva";Funcionário;;Não;2,5;0;0,00')
+  assert.equal(linhas[18], 'Total;;;;32,25;7;1440,01')
+  assert.equal(FECHAMENTO.itens.reduce((s, i) => s + i.valor_centavos, 0), 144001)
+})
+
+test('csvComissao: modo período (sem a linha de dias sem presença); dias_trabalhados como reserva', () => {
+  const itens = FECHAMENTO.itens.map(({ dias_presentes, ...i }) => i)
+  const linhas = csvComissao({ fechamento: { ...FECHAMENTO.fechamento, modo_rateio: 'periodo' }, itens }).conteudo.split('\r\n')
+  assert.equal(linhas[1], 'Modo de rateio;Por período')
+  assert.equal(linhas[10], '')
+  assert.equal(linhas[11], 'Participante;Tipo;Cargo;Incluído;Pontos;Dias presentes;Valor (R$)')
+  assert.equal(linhas[12], 'Ana Souza;Funcionário;Garçom;Sim;10;2;520,60')
+  // sem modo (fechamento antigo) = por período
+  const antigo = csvComissao({ fechamento: { ...FECHAMENTO.fechamento, modo_rateio: undefined }, itens: [] }).conteudo.split('\r\n')
+  assert.equal(antigo[1], 'Modo de rateio;Por período')
+  assert.equal(antigo[12], 'Total;;;;0;0;0,00')
 })
 
 test('csvComissao: sem participantes → valor do ponto vazio', () => {

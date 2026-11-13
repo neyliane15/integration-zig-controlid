@@ -5,6 +5,8 @@ import { NavLink } from 'react-router-dom'
 import clsx from 'clsx'
 import {
   Building2,
+  CalendarCheck,
+  HandCoins,
   type LucideIcon,
   Clock,
   Coins,
@@ -37,8 +39,10 @@ export const ITENS_MENU: ItemMenu[] = [
   { rotulo: 'Ponto', para: '/ponto', icone: Clock, grupo: 'Dia a dia', permitir: todos, atalho: true },
   { rotulo: 'Banco de horas', para: '/banco-de-horas', icone: Hourglass, grupo: 'Dia a dia', permitir: todos },
   { rotulo: 'Funcionários', para: '/funcionarios', icone: Users, grupo: 'Dia a dia', permitir: todos },
+  { rotulo: 'Reservas', para: '/reservas', icone: CalendarCheck, grupo: 'Dia a dia', permitir: todos },
   { rotulo: 'Vendas', para: '/vendas', icone: Receipt, grupo: 'Loja', permitir: todos, atalho: true },
   { rotulo: 'Comissões', para: '/comissoes', icone: Coins, grupo: 'Loja', permitir: podeVerComissoes },
+  { rotulo: 'Extras', para: '/extras', icone: HandCoins, grupo: 'Loja', permitir: podeOperar },
   { rotulo: 'Tarefas', para: '/tarefas', icone: ListChecks, grupo: 'Loja', permitir: todos, atalho: true },
   { rotulo: 'Integrações', para: '/integracoes', icone: PlugZap, grupo: 'Ajustes', permitir: podeOperar },
   { rotulo: 'Configurações', para: '/configuracoes', icone: Settings, grupo: 'Ajustes', permitir: podeOperar },

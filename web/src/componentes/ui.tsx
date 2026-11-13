@@ -273,6 +273,7 @@ export function EntradaData({
   max,
   id,
   rotulo,
+  desabilitado,
 }: {
   valor: string | null
   aoMudar(v: string | null): void
@@ -281,11 +282,13 @@ export function EntradaData({
   id?: string
   /** nome acessível quando não há <label> (revisão 2) */
   rotulo?: string
+  desabilitado?: boolean
 }) {
   return (
     <Entrada
       id={id}
       aria-label={rotulo}
+      disabled={desabilitado}
       type="date"
       className="numero [color-scheme:dark]"
       value={valor ?? ''}
@@ -677,6 +680,81 @@ export function Abas<T extends string>({
                 {a.contador}
               </span>
             )}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------- mídia
+/** true enquanto a media query casar (ex.: `useMidia('(min-width: 768px)')`). Sem matchMedia (testes): `padrao`. */
+export function useMidia(consulta: string, padrao = true): boolean {
+  const ler = () => (typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(consulta).matches : padrao)
+  const [casa, setCasa] = useState(ler)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const m = window.matchMedia(consulta)
+    const mudar = () => setCasa(m.matches)
+    mudar()
+    m.addEventListener('change', mudar)
+    return () => m.removeEventListener('change', mudar)
+  }, [consulta])
+  return casa
+}
+
+// ---------------------------------------------------------- Opções em pílula
+/** Escolha única em pílulas (role radiogroup); setas ←/→ mudam a escolha. */
+export function Pilulas<T extends string>({
+  opcoes,
+  valor,
+  aoMudar,
+  rotulo,
+  desabilitado,
+}: {
+  opcoes: { id: NoInfer<T>; rotulo: ReactNode }[]
+  valor: T
+  aoMudar(v: T): void
+  /** nome acessível do grupo */
+  rotulo: string
+  desabilitado?: boolean
+}) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([])
+  function teclado(e: KeyboardEventReact, i: number) {
+    const delta = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+    if (!delta) return
+    e.preventDefault()
+    const j = (i + delta + opcoes.length) % opcoes.length
+    const alvo = opcoes[j]
+    if (alvo) {
+      aoMudar(alvo.id)
+      refs.current[j]?.focus()
+    }
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label={rotulo}>
+      {opcoes.map((o, i) => {
+        const sel = o.id === valor
+        return (
+          <button
+            key={o.id}
+            ref={(el) => {
+              refs.current[i] = el
+            }}
+            type="button"
+            role="radio"
+            aria-checked={sel}
+            tabIndex={sel ? 0 : -1}
+            disabled={desabilitado}
+            onClick={() => aoMudar(o.id)}
+            onKeyDown={(e) => teclado(e, i)}
+            className={clsx(
+              'min-h-9 rounded-pilula border px-3.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+              FOCO,
+              sel ? 'border-ouro/60 bg-ouro/10 text-ouro-claro' : 'border-borda text-lavanda hover:text-creme',
+            )}
+          >
+            {o.rotulo}
           </button>
         )
       })}

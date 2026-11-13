@@ -1,8 +1,102 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 09 DE 11.
+-- Meu Dia de Gerente — instalação do banco, PARTE 09 DE 15.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000210_zig.sql, 20261006000220_comissoes.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql, 20261006000210_zig.sql, 20261006000220_comissoes.sql. Não edite à mão.
 
 begin;
+comment on function public.banco_horas_lancar(uuid, date, text, integer, text) is '[api] Lança ajuste/compensação/pagamento (saldo inicial só administrador).';
+
+create or replace function public.banco_horas_excluir_lancamento(p_lancamento uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  select l.empresa_id into v_empresa from public.banco_horas_lancamentos l where l.id = p_lancamento;
+  if v_empresa is null then raise exception 'Lançamento não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_administrar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  delete from public.banco_horas_lancamentos where id = p_lancamento;
+end $$;
+comment on function public.banco_horas_excluir_lancamento(uuid) is '[api] Exclui lançamento do banco de horas (administrador).';-- =====================================================================================================
+-- 20261006000210_zig.sql — backend-2
+-- Zig: lojas, itens vendidos (saída de produtos), faturamento, bandeiras, compradores e RPCs de vendas.
+-- Contrato: §6 (DDL), §8 (regras), §10.5 (RPCs). Idempotente.
+-- =====================================================================================================
+
+-- ===================================================================== zig_lojas
+create table if not exists public.zig_lojas (
+  id               uuid primary key default gen_random_uuid(),
+  empresa_id       uuid not null references public.empresas (id) on delete cascade,
+  integracao_id    uuid not null references public.integracoes (id) on delete cascade,
+  loja_id_externo  text not null,
+  nome             text not null,
+  sincronizar      boolean not null default true,
+  visto_em         timestamptz not null default now(),
+  criado_em        timestamptz not null default now(),
+  unique (empresa_id, loja_id_externo)
+);
+create index if not exists zig_lojas_integracao_idx on public.zig_lojas (integracao_id);
+comment on table public.zig_lojas is '[api:crud] Lojas da Zig. authenticated (administrador) só altera `sincronizar`.';
+
+-- ============================================================== zig_vendas_itens
+create table if not exists public.zig_vendas_itens (
+  id                 bigint generated always as identity primary key,
+  empresa_id         uuid not null references public.empresas (id) on delete cascade,
+  loja_id_externo    text not null,
+  data_operacao      date not null,
+  transaction_id     text not null,
+  transaction_date   timestamptz,
+  event_id           text,
+  event_date         date,
+  invoice_id         text,
+  product_id         text,
+  product_sku        text,
+  product_name       text,
+  product_category   text,
+  tipo               text not null check (tipo in ('Normal', 'Couvert', 'ZigCard', 'Entrance', 'Tip', 'Outro')),
+  tipo_original      text,
+  unit_value         bigint not null default 0,
+  quantidade         numeric(14,3) not null default 0,
+  fractional_amount  numeric(14,3),
+  fraction_unit      text,
+  discount_value     bigint not null default 0,
+  valor_total        bigint not null,
+  employee_name      text,
+  additions          jsonb not null default '[]'::jsonb,
+  importado_em       timestamptz not null default now()
+);
+create index if not exists zig_vendas_itens_dia_idx on public.zig_vendas_itens (empresa_id, data_operacao, loja_id_externo);
+create index if not exists zig_vendas_itens_garcom_idx on public.zig_vendas_itens (empresa_id, lower(btrim(employee_name)));
+comment on table public.zig_vendas_itens is '[api:leitura] Itens de /erp/saida-produtos (centavos). Tip = serviço.';
+
+-- =============================================================== zig_faturamento
+create table if not exists public.zig_faturamento (
+  id               bigint generated always as identity primary key,
+  empresa_id       uuid not null references public.empresas (id) on delete cascade,
+  loja_id_externo  text not null,
+  data_operacao    date not null,
+  event_id         text,
+  event_date       date,
+  payment_id       int not null,
+  payment_name     text not null,
+  valor            bigint not null,
+  importado_em     timestamptz not null default now()
+);
+create index if not exists zig_faturamento_dia_idx on public.zig_faturamento (empresa_id, data_operacao, loja_id_externo);
+comment on table public.zig_faturamento is '[api:leitura] Faturamento por forma de pagamento (/erp/faturamento), centavos.';
+
+create table if not exists public.zig_faturamento_bandeiras (
+  id               bigint generated always as identity primary key,
+  empresa_id       uuid not null references public.empresas (id) on delete cascade,
+  loja_id_externo  text not null,
+  data_operacao    date not null,
+  event_id         text,
+  payment_id       int not null,
+  payment_name     text,
+  card_brand       text,
+  valor            bigint not null,
+  importado_em     timestamptz not null default now()
+);
+create index if not exists zig_bandeiras_dia_idx on public.zig_faturamento_bandeiras (empresa_id, data_operacao, loja_id_externo);
+comment on table public.zig_faturamento_bandeiras is '[api:leitura] Faturamento por bandeira (/erp/faturamento/detalhesMaquinaIntegrada).';
+
 create table if not exists public.zig_compradores (
   id               bigint generated always as identity primary key,
   empresa_id       uuid not null references public.empresas (id) on delete cascade,
@@ -164,7 +258,7 @@ end $$;
 comment on function public.vendas_por_garcom(date, date, text, uuid) is '[api] Vendas e serviço por garçom (employeeName da Zig).';-- =====================================================================================================
 -- 20261006000220_comissoes.sql — backend-2
 -- Comissão: serviço (Tips da Zig) − retenção = base; rateio por pontos com maior resto; rascunho → fechado (imutável).
--- Contrato: §6 (DDL), §9 (regras), §10.6 (RPCs). Idempotente.
+-- Contrato: §6 (DDL), §9 (regras), §10.6 (RPCs); adendo extras v2 §E.3 (rateio diário, extras). Idempotente.
 -- =====================================================================================================
 
 create table if not exists public.comissao_fechamentos (
@@ -218,6 +312,64 @@ create index if not exists comissao_itens_empresa_idx on public.comissao_itens (
 create index if not exists comissao_itens_funcionario_idx on public.comissao_itens (funcionario_id);
 comment on table public.comissao_itens is '[api:leitura] Itens (participantes) de um fechamento de comissão.';
 
+-- ================================================================ adendo extras v2 (E.3): rateio diário
+-- Fechamentos existentes ficam 'periodo' (coluna criada com esse default); novos nascem 'diario'.
+alter table public.comissao_fechamentos add column if not exists modo_rateio text not null default 'periodo';
+alter table public.comissao_fechamentos alter column modo_rateio set default 'diario';
+alter table public.comissao_fechamentos drop constraint if exists comissao_fechamentos_modo_rateio_check;
+alter table public.comissao_fechamentos add constraint comissao_fechamentos_modo_rateio_check
+  check (modo_rateio in ('diario', 'periodo'));
+alter table public.comissao_fechamentos add column if not exists dias_sem_presenca int not null default 0;
+alter table public.comissao_fechamentos add column if not exists dias_sem_participantes int not null default 0;
+
+-- Participante = funcionário OU extra (freela). Nome/cargo do participante: snapshot em funcionario_nome/cargo.
+-- FK de extra_id → extras e o check de participante ficam em …0260_extras.sql (a tabela extras nasce lá).
+alter table public.comissao_itens add column if not exists tipo text not null default 'funcionario';
+alter table public.comissao_itens drop constraint if exists comissao_itens_tipo_check;
+alter table public.comissao_itens add constraint comissao_itens_tipo_check check (tipo in ('funcionario', 'extra'));
+alter table public.comissao_itens add column if not exists extra_id uuid;
+alter table public.comissao_itens add column if not exists dias_presentes int not null default 0;
+alter table public.comissao_itens add column if not exists pontos_manual boolean not null default false;
+create unique index if not exists comissao_itens_extra_uk on public.comissao_itens (fechamento_id, extra_id);
+create index if not exists comissao_itens_extra_idx on public.comissao_itens (extra_id);
+
+-- v1 (removido): pontos extras de comissão. DROPs idempotentes para quem já rodou a v1.
+drop table if exists public.comissao_pontos_extras cascade;
+alter table public.comissao_itens drop column if exists pontos_extras;
+
+-- Detalhe do rateio diário (só no modo 'diario'; recalcular o rascunho apaga e regrava).
+create table if not exists public.comissao_rateio_dias (
+  fechamento_id           uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id              uuid not null references public.empresas (id) on delete cascade,
+  data                    date not null,
+  servico_zig_centavos    bigint not null default 0,
+  ajuste_centavos         bigint not null default 0,
+  servico_bruto_centavos  bigint not null default 0,
+  retencao_centavos       bigint not null default 0,
+  base_centavos           bigint not null default 0,
+  soma_pontos             numeric(18,2) not null default 0,
+  participantes           int not null default 0,
+  sem_presenca            boolean not null default false,
+  sem_participantes       boolean not null default false,
+  primary key (fechamento_id, data)
+);
+create index if not exists comissao_rateio_dias_empresa_idx on public.comissao_rateio_dias (empresa_id, data);
+comment on table public.comissao_rateio_dias is '[api:leitura] Rateio diário da comissão: serviço, ajuste, retenção e base de cada dia.';
+
+create table if not exists public.comissao_rateio_itens_dia (
+  item_id         uuid not null references public.comissao_itens (id) on delete cascade,
+  fechamento_id   uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id      uuid not null references public.empresas (id) on delete cascade,
+  data            date not null,
+  pontos          numeric(8,2) not null,
+  valor_centavos  bigint not null default 0,
+  fallback        boolean not null default false,
+  primary key (item_id, data)
+);
+create index if not exists comissao_rateio_itens_dia_fechamento_idx on public.comissao_rateio_itens_dia (fechamento_id, data);
+create index if not exists comissao_rateio_itens_dia_empresa_idx on public.comissao_rateio_itens_dia (empresa_id, data);
+comment on table public.comissao_rateio_itens_dia is '[api:leitura] Rateio diário da comissão: pontos e valor de cada participante em cada dia.';
+
 alter table public.comissao_fechamentos enable row level security;
 alter table public.comissao_itens enable row level security;
 drop policy if exists comissao_fechamentos_ler on public.comissao_fechamentos;
@@ -225,6 +377,14 @@ create policy comissao_fechamentos_ler on public.comissao_fechamentos for select
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
 drop policy if exists comissao_itens_ler on public.comissao_itens;
 create policy comissao_itens_ler on public.comissao_itens for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+alter table public.comissao_rateio_dias enable row level security;
+alter table public.comissao_rateio_itens_dia enable row level security;
+drop policy if exists comissao_rateio_dias_ler on public.comissao_rateio_dias;
+create policy comissao_rateio_dias_ler on public.comissao_rateio_dias for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+drop policy if exists comissao_rateio_itens_dia_ler on public.comissao_rateio_itens_dia;
+create policy comissao_rateio_itens_dia_ler on public.comissao_rateio_itens_dia for select to authenticated
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
 
 -- ================================================================ gatilhos
@@ -288,7 +448,7 @@ begin
       return old;
     end if;
     if tg_op = 'UPDATE' and pg_trigger_depth() > 1
-       and public.comissao_so_anula_fks(to_jsonb(old), to_jsonb(new), array['funcionario_id']) then
+       and public.comissao_so_anula_fks(to_jsonb(old), to_jsonb(new), array['funcionario_id', 'extra_id']) then
       return new;
     end if;
     raise exception 'Fechamento já está fechado' using errcode = '22023';
@@ -304,212 +464,41 @@ drop trigger if exists a_protecao on public.comissao_itens;
 create trigger a_protecao before insert or update or delete on public.comissao_itens
   for each row execute function public.comissao_itens_protecao();
 
--- ================================================================ cálculo (§9)
-create or replace function public.comissao_pontos_vigentes(p_funcionario uuid, p_data date)
-returns numeric language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  select coalesce(
-    (select fp.pontos from public.funcionario_pontos fp
-      where fp.funcionario_id = p_funcionario and fp.vigente_desde <= p_data order by fp.vigente_desde desc limit 1),
-    (select fp.pontos from public.funcionario_pontos fp
-      where fp.funcionario_id = p_funcionario order by fp.vigente_desde limit 1),
-    (select f.pontos_comissao from public.funcionarios f where f.id = p_funcionario))
-$$;
-comment on function public.comissao_pontos_vigentes(uuid, date) is '[interno] Mesma regra de pontos_vigentes (§5), sem checagem de papel.';
-
-create or replace function public.comissao_calcular(p_fechamento uuid)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  fc        record;
-  v_zig     bigint;
-  v_bruto   bigint;
-  v_ret     bigint;
-  v_base    bigint;
-  v_dias    int;
-  v_soma    numeric;
-  v_resto   bigint;
+-- Detalhe do rateio: segue o status do fechamento (fechado = imutável); empresa_id do fechamento.
+create or replace function public.comissao_rateio_protecao()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_status text; v_empresa uuid; v_fech uuid;
 begin
-  select * into fc from public.comissao_fechamentos where id = p_fechamento for update;
-  if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-  if fc.status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
-
-  -- 1–3. serviço, retenção, base
-  select coalesce(sum(i.valor_total), 0) into v_zig
-    from public.zig_vendas_itens i
-   where i.empresa_id = fc.empresa_id and i.tipo = 'Tip'
-     and i.data_operacao between fc.data_inicio and fc.data_fim
-     and (fc.loja_id_externo is null or i.loja_id_externo = fc.loja_id_externo);
-  v_bruto := greatest(0, v_zig + fc.servico_ajuste_centavos);
-  v_ret := round(v_bruto::numeric * fc.percentual_retencao / 100);
-  v_base := v_bruto - v_ret;
-  v_dias := fc.data_fim - fc.data_inicio + 1;
-
-  -- 5–6. dias trabalhados e pontos efetivos
-  update public.comissao_itens it
-     set dias_trabalhados = case when it.funcionario_id is null then it.dias_trabalhados
-                                 else (select count(*) from public.ponto_dias d
-                                        where d.funcionario_id = it.funcionario_id
-                                          and d.data between fc.data_inicio and fc.data_fim
-                                          and d.batidas_validas > 0) end
-   where it.fechamento_id = p_fechamento;
-  update public.comissao_itens it
-     set pontos_efetivos = case when not it.incluido then 0
-                                when fc.proporcional_dias then round(it.pontos * it.dias_trabalhados / v_dias, 6)
-                                else it.pontos end
-   where it.fechamento_id = p_fechamento;
-
-  select coalesce(sum(it.pontos_efetivos), 0) into v_soma from public.comissao_itens it where it.fechamento_id = p_fechamento;
-
-  if v_soma = 0 then
-    update public.comissao_itens set valor_centavos = 0 where fechamento_id = p_fechamento;
-  else
-    -- 9. maior resto — aritmética EXATA: piso = div(base × pe, soma) e resto = mod(base × pe, soma)
-    -- (mesmo denominador para todos, então comparar o resto inteiro = comparar a parte fracionária; a divisão
-    -- numérica com escala finita podia arredondar o piso para cima em valores extremos).
-    -- Desempate por nome com collate "C" (ordem de código de caractere, igual à prévia do front em
-    -- web/src/lib/comissao.ts), independente da collation do banco do Supabase.
-    with c as (
-      select it.id, div(v_base * it.pontos_efetivos, v_soma) as piso
-        from public.comissao_itens it where it.fechamento_id = p_fechamento
-    )
-    update public.comissao_itens it set valor_centavos = c.piso::bigint
-      from c where it.id = c.id;
-    select v_base - coalesce(sum(valor_centavos), 0) into v_resto
-      from public.comissao_itens where fechamento_id = p_fechamento;
-    with ordem as (
-      select it.id
-        from public.comissao_itens it
-       where it.fechamento_id = p_fechamento and it.pontos_efetivos > 0
-       order by mod(v_base * it.pontos_efetivos, v_soma) desc,
-                it.pontos_efetivos desc, it.funcionario_nome collate "C" asc, it.funcionario_id asc nulls last, it.id
-       limit v_resto
-    )
-    update public.comissao_itens it set valor_centavos = it.valor_centavos + 1
-      from ordem where it.id = ordem.id;
+  v_fech := case when tg_op = 'DELETE' then old.fechamento_id else new.fechamento_id end;
+  select f.status, f.empresa_id into v_status, v_empresa from public.comissao_fechamentos f where f.id = v_fech;
+  if tg_op = 'INSERT' then
+    if v_empresa is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
+    if v_status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
+    new.empresa_id := v_empresa;
+    return new;
   end if;
-
-  update public.comissao_fechamentos
-     set servico_zig_centavos = v_zig,
-         servico_bruto_centavos = v_bruto,
-         retencao_centavos = v_ret,
-         base_distribuivel_centavos = v_base,
-         dias_periodo = v_dias,
-         soma_pontos_efetivos = v_soma,
-         valor_ponto_centavos = case when v_soma = 0 then null else round(v_base / v_soma, 6) end,
-         calculado_em = public.agora()
-   where id = p_fechamento;
-end $$;
-comment on function public.comissao_calcular(uuid) is '[interno] Recalcula um fechamento em rascunho (§9).';
-
--- Carrega o fechamento e checa permissão de operação (G A M) e status rascunho.
-create or replace function public.comissao_rascunho_para_editar(p_fechamento uuid)
-returns public.comissao_fechamentos language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare fc public.comissao_fechamentos;
-begin
-  select * into fc from public.comissao_fechamentos where id = p_fechamento;
-  if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-  if public.pode_operar(fc.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  if fc.status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
-  return fc;
-end $$;
-comment on function public.comissao_rascunho_para_editar(uuid) is '[interno] Fechamento em rascunho editável pelo usuário?';
-
--- ================================================================ RPCs
-create or replace function public.comissao_criar_fechamento(p_data_inicio date, p_data_fim date, p_titulo text default null,
-                                                            p_loja text default null, p_proporcional_dias boolean default false,
-                                                            p_empresa uuid default null)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid; v_id uuid; v_pct numeric;
-begin
-  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
-  perform public.ponto_validar_periodo(p_data_inicio, p_data_fim, 93);
-  p_loja := nullif(btrim(p_loja), '');
-  if p_loja is not null and not exists (select 1 from public.zig_lojas l
-                                         where l.empresa_id = v_empresa and l.loja_id_externo = p_loja) then
-    raise exception 'Loja não encontrada' using errcode = 'P0002';
+  if tg_op = 'UPDATE' and old.fechamento_id is distinct from new.fechamento_id then
+    raise exception 'Item não pode mudar de fechamento' using errcode = '22023';
   end if;
-  select e.comissao_percentual_retencao into v_pct from public.empresas e where e.id = v_empresa;
-
-  insert into public.comissao_fechamentos (empresa_id, titulo, data_inicio, data_fim, loja_id_externo, percentual_retencao,
-                                           proporcional_dias, criado_por)
-  values (v_empresa,
-          coalesce(nullif(btrim(p_titulo), ''),
-                   'Comissão ' || to_char(p_data_inicio, 'DD/MM') || ' a ' || to_char(p_data_fim, 'DD/MM/YYYY')),
-          p_data_inicio, p_data_fim, p_loja, coalesce(v_pct, 20), coalesce(p_proporcional_dias, false), auth.uid())
-  returning id into v_id;
-
-  insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, pontos)
-  select v_empresa, v_id, f.id, f.nome, f.cargo, pv.pontos
-    from public.funcionarios f
-    cross join lateral (select public.comissao_pontos_vigentes(f.id, p_data_fim) as pontos) pv
-   where f.empresa_id = v_empresa and f.ativo and f.participa_comissao
-     and (f.data_admissao is null or f.data_admissao <= p_data_fim)
-     and (f.data_desligamento is null or f.data_desligamento >= p_data_inicio)
-     and pv.pontos > 0;
-
-  perform public.comissao_calcular(v_id);
-  return v_id;
-end $$;
-comment on function public.comissao_criar_fechamento(date, date, text, text, boolean, uuid) is '[api] Cria rascunho de comissão com os participantes e calcula.';
-
-create or replace function public.comissao_atualizar_fechamento(p_fechamento uuid, p_titulo text, p_servico_ajuste_centavos bigint,
-                                                                p_percentual_retencao numeric, p_proporcional_dias boolean,
-                                                                p_observacoes text)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare fc public.comissao_fechamentos;
-begin
-  fc := public.comissao_rascunho_para_editar(p_fechamento);
-  if p_percentual_retencao is not null and (p_percentual_retencao < 0 or p_percentual_retencao > 100) then
-    raise exception 'Percentual de retenção inválido' using errcode = '22023';
+  if v_status = 'fechado' then
+    if tg_op = 'DELETE' and pg_trigger_depth() > 1
+       and not exists (select 1 from public.empresas e where e.id = old.empresa_id) then
+      return old;
+    end if;
+    raise exception 'Fechamento já está fechado' using errcode = '22023';
   end if;
-  update public.comissao_fechamentos
-     set titulo = coalesce(nullif(btrim(p_titulo), ''), titulo),
-         servico_ajuste_centavos = coalesce(p_servico_ajuste_centavos, servico_ajuste_centavos),
-         percentual_retencao = coalesce(p_percentual_retencao, percentual_retencao),
-         proporcional_dias = coalesce(p_proporcional_dias, proporcional_dias),
-         observacoes = nullif(btrim(p_observacoes), '')
-   where id = p_fechamento;
-  perform public.comissao_calcular(p_fechamento);
+  if tg_op = 'DELETE' then return old; end if;
+  new.empresa_id := coalesce(v_empresa, old.empresa_id);
+  return new;
 end $$;
-comment on function public.comissao_atualizar_fechamento(uuid, text, bigint, numeric, boolean, text) is '[api] Edita parâmetros do rascunho e recalcula.';
+comment on function public.comissao_rateio_protecao() is '[interno] Detalhe do rateio de fechamento fechado é imutável.';
 
-create or replace function public.comissao_definir_item(p_fechamento uuid, p_funcionario uuid, p_pontos numeric,
-                                                        p_incluido boolean default true)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare fc public.comissao_fechamentos; f record; v_pontos numeric;
-begin
-  fc := public.comissao_rascunho_para_editar(p_fechamento);
-  select * into f from public.funcionarios where id = p_funcionario;
-  if not found then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if f.empresa_id <> fc.empresa_id then raise exception 'Funcionário de outra empresa' using errcode = '22023'; end if;
-  v_pontos := coalesce(p_pontos, public.comissao_pontos_vigentes(f.id, fc.data_fim));
-  if v_pontos < 0 or v_pontos > 999999.99 then raise exception 'Pontos inválidos' using errcode = '22023'; end if;
-
-  insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, incluido, pontos)
-  values (fc.empresa_id, p_fechamento, f.id, f.nome, f.cargo, coalesce(p_incluido, true), v_pontos)
-  on conflict (fechamento_id, funcionario_id) do update
-    set funcionario_nome = excluded.funcionario_nome, cargo = excluded.cargo,
-        incluido = excluded.incluido, pontos = excluded.pontos;
-  perform public.comissao_calcular(p_fechamento);
-end $$;
-comment on function public.comissao_definir_item(uuid, uuid, numeric, boolean) is '[api] Inclui/atualiza participante (snapshot de nome/cargo) e recalcula.';
-
-create or replace function public.comissao_remover_item(p_fechamento uuid, p_funcionario uuid)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare fc public.comissao_fechamentos;
-begin
-  fc := public.comissao_rascunho_para_editar(p_fechamento);
-  delete from public.comissao_itens where fechamento_id = p_fechamento and funcionario_id = p_funcionario;
-  perform public.comissao_calcular(p_fechamento);
-end $$;
-comment on function public.comissao_remover_item(uuid, uuid) is '[api] Remove participante do rascunho e recalcula.';
-
-create or replace function public.comissao_recalcular(p_fechamento uuid)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare fc public.comissao_fechamentos;
-begin
-  fc := public.comissao_rascunho_para_editar(p_fechamento);
-  perform public.comissao_calcular(p_fechamento);
-end $$;
+drop trigger if exists a_protecao on public.comissao_rateio_dias;
+create trigger a_protecao before insert or update or delete on public.comissao_rateio_dias
+  for each row execute function public.comissao_rateio_protecao();
+drop trigger if exists a_protecao on public.comissao_rateio_itens_dia;
+create trigger a_protecao before insert or update or delete on public.comissao_rateio_itens_dia
+  for each row execute function public.comissao_rateio_protecao();
 
 commit;
-select 'parte 09 de 11 instalada' as resultado;
+select 'parte 09 de 15 instalada' as resultado;

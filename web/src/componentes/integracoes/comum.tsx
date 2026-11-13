@@ -3,7 +3,7 @@
  * Dono: frontend-1 (usadas no painel e nas telas de integrações).
  */
 import clsx from 'clsx'
-import { Fingerprint, RefreshCw, ScanFace, Store } from 'lucide-react'
+import { CalendarCheck, Fingerprint, RefreshCw, ScanFace, Store } from 'lucide-react'
 import type { EscopoSync, StatusUltimaExecucao, TipoIntegracao } from '@/tipos/banco'
 import { useAvisos } from '../avisos'
 import { Botao, Selo, type Tom } from '../ui'
@@ -11,7 +11,7 @@ import { useSincronizarAgora } from '@/consultas/integracoes'
 import { rotuloStatusUltimaExecucao } from '@/lib/rotulos'
 
 export function IconeIntegracao({ tipo, className }: { tipo: TipoIntegracao; className?: string }) {
-  const Icone = tipo === 'zig' ? Store : tipo === 'controlid_acesso' ? ScanFace : Fingerprint
+  const Icone = tipo === 'zig' ? Store : tipo === 'tagme' ? CalendarCheck : tipo === 'controlid_acesso' ? ScanFace : Fingerprint
   return (
     <span className={clsx('grid size-10 shrink-0 place-items-center rounded-entrada border border-borda bg-cartao-2 text-ouro', className)}>
       <Icone aria-hidden className="size-[18px]" />

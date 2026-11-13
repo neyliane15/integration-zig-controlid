@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Verifica os workflows N8N do repositório (todos os n8n/**/workflows/*.json, inclusive os do Control iD).
 // Uso: `npm run n8n:verificar` (ou `node n8n/verificar.mjs`). Sai com código 1 se houver erro.
-//      `node n8n/verificar.mjs --atualizar` reescreve as cópias `// @lib` desatualizadas (só em zig/ e comum/, do n8n-2;
-//      as de controlid/ são só apontadas — o dono atualiza).
+//      `node n8n/verificar.mjs --atualizar` reescreve as cópias `// @lib` desatualizadas (só em zig/, tagme/ e comum/, do n8n-2;
+//      as de controlid/ são só apontadas — o dono atualiza) e regenera o pacote de implantação (n8n/pacote/).
 //
 // Confere, para cada arquivo:
 //  1. JSON válido, com `name`, `nodes[]`, `connections{}`;
@@ -12,7 +12,9 @@
 //  5. gatilho esperado presente (Execute Workflow Trigger / Schedule com o intervalo do contrato / Error Trigger);
 //  6. cópias de libs: cada linha `// @lib <caminho>` num nó Code é seguida do conteúdo de n8n/<caminho> sem as palavras `export`;
 //  7. nenhum segredo fixo: JWT/chaves, `Authorization`/`apikey` literais, credenciais embutidas, URL de projeto Supabase,
-//     token/senha dos mocks, `pinData` com dados.
+//     token/senha dos mocks, `pinData` com dados;
+//  8. pacote de implantação (n8n/pacote/): `workflows/NN-*.json` idênticos aos originais, na ordem de importação, e
+//     `env.hostinger.exemplo` com todas as variáveis MDG_WF_* e sem segredo (gerado por `node n8n/pacote/gerar.mjs`).
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from 'node:fs'
 import { join, relative, dirname } from 'node:path'
@@ -20,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 
 const N8N = dirname(fileURLToPath(import.meta.url))
 const ATUALIZAR = process.argv.includes('--atualizar')
-const DONO_N2 = (rel) => rel.startsWith('zig/') || rel.startsWith('comum/')
+const DONO_N2 = (rel) => rel.startsWith('zig/') || rel.startsWith('tagme/') || rel.startsWith('comum/')
 
 const T = {
   subfluxo: 'n8n-nodes-base.executeWorkflowTrigger',
@@ -35,6 +37,7 @@ const ESPERADOS = {
   'controlid/workflows/controlid-importar-batidas.json': { nome: 'MDG · Control iD · Importar batidas', gatilho: T.subfluxo },
   'controlid/workflows/controlid-exportar-usuarios.json': { nome: 'MDG · Control iD · Exportar funcionários', gatilho: T.subfluxo },
   'zig/workflows/zig-importar.json': { nome: 'MDG · Zig · Importar', gatilho: T.subfluxo },
+  'tagme/workflows/tagme-importar.json': { nome: 'MDG · Tagme · Importar', gatilho: T.subfluxo },
   'comum/workflows/sincronizar-agora.json': { nome: 'MDG · Sincronizar agora (fila)', gatilho: T.agenda, agenda: { field: 'minutes', minutesInterval: 1 } },
   'comum/workflows/agendador.json': { nome: 'MDG · Agendador', gatilho: T.agenda, agenda: { field: 'minutes', minutesInterval: 15 } },
   'comum/workflows/rotina-diaria.json': { nome: 'MDG · Rotina diária', gatilho: T.agenda, agenda: { field: 'cronExpression', expression: '30 5 * * *' } },
@@ -49,7 +52,7 @@ const SEGREDOS = [
   [/\bsk-[A-Za-z0-9]{20,}/, 'chave de API'],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'chave privada'],
   [/https:\/\/[a-z0-9]{20}\.supabase\.co/, 'URL de projeto Supabase fixa (use $env.SUPABASE_URL)'],
-  [/\btoken-mock\b/, 'token do mock da Zig fixo no workflow'],
+  [/\btoken-mock\b/, 'token do mock da Zig/Tagme fixo no workflow'],
   [/\bsessao(-rep)?-mock\b/, 'sessão do mock do Control iD fixa no workflow'],
   [/\bgh[pousr]_[A-Za-z0-9]{30,}/, 'token do GitHub'],
   [/\bxox[abposr]-[A-Za-z0-9-]{10,}/, 'token do Slack'],
@@ -66,7 +69,7 @@ function listarWorkflows(dir) {
   const saida = []
   for (const nome of readdirSync(dir)) {
     const p = join(dir, nome)
-    if (nome === 'node_modules' || nome === 'mocks') continue
+    if (nome === 'node_modules' || nome === 'mocks' || nome === 'pacote') continue
     if (statSync(p).isDirectory()) saida.push(...listarWorkflows(p))
     else if (nome.endsWith('.json') && relative(N8N, p).split('/').includes('workflows')) saida.push(p)
   }
@@ -81,9 +84,38 @@ function libTransformada(rel) {
 }
 
 /** Confere (e opcionalmente corrige) as cópias `// @lib` de um código. Retorna { codigo, problemas[] }. */
+const MARCA_USO = '\n// ---------------------------------------------------------------- uso neste nó'
+
+/** Declarações de topo repetidas (sinal de cópia de lib duplicada: `const` repetido nem compila no N8N). */
+function declaracoesRepetidas(codigo) {
+  const vistos = new Map()
+  for (const m of codigo.matchAll(/^(?:async )?(?:function\*? |const |let |class )([A-Za-z_$][\w$]*)/gm)) vistos.set(m[1], (vistos.get(m[1]) || 0) + 1)
+  return [...vistos].filter(([, n]) => n > 1).map(([nome]) => nome)
+}
+
 function conferirLibs(codigo) {
   const problemas = []
   const texto = codigo.replace(/\r\n/g, '\n')
+  // Formato do n8n-2 (libs em sequência + "uso neste nó"): reconstrói a partir das marcas — robusto mesmo com cópia duplicada.
+  const uso = texto.indexOf(MARCA_USO)
+  if (uso > 0) {
+    const cabeca = texto.slice(0, uso)
+    const rels = [...cabeca.matchAll(/^\/\/ @lib (\S+)[ \t]*$/gm)].map((m) => m[1])
+    if (rels.length && cabeca.startsWith('// @lib ')) {
+      let novo = ''
+      for (const rel of rels) {
+        const lib = libTransformada(rel)
+        if (lib === null) { problemas.push(`lib "${rel}" não existe`); return { codigo, problemas, alterado: false } }
+        novo += `// @lib ${rel}\n${lib}\n\n`
+      }
+      novo = novo.replace(/\n+$/, '\n') + texto.slice(uso)
+      if (novo !== texto) {
+        const dup = declaracoesRepetidas(cabeca)
+        problemas.push(dup.length ? `cópias de lib duplicadas (${dup.slice(0, 3).join(', ')}…) — rode a cópia de novo` : `cópia de "${rels.join('", "')}" diferente da lib — rode a cópia de novo`)
+      }
+      return { codigo: novo, problemas, alterado: novo !== texto }
+    }
+  }
   const re = /^\/\/ @lib (\S+)[ \t]*$/gm
   const marcas = [...texto.matchAll(re)]
   if (!marcas.length) return { codigo, problemas, alterado: false }
@@ -195,6 +227,8 @@ function verificarArquivo(p, nomesVistos) {
       if (!campo) { if (n.parameters?.language !== 'python') erro(arq, `${onde}: nó Code sem jsCode`); continue }
       const r = conferirLibs(n.parameters.jsCode)
       for (const prob of r.problemas) erro(arq, `${onde}: ${prob}`)
+      const dup = declaracoesRepetidas(n.parameters.jsCode)
+      if (dup.length && !r.problemas.length) erro(arq, `${onde}: declarações repetidas no código (${dup.slice(0, 5).join(', ')})`)
       if (r.alterado && ATUALIZAR && DONO_N2(arq)) n.parameters.jsCode = r.codigo
     }
   }
@@ -268,6 +302,13 @@ if (ATUALIZAR) {
   const n2 = new Map()
   for (const p of arquivos) verificarArquivo(p, n2)
   for (const arq of Object.keys(ESPERADOS)) if (!existsSync(join(N8N, arq))) erro(arq, 'arquivo obrigatório (contrato §12.3) não encontrado')
+}
+
+// 8. pacote de implantação
+{
+  const { conferirPacote, gerarPacote } = await import('./pacote/gerar.mjs')
+  if (ATUALIZAR) for (const f of gerarPacote()) console.log(`atualizado: pacote/${f}`)
+  for (const p of conferirPacote()) erro('pacote', p)
 }
 
 for (const a of avisos) console.log(`aviso  ${a}`)

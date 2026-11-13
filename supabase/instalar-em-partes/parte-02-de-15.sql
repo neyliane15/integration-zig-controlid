@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 02 DE 11.
+-- Meu Dia de Gerente — instalação do banco, PARTE 02 DE 15.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000110_cadastros.sql, 20261006000120_integracoes_sync.sql. Não edite à mão.
 
@@ -355,7 +355,7 @@ end $$;-- ======================================================================
 create table if not exists public.integracoes (
   id                   uuid primary key default gen_random_uuid(),
   empresa_id           uuid not null references public.empresas (id) on delete cascade,
-  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep')),
+  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')),
   nome                 text not null check (btrim(nome) <> ''),
   ativa                boolean not null default true,
   parametros           jsonb not null default '{}'::jsonb,
@@ -370,7 +370,11 @@ create table if not exists public.integracoes (
 );
 create index if not exists integracoes_empresa_idx on public.integracoes (empresa_id);
 create unique index if not exists integracoes_zig_uk on public.integracoes (empresa_id) where tipo = 'zig';
-comment on table public.integracoes is '[api:crud] Integrações (Zig, Control iD acesso/REP). Segredos ficam em integracoes_segredos.';
+comment on table public.integracoes is '[api:crud] Integrações (Zig, Control iD acesso/REP, Tagme). Segredos ficam em integracoes_segredos.';
+-- (adendo extras/ocorrências/reservas) bancos já instalados: check do tipo com 'tagme'.
+alter table public.integracoes drop constraint if exists integracoes_tipo_check;
+alter table public.integracoes add constraint integracoes_tipo_check
+  check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme'));
 
 create table if not exists public.integracoes_segredos (
   integracao_id  uuid primary key references public.integracoes (id) on delete cascade,
@@ -409,7 +413,7 @@ create table if not exists public.sync_solicitacoes (
   id              uuid primary key default gen_random_uuid(),
   empresa_id      uuid not null references public.empresas (id) on delete cascade,
   integracao_id   uuid references public.integracoes (id) on delete cascade,
-  escopo          text not null check (escopo in ('tudo', 'funcionarios', 'batidas', 'vendas',
+  escopo          text not null check (escopo in ('tudo', 'funcionarios', 'batidas', 'vendas', 'reservas',
                                                   'exportar_funcionarios', 'apurar_ponto', 'exportar_fechamento')),
   data_inicio     date,
   data_fim        date,
@@ -429,6 +433,10 @@ create index if not exists sync_solicitacoes_integracao_idx on public.sync_solic
 create index if not exists sync_solicitacoes_fila_idx on public.sync_solicitacoes (solicitado_em) where status = 'pendente';
 create index if not exists sync_solicitacoes_solicitado_por_idx on public.sync_solicitacoes (solicitado_por);
 comment on table public.sync_solicitacoes is '[api:leitura] Fila do "Sincronizar agora" (escrita por sync_solicitar).';
+alter table public.sync_solicitacoes drop constraint if exists sync_solicitacoes_escopo_check;
+alter table public.sync_solicitacoes add constraint sync_solicitacoes_escopo_check
+  check (escopo in ('tudo', 'funcionarios', 'batidas', 'vendas', 'reservas',
+                    'exportar_funcionarios', 'apurar_ponto', 'exportar_fechamento'));
 
 -- ================================================================================= sync_execucoes
 create table if not exists public.sync_execucoes (
@@ -438,7 +446,7 @@ create table if not exists public.sync_execucoes (
   solicitacao_id       uuid references public.sync_solicitacoes (id) on delete set null,
   tipo                 text not null check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                          'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
-                         'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento')),
+                         'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar')),
   gatilho              text not null check (gatilho in ('agendado', 'manual', 'webhook')),
   workflow             text not null,
   n8n_execution_id     text,
@@ -458,6 +466,11 @@ create index if not exists sync_execucoes_empresa_idx on public.sync_execucoes (
 create index if not exists sync_execucoes_integracao_idx on public.sync_execucoes (integracao_id, iniciado_em desc);
 create index if not exists sync_execucoes_solicitacao_idx on public.sync_execucoes (solicitacao_id);
 comment on table public.sync_execucoes is '[api:leitura] Execuções dos workflows N8N (escritas pelo serviço).';
+alter table public.sync_execucoes drop constraint if exists sync_execucoes_tipo_check;
+alter table public.sync_execucoes add constraint sync_execucoes_tipo_check
+  check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
+                  'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
+                  'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar'));
 
 -- ====================================================================================== gatilhos
 -- Parâmetros padrão por tipo (§11.1); as chaves informadas prevalecem.
@@ -470,6 +483,7 @@ as $$
     when 'controlid_acesso' then
       '{"modelo": "iDFace", "dias_retroativos": 2, "eventos_validos": [7], "relogio_em_hora_local": true}'::jsonb
     when 'controlid_rep' then '{"modelo": "iDClass", "dias_retroativos": 2, "identificador": "cpf"}'::jsonb
+    when 'tagme' then '{"url_base": "", "restaurante_id": "", "dias_retroativos": 1, "dias_a_frente": 7}'::jsonb
     else '{}'::jsonb
   end
 $$;
@@ -492,71 +506,5 @@ as $$
 $$;
 comment on function public.integracao_envio_padrao(text, text) is '[api] Padrões de parametros.envio por tipo/modelo.';
 
-create or replace function public.integracoes_antes_gravar() returns trigger
-language plpgsql security definer
-set search_path = public, extensions, pg_temp
-as $$
-begin
-  new.nome := btrim(new.nome);
-  if jsonb_typeof(new.parametros) is distinct from 'object' then
-    new.parametros := '{}'::jsonb;
-  end if;
-  new.parametros := public.integracao_parametros_padrao(new.tipo) || new.parametros;
-  if new.tipo in ('controlid_acesso', 'controlid_rep') then
-    new.parametros := jsonb_set(new.parametros, '{envio}',
-      public.integracao_envio_padrao(new.tipo, new.parametros ->> 'modelo')
-      || case when jsonb_typeof(new.parametros -> 'envio') = 'object' then new.parametros -> 'envio' else '{}'::jsonb end);
-  end if;
-  if tg_op = 'INSERT' then
-    if not public.eh_sistema() then
-      new.cursor := '{}'::jsonb;
-      new.ultimo_sucesso_em := null;
-      new.ultima_execucao_em := null;
-      new.ultimo_status := null;
-      new.ultimo_erro := null;
-    end if;
-  else
-    new.id := old.id;
-    new.tipo := old.tipo;
-    new.empresa_id := old.empresa_id;
-    new.criado_em := old.criado_em;
-    if not public.eh_sistema() then
-      new.cursor := old.cursor;
-      new.ultimo_sucesso_em := old.ultimo_sucesso_em;
-      new.ultima_execucao_em := old.ultima_execucao_em;
-      new.ultimo_status := old.ultimo_status;
-      new.ultimo_erro := old.ultimo_erro;
-    end if;
-  end if;
-  return new;
-end $$;
-comment on function public.integracoes_antes_gravar() is
-  '[interno] Gatilho: tipo/empresa imutáveis; cursor e ultimo_* só pelo serviço; parâmetros padrão.';
-
-drop trigger if exists integracoes_antes_gravar on public.integracoes;
-create trigger integracoes_antes_gravar before insert or update on public.integracoes
-  for each row execute function public.integracoes_antes_gravar();
-drop trigger if exists integracoes_tocar on public.integracoes;
-create trigger integracoes_tocar before update on public.integracoes
-  for each row execute function public.tocar_atualizado_em();
-
--- empresa_id dos filhos de integracoes vem do pai.
-create or replace function public.empresa_da_integracao() returns trigger
-language plpgsql security definer
-set search_path = public, extensions, pg_temp
-as $$
-declare
-  v uuid;
-begin
-  if new.integracao_id is not null then
-    select empresa_id into v from public.integracoes where id = new.integracao_id;
-    if v is null then
-      raise exception 'Integração não encontrada' using errcode = 'P0002';
-    end if;
-    new.empresa_id := v;
-  end if;
-  return new;
-end $$;
-
 commit;
-select 'parte 02 de 11 instalada' as resultado;
+select 'parte 02 de 15 instalada' as resultado;

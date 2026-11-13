@@ -1,8 +1,71 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 04 DE 11.
+-- Meu Dia de Gerente — instalação do banco, PARTE 04 DE 15.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000120_integracoes_sync.sql, 20261006000130_tarefas.sql, 20261006000140_envio_controlid.sql. Não edite à mão.
 
 begin;
+create or replace function public.ingestao_sync_concluir_solicitacao(
+  p_solicitacao uuid, p_status text, p_mensagem text default null, p_execucao uuid default null
+) returns void
+language plpgsql volatile security definer
+set search_path = public, extensions, pg_temp
+as $$
+begin
+  if p_status is null or p_status not in ('concluida', 'erro') then
+    raise exception 'Status inválido' using errcode = '22023';
+  end if;
+  update public.sync_solicitacoes
+     set status = p_status, mensagem = p_mensagem, execucao_id = coalesce(p_execucao, execucao_id),
+         concluido_em = public.agora()
+   where id = p_solicitacao;
+  if not found then
+    raise exception 'Solicitação não encontrada' using errcode = 'P0002';
+  end if;
+end $$;
+comment on function public.ingestao_sync_concluir_solicitacao(uuid, text, text, uuid) is
+  '[servico] Conclui uma solicitação da fila (concluida | erro).';
+
+create or replace function public.ingestao_sync_iniciar(
+  p_tipo text, p_gatilho text, p_workflow text, p_empresa uuid default null, p_integracao uuid default null,
+  p_solicitacao uuid default null, p_periodo_inicio date default null, p_periodo_fim date default null,
+  p_n8n_execution_id text default null
+) returns uuid
+language plpgsql volatile security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_empresa uuid := p_empresa;
+  v_id uuid;
+begin
+  if p_integracao is not null then
+    select empresa_id into v_empresa from public.integracoes where id = p_integracao;
+    if v_empresa is null then
+      raise exception 'Integração não encontrada' using errcode = 'P0002';
+    end if;
+  elsif v_empresa is not null and not exists (select 1 from public.empresas where id = v_empresa) then
+    raise exception 'Empresa não encontrada' using errcode = 'P0002';
+  end if;
+
+  update public.sync_execucoes
+     set status = 'erro', erro = 'Expirada', finalizado_em = public.agora()
+   where status = 'executando' and tipo = p_tipo
+     and integracao_id is not distinct from p_integracao
+     and empresa_id is not distinct from v_empresa
+     and iniciado_em < public.agora() - interval '30 minutes';
+
+  insert into public.sync_execucoes (empresa_id, integracao_id, solicitacao_id, tipo, gatilho, workflow, n8n_execution_id,
+                                     status, iniciado_em, periodo_inicio, periodo_fim)
+  values (v_empresa, p_integracao, p_solicitacao, p_tipo, p_gatilho, coalesce(nullif(btrim(p_workflow), ''), '?'),
+          p_n8n_execution_id, 'executando', public.agora(), p_periodo_inicio, p_periodo_fim)
+  returning id into v_id;
+
+  if p_integracao is not null then
+    update public.integracoes set ultima_execucao_em = public.agora() where id = p_integracao;
+  end if;
+  return v_id;
+end $$;
+comment on function public.ingestao_sync_iniciar(text, text, text, uuid, uuid, uuid, date, date, text) is
+  '[servico] Abre uma sync_execucoes (executando) e marca ultima_execucao_em da integração.';
+
 create or replace function public.ingestao_sync_finalizar(
   p_execucao uuid, p_status text, p_lidos int default 0, p_gravados int default 0, p_ignorados int default 0,
   p_erro text default null, p_detalhes jsonb default '{}', p_tentativas int default 1
@@ -485,82 +548,5 @@ create index if not exists funcionario_horarios_empresa_idx on public.funcionari
 create index if not exists funcionario_horarios_horario_idx on public.funcionario_horarios (horario_id);
 comment on table public.funcionario_horarios is '[api:crud] Horários de acesso de cada funcionário.';
 
-create table if not exists public.controlid_envios (
-  id                 uuid primary key default gen_random_uuid(),
-  empresa_id         uuid not null references public.empresas (id) on delete cascade,
-  integracao_id      uuid not null references public.integracoes (id) on delete cascade,
-  alvo               text not null check (alvo in ('funcionario', 'horarios')),
-  funcionario_id     uuid references public.funcionarios (id) on delete set null,
-  funcionario_nome   text,
-  operacao           text not null check (operacao in ('salvar', 'remover', 'bloquear')),
-  status             text not null default 'pendente'
-                     check (status in ('pendente', 'enviando', 'enviado', 'erro', 'aguardando')),
-  versao             int not null default 1,
-  assinatura         text not null,
-  assinatura_enviada text,
-  id_remoto          text,
-  mapa_remoto        jsonb not null default '{}'::jsonb,
-  tentativas         int not null default 0,
-  erro               text,
-  pendente_desde     timestamptz,
-  pego_em            timestamptz,
-  enviado_em         timestamptz,
-  criado_em          timestamptz not null default now(),
-  atualizado_em      timestamptz not null default now()
-);
-create index if not exists controlid_envios_empresa_idx on public.controlid_envios (empresa_id, status);
-create index if not exists controlid_envios_funcionario_idx on public.controlid_envios (funcionario_id);
-create unique index if not exists controlid_envios_func_uk on public.controlid_envios (integracao_id, funcionario_id)
-  where alvo = 'funcionario' and funcionario_id is not null;
-create unique index if not exists controlid_envios_horarios_uk on public.controlid_envios (integracao_id)
-  where alvo = 'horarios';
-create index if not exists controlid_envios_fila_idx on public.controlid_envios (integracao_id, status);
-comment on table public.controlid_envios is '[api:leitura] Estado do envio de cadastros/horários a cada equipamento Control iD.';
-
--- ================================================================================ gatilhos simples
-create or replace function public.empresa_do_funcionario() returns trigger
-language plpgsql security definer
-set search_path = public, extensions, pg_temp
-as $$
-declare
-  v uuid;
-begin
-  select empresa_id into v from public.funcionarios where id = new.funcionario_id;
-  if v is null then
-    raise exception 'Funcionário não encontrado' using errcode = 'P0002';
-  end if;
-  new.empresa_id := v;
-  return new;
-end $$;
-comment on function public.empresa_do_funcionario() is '[interno] Gatilho: empresa_id = empresa do funcionário.';
-
-drop trigger if exists funcionario_credenciais_empresa on public.funcionario_credenciais;
-create trigger funcionario_credenciais_empresa before insert or update on public.funcionario_credenciais
-  for each row execute function public.empresa_do_funcionario();
-drop trigger if exists funcionario_cartoes_empresa on public.funcionario_cartoes;
-create trigger funcionario_cartoes_empresa before insert or update on public.funcionario_cartoes
-  for each row execute function public.empresa_do_funcionario();
-drop trigger if exists funcionario_fotos_empresa on public.funcionario_fotos;
-create trigger funcionario_fotos_empresa before insert or update on public.funcionario_fotos
-  for each row execute function public.empresa_do_funcionario();
-
-create or replace function public.funcionario_horarios_antes_gravar() returns trigger
-language plpgsql security definer
-set search_path = public, extensions, pg_temp
-as $$
-declare
-  v uuid;
-begin
-  select empresa_id into new.empresa_id from public.funcionarios where id = new.funcionario_id;
-  if new.empresa_id is null then
-    raise exception 'Funcionário não encontrado' using errcode = 'P0002';
-  end if;
-  select empresa_id into v from public.controlid_horarios where id = new.horario_id;
-  if v is distinct from new.empresa_id then
-    raise exception 'Horário de outra empresa' using errcode = '22023';
-  end if;
-  return new;
-end $$;
-
 commit;
-select 'parte 04 de 11 instalada' as resultado;
+select 'parte 04 de 15 instalada' as resultado;

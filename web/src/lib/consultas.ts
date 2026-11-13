@@ -21,12 +21,21 @@ export const chaves = {
     ['vendas', empresaId ?? null, tipo, inicio, fim, loja] as const,
   comissoes: (empresaId: Id) => ['comissoes', empresaId ?? null] as const,
   fechamento: (id: Id) => ['fechamento', id ?? null] as const,
+  comissaoDetalhe: (id: Id) => ['fechamento', id ?? null, 'detalhe'] as const,
   tarefas: (empresaId: Id, data: string) => ['tarefas', empresaId ?? null, data] as const,
   rotinas: (empresaId: Id) => ['rotinas', empresaId ?? null] as const,
   integracoes: (empresaId: Id) => ['integracoes', empresaId ?? null] as const,
   sync: (empresaId: Id) => ['sync', empresaId ?? null] as const,
   usuarios: (empresaId: Id) => ['usuarios', empresaId ?? null] as const,
   empresas: () => ['empresas'] as const,
+  // adendo extras / ocorrências / reservas
+  ocorrencias: (funcionarioId: Id) => ['ocorrencias', funcionarioId ?? null] as const,
+  ocorrenciasContagem: (empresaId: Id) => ['ocorrencias-contagem', empresaId ?? null] as const,
+  extras: (empresaId: Id, incluirInativos: boolean) => ['extras', empresaId ?? null, incluirInativos] as const,
+  diarias: (empresaId: Id, inicio: string, fim: string, tipo: string | null = null) => ['diarias', empresaId ?? null, inicio, fim, tipo] as const,
+  valoresDiaria: (empresaId: Id) => ['valores-diaria', empresaId ?? null] as const,
+  gastos: (empresaId: Id, inicio: string, fim: string) => ['gastos', empresaId ?? null, inicio, fim] as const,
+  reservas: (empresaId: Id, inicio: string, fim: string) => ['reservas', empresaId ?? null, inicio, fim] as const,
 } as const
 
 /** Prefixos (1º elemento) para invalidar todas as variações de uma família. */
@@ -50,6 +59,13 @@ export type FamiliaConsulta =
   | 'sync'
   | 'usuarios'
   | 'empresas'
+  | 'ocorrencias'
+  | 'ocorrencias-contagem'
+  | 'extras'
+  | 'diarias'
+  | 'valores-diaria'
+  | 'gastos'
+  | 'reservas'
 
 /** Invalida famílias inteiras (qualquer empresa/parâmetro). */
 export function invalidar(qc: QueryClient, ...familias: FamiliaConsulta[]): Promise<void> {

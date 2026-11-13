@@ -18,6 +18,7 @@ const DESCRICAO_TIPO: Record<TipoIntegracao, string> = {
   zig: 'Vendas, faturamento por forma de pagamento e serviço (10%) para as comissões.',
   controlid_acesso: 'Batidas de iDFace, iDFlex ou iDAccess usadas como ponto, e envio do cadastro ao equipamento.',
   controlid_rep: 'Marcações do relógio de ponto iDClass (AFD), com envio opcional do cadastro.',
+  tagme: 'Reservas do dia no painel. A API da Tagme é só para parceiros; enquanto isso, importe o CSV ou lance à mão.',
 }
 
 export function PaginaIntegracoes() {
@@ -106,7 +107,7 @@ export function PaginaIntegracoes() {
       >
         {novoTipo === 'escolher' ? (
           <ul className="flex flex-col gap-3">
-            {(['zig', 'controlid_acesso', 'controlid_rep'] as TipoIntegracao[]).map((t) => (
+            {(['zig', 'controlid_acesso', 'controlid_rep', 'tagme'] as TipoIntegracao[]).map((t) => (
               <li key={t}>
                 <button
                   type="button"

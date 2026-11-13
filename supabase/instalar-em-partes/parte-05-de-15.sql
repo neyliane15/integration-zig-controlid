@@ -1,8 +1,84 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 05 DE 11.
+-- Meu Dia de Gerente — instalação do banco, PARTE 05 DE 15.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000140_envio_controlid.sql. Não edite à mão.
 
 begin;
+create table if not exists public.controlid_envios (
+  id                 uuid primary key default gen_random_uuid(),
+  empresa_id         uuid not null references public.empresas (id) on delete cascade,
+  integracao_id      uuid not null references public.integracoes (id) on delete cascade,
+  alvo               text not null check (alvo in ('funcionario', 'horarios')),
+  funcionario_id     uuid references public.funcionarios (id) on delete set null,
+  funcionario_nome   text,
+  operacao           text not null check (operacao in ('salvar', 'remover', 'bloquear')),
+  status             text not null default 'pendente'
+                     check (status in ('pendente', 'enviando', 'enviado', 'erro', 'aguardando')),
+  versao             int not null default 1,
+  assinatura         text not null,
+  assinatura_enviada text,
+  id_remoto          text,
+  mapa_remoto        jsonb not null default '{}'::jsonb,
+  tentativas         int not null default 0,
+  erro               text,
+  pendente_desde     timestamptz,
+  pego_em            timestamptz,
+  enviado_em         timestamptz,
+  criado_em          timestamptz not null default now(),
+  atualizado_em      timestamptz not null default now()
+);
+create index if not exists controlid_envios_empresa_idx on public.controlid_envios (empresa_id, status);
+create index if not exists controlid_envios_funcionario_idx on public.controlid_envios (funcionario_id);
+create unique index if not exists controlid_envios_func_uk on public.controlid_envios (integracao_id, funcionario_id)
+  where alvo = 'funcionario' and funcionario_id is not null;
+create unique index if not exists controlid_envios_horarios_uk on public.controlid_envios (integracao_id)
+  where alvo = 'horarios';
+create index if not exists controlid_envios_fila_idx on public.controlid_envios (integracao_id, status);
+comment on table public.controlid_envios is '[api:leitura] Estado do envio de cadastros/horários a cada equipamento Control iD.';
+
+-- ================================================================================ gatilhos simples
+create or replace function public.empresa_do_funcionario() returns trigger
+language plpgsql security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v uuid;
+begin
+  select empresa_id into v from public.funcionarios where id = new.funcionario_id;
+  if v is null then
+    raise exception 'Funcionário não encontrado' using errcode = 'P0002';
+  end if;
+  new.empresa_id := v;
+  return new;
+end $$;
+comment on function public.empresa_do_funcionario() is '[interno] Gatilho: empresa_id = empresa do funcionário.';
+
+drop trigger if exists funcionario_credenciais_empresa on public.funcionario_credenciais;
+create trigger funcionario_credenciais_empresa before insert or update on public.funcionario_credenciais
+  for each row execute function public.empresa_do_funcionario();
+drop trigger if exists funcionario_cartoes_empresa on public.funcionario_cartoes;
+create trigger funcionario_cartoes_empresa before insert or update on public.funcionario_cartoes
+  for each row execute function public.empresa_do_funcionario();
+drop trigger if exists funcionario_fotos_empresa on public.funcionario_fotos;
+create trigger funcionario_fotos_empresa before insert or update on public.funcionario_fotos
+  for each row execute function public.empresa_do_funcionario();
+
+create or replace function public.funcionario_horarios_antes_gravar() returns trigger
+language plpgsql security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v uuid;
+begin
+  select empresa_id into new.empresa_id from public.funcionarios where id = new.funcionario_id;
+  if new.empresa_id is null then
+    raise exception 'Funcionário não encontrado' using errcode = 'P0002';
+  end if;
+  select empresa_id into v from public.controlid_horarios where id = new.horario_id;
+  if v is distinct from new.empresa_id then
+    raise exception 'Horário de outra empresa' using errcode = '22023';
+  end if;
+  return new;
+end $$;
 comment on function public.funcionario_horarios_antes_gravar() is '[interno] Gatilho: horário e funcionário da mesma empresa.';
 drop trigger if exists funcionario_horarios_antes_gravar on public.funcionario_horarios;
 create trigger funcionario_horarios_antes_gravar before insert or update on public.funcionario_horarios
@@ -475,90 +551,5 @@ drop trigger if exists controlid_envio on public.integracoes;
 create trigger controlid_envio after insert or update on public.integracoes
   for each row execute function public.controlid_envio_gatilho_integracao();
 
-create or replace function public.controlid_envio_gatilho_usuarios() returns trigger
-language plpgsql security definer
-set search_path = public, extensions, pg_temp
-as $$
-begin
-  if tg_op = 'UPDATE' and old.funcionario_id is not null and old.funcionario_id is distinct from new.funcionario_id then
-    perform public.controlid_envio_atualizar(old.empresa_id, old.funcionario_id, old.integracao_id);
-  end if;
-  if new.funcionario_id is not null and (tg_op = 'INSERT' or old.funcionario_id is distinct from new.funcionario_id
-                                         or old.removido_no_equipamento is distinct from new.removido_no_equipamento) then
-    perform public.controlid_envio_atualizar(new.empresa_id, new.funcionario_id, new.integracao_id);
-  end if;
-  return null;
-end $$;
-comment on function public.controlid_envio_gatilho_usuarios() is '[interno] Gatilho: vínculo com o equipamento mudou.';
-drop trigger if exists controlid_envio on public.controlid_usuarios;
-create trigger controlid_envio after insert or update on public.controlid_usuarios
-  for each row execute function public.controlid_envio_gatilho_usuarios();
-
--- ==================================================================================== RPCs do front
-create or replace function public.funcionario_para_operar(p_funcionario uuid) returns public.funcionarios
-language plpgsql stable security definer
-set search_path = public, extensions, pg_temp
-as $$
-declare
-  f public.funcionarios;
-begin
-  select * into f from public.funcionarios where id = p_funcionario;
-  if not found then
-    raise exception 'Funcionário não encontrado' using errcode = 'P0002';
-  end if;
-  if public.pode_operar(f.empresa_id) is not true then
-    raise exception 'Sem permissão' using errcode = '42501';
-  end if;
-  return f;
-end $$;
-comment on function public.funcionario_para_operar(uuid) is '[interno] Funcionário existente e operável (G A M).';
-
-create or replace function public.funcionario_definir_senha(p_funcionario uuid, p_senha text) returns void
-language plpgsql volatile security definer
-set search_path = public, extensions, pg_temp
-as $$
-declare
-  f public.funcionarios := public.funcionario_para_operar(p_funcionario);
-  v text := nullif(btrim(coalesce(p_senha, '')), '');
-begin
-  if v is not null and v !~ '^[0-9]{4,8}$' then
-    raise exception 'Senha de acesso inválida' using errcode = '22023';
-  end if;
-  insert into public.funcionario_credenciais (funcionario_id, empresa_id, senha, versao, atualizado_em)
-  values (f.id, f.empresa_id, v, 1, now())
-  on conflict (funcionario_id) do update
-    set senha = excluded.senha,
-        versao = funcionario_credenciais.versao + 1,
-        atualizado_em = now()
-  where funcionario_credenciais.senha is distinct from excluded.senha;
-end $$;
-comment on function public.funcionario_definir_senha(uuid, text) is
-  '[api] Define (4 a 8 dígitos) ou remove (null/vazio) a senha de acesso do funcionário (G A M).';
-
-create or replace function public.funcionario_adicionar_cartao(p_funcionario uuid, p_numero text) returns uuid
-language plpgsql volatile security definer
-set search_path = public, extensions, pg_temp
-as $$
-declare
-  f public.funcionarios := public.funcionario_para_operar(p_funcionario);
-  v text := regexp_replace(coalesce(p_numero, ''), '[^0-9]', '', 'g');
-  v_id uuid;
-begin
-  v := nullif(ltrim(v, '0'), '');
-  v := coalesce(v, case when regexp_replace(coalesce(p_numero, ''), '[^0-9]', '', 'g') <> '' then '0' end);
-  if v is null or length(v) > 20 then
-    raise exception 'Número de cartão inválido' using errcode = '22023';
-  end if;
-  if exists (select 1 from public.funcionario_cartoes where empresa_id = f.empresa_id and numero = v) then
-    raise exception 'Cartão já cadastrado' using errcode = '23505';
-  end if;
-  insert into public.funcionario_cartoes (empresa_id, funcionario_id, numero, criado_por)
-  values (f.empresa_id, f.id, v, public.meu_perfil_id())
-  returning id into v_id;
-  return v_id;
-exception when unique_violation then
-  raise exception 'Cartão já cadastrado' using errcode = '23505';
-end $$;
-
 commit;
-select 'parte 05 de 11 instalada' as resultado;
+select 'parte 05 de 15 instalada' as resultado;

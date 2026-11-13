@@ -1,13 +1,16 @@
 /** / — Painel do dia (contrato §14.4). Dono: frontend-1. */
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import clsx from 'clsx'
-import { AlertTriangle, ArrowRight, Check, ListChecks, PlugZap, Users } from 'lucide-react'
+import { AlertTriangle, ArrowRight, CalendarCheck, Check, ListChecks, PlugZap, ShieldAlert, Users } from 'lucide-react'
 import type { PainelDoDia } from '@/tipos/banco'
-import { Cartao, CabecalhoPagina, ErroCarga, Esqueleto, FOCO, Indicador, Selo, Vazio } from '@/componentes/ui'
+import { Botao, Cartao, CabecalhoPagina, ErroCarga, Esqueleto, FOCO, Indicador, Selo, Vazio } from '@/componentes/ui'
+import { ModalOcorrencia } from '@/componentes/dominio/Ocorrencias'
 import { useAvisos } from '@/componentes/avisos'
 import { BotaoSincronizar, IconeIntegracao, SeloStatusIntegracao } from '@/componentes/integracoes/comum'
 import { useMudarStatusTarefa, usePainel, useTarefasDoPainel, type TarefaPainel } from '@/consultas/painel'
 import { formatarCentavos, formatarDataCurta, formatarRelativo } from '@/lib/formato'
+import { rotuloStatusReserva, rotuloTipoOcorrencia } from '@/lib/rotulos'
 import { podeOperar } from '@/lib/permissoes'
 import { rotuloBatidaEsperada, rotuloPrioridade, rotuloTipoAlarme } from '@/lib/rotulos'
 import { useEmpresaAtual, usePerfil } from '@/lib/sessao'
@@ -42,6 +45,7 @@ export function PaginaPainel() {
           </>
         }
         subtitulo={empresa ? `Tudo o que importa hoje no ${empresa.nome}.` : 'Tudo o que importa hoje na sua loja.'}
+        acoes={podeOperar(perfil.papel) ? <AtalhoOcorrencia /> : undefined}
       />
 
       {painel.isError ? (
@@ -55,8 +59,10 @@ export function PaginaPainel() {
             <div className="flex min-w-0 flex-col gap-5">
               <CartaoAlarmes p={p} />
               <CartaoTarefas empresaId={empresaId} p={p} />
+              {p.ocorrencias && <CartaoOcorrencias o={p.ocorrencias} />}
             </div>
             <div className="flex min-w-0 flex-col gap-5">
+              {p.reservas && <CartaoReservas r={p.reservas} />}
               <CartaoPresenca p={p} />
               <CartaoSincronizacao empresaId={empresaId} p={p} podeSincronizar={podeOperar(perfil.papel)} />
             </div>
@@ -301,6 +307,133 @@ function CartaoSincronizacao({ empresaId, p, podeSincronizar }: { empresaId: str
                 </div>
                 {s.ultimo_status === 'erro' && s.ultimo_erro && <p className="mt-1 line-clamp-2 text-xs text-perigo">{s.ultimo_erro}</p>}
               </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Cartao>
+  )
+}
+
+function AtalhoOcorrencia() {
+  const [aberto, setAberto] = useState(false)
+  return (
+    <>
+      <Botao variante="secundario" icone={<ShieldAlert aria-hidden />} onClick={() => setAberto(true)}>
+        Registrar ocorrência
+      </Botao>
+      <ModalOcorrencia aberto={aberto} aoFechar={() => setAberto(false)} funcionarioId={null} />
+    </>
+  )
+}
+
+const TOM_RESERVA = { confirmada: 'sucesso', pendente: 'ouro', sentada: 'info', concluida: 'neutro', cancelada: 'perigo', nao_compareceu: 'alerta' } as const
+
+function CartaoReservas({ r }: { r: NonNullable<PainelDoDia['reservas']> }) {
+  return (
+    <Cartao
+      sobrancelha={r.tem_tagme ? 'Tagme' : 'Salão'}
+      titulo={
+        <span className="flex items-center gap-3">
+          Reservas de hoje
+          {r.canceladas > 0 && <Selo tom="perigo">{r.canceladas} cancelada{r.canceladas > 1 ? 's' : ''}</Selo>}
+        </span>
+      }
+      acoes={<LinkCartao para="/reservas">Ver reservas</LinkCartao>}
+    >
+      <div className="flex items-end gap-6">
+        <div>
+          <p className="numero text-[44px] leading-none text-creme">{r.total}</p>
+          <p className="mt-1 text-sm text-lavanda">reserva{r.total === 1 ? '' : 's'}</p>
+        </div>
+        <div>
+          <p className="numero text-[28px] leading-none text-ouro-claro">{r.pessoas}</p>
+          <p className="mt-1 text-sm text-lavanda">pessoa{r.pessoas === 1 ? '' : 's'}</p>
+        </div>
+        <div className="ml-auto text-right text-xs text-lavanda">
+          {r.sentadas > 0 && <p><span className="numero text-creme">{r.sentadas}</span> sentada(s)</p>}
+          {r.nao_compareceu > 0 && <p><span className="numero text-creme">{r.nao_compareceu}</span> não vieram</p>}
+        </div>
+      </div>
+      {r.proximas.length === 0 ? (
+        <p className="mt-4 flex items-center gap-2 text-sm text-lavanda">
+          <CalendarCheck aria-hidden className="size-4 text-lavanda-escuro" />
+          {r.total === 0 ? 'Nenhuma reserva para hoje.' : 'Nenhuma reserva por chegar.'}
+        </p>
+      ) : (
+        <>
+          <p className="mt-5 mb-1 text-[11px] font-bold tracking-[0.14em] text-lavanda uppercase">Próximas</p>
+          <ul className="flex flex-col divide-y divide-borda">
+            {r.proximas.slice(0, 6).map((x) => (
+              <li key={x.id} className="flex items-center gap-3 py-2.5">
+                <span className="numero w-12 shrink-0 text-ouro-claro">{x.horario ? x.horario.slice(0, 5) : '—'}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold text-creme">{x.nome_cliente}</span>
+                  {(x.area || x.mesa || x.observacao) && (
+                    <span className="block truncate text-xs text-lavanda">{[x.area, x.mesa && `mesa ${x.mesa}`, x.observacao].filter(Boolean).join(' · ')}</span>
+                  )}
+                </span>
+                <span className="numero inline-flex items-center gap-1 text-sm text-lavanda">
+                  <Users aria-hidden className="size-3.5" />
+                  {x.pessoas}
+                  <span className="sr-only">pessoas</span>
+                </span>
+                {x.status === 'pendente' && <Selo tom={TOM_RESERVA[x.status]}>{rotuloStatusReserva[x.status]}</Selo>}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Cartao>
+  )
+}
+
+function CartaoOcorrencias({ o }: { o: NonNullable<PainelDoDia['ocorrencias']> }) {
+  return (
+    <Cartao
+      sobrancelha="Equipe · 30 dias"
+      titulo={
+        <span className="flex items-center gap-3">
+          Ocorrências recentes
+          {o.suspensos_hoje > 0 && <Selo tom="perigo">{o.suspensos_hoje} suspenso{o.suspensos_hoje > 1 ? 's' : ''} hoje</Selo>}
+        </span>
+      }
+    >
+      <p className="mb-3 text-sm text-lavanda">
+        <span className="numero text-creme">{o.advertencias}</span> advertência{o.advertencias === 1 ? '' : 's'} ·{' '}
+        <span className="numero text-creme">{o.suspensoes}</span> suspens{o.suspensoes === 1 ? 'ão' : 'ões'}
+      </p>
+      {o.recentes.length === 0 ? (
+        <p className="flex items-center gap-2.5 rounded-entrada border border-sucesso/25 bg-sucesso/5 px-4 py-3 text-sm text-creme">
+          <Check aria-hidden className="size-4 text-sucesso" /> Nenhuma advertência ou suspensão nos últimos 30 dias.
+        </p>
+      ) : (
+        <ul className="-mx-2 flex flex-col">
+          {o.recentes.slice(0, 5).map((x) => (
+            <li key={x.id}>
+              <Link
+                to={`/funcionarios/${x.funcionario_id}`}
+                className={clsx('flex items-start gap-3 rounded-entrada px-2 py-2.5 transition-colors hover:bg-cartao-2', FOCO)}
+              >
+                <span
+                  className={clsx(
+                    'mt-0.5 grid size-8 shrink-0 place-items-center rounded-full',
+                    x.tipo === 'suspensao' ? 'bg-perigo/10 text-perigo' : 'bg-alerta/10 text-alerta',
+                  )}
+                >
+                  <ShieldAlert aria-hidden className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-baseline justify-between gap-x-3">
+                    <span className="truncate font-semibold text-creme">{x.funcionario_nome}</span>
+                    <span className="numero text-xs text-lavanda">{formatarDataCurta(x.data)}</span>
+                  </span>
+                  <span className="mt-0.5 block text-sm text-lavanda">
+                    {rotuloTipoOcorrencia[x.tipo]}
+                    {x.tipo === 'suspensao' && x.dias_suspensao ? ` (${x.dias_suspensao} dia${x.dias_suspensao > 1 ? 's' : ''})` : ''} · {x.motivo}
+                  </span>
+                </span>
+              </Link>
             </li>
           ))}
         </ul>

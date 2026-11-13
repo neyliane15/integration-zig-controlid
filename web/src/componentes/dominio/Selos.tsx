@@ -16,6 +16,7 @@ export const TOM_SITUACAO: Record<SituacaoDia, Tom> = {
   sem_escala: 'neutro',
   abonado: 'info',
   em_andamento: 'ouro',
+  suspenso: 'perigo',
 }
 
 export function SeloSituacaoDia({ situacao }: { situacao: SituacaoDia }) {

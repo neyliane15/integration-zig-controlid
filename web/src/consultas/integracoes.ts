@@ -240,11 +240,17 @@ export const CHAVES_SEGREDO: Record<TipoIntegracao, { chave: ChaveSegredo; rotul
     { chave: 'login', rotulo: 'Usuário', dica: 'Usuário administrador do REP.', tipo: 'text' },
     { chave: 'senha', rotulo: 'Senha', dica: 'Senha do usuário administrador.', tipo: 'password' },
   ],
+  tagme: [
+    { chave: 'token', rotulo: 'Token de API', dica: 'Fornecido pela Tagme no contrato de parceiro.', tipo: 'password' },
+    { chave: 'cliente_id', rotulo: 'Client ID', dica: 'Se a Tagme usar OAuth (client credentials).', tipo: 'text' },
+    { chave: 'cliente_segredo', rotulo: 'Client secret', dica: 'Par do Client ID.', tipo: 'password' },
+  ],
 }
 
 /** Parâmetros padrão por tipo (§11.1 + adendo A.1). */
 export function parametrosPadrao(tipo: TipoIntegracao): ParametrosIntegracao {
   if (tipo === 'zig') return { rede: '', dias_retroativos: 2 }
+  if (tipo === 'tagme') return { url_base: '', restaurante_id: '', dias_retroativos: 1, dias_a_frente: 7 }
   if (tipo === 'controlid_acesso')
     return {
       modelo: 'iDFace',
@@ -265,5 +271,6 @@ export const MODELOS_ACESSO = ['iDFace', 'iDFace Max', 'iDFlex', 'iDAccess', 'iD
 export const MODELOS_REP = ['iDClass', 'iDClass Bio'] as const
 
 export function nomePadrao(tipo: TipoIntegracao): string {
+  if (tipo === 'tagme') return 'Tagme'
   return tipo === 'zig' ? 'Zig' : tipo === 'controlid_acesso' ? 'Controle de acesso' : 'Relógio de ponto'
 }

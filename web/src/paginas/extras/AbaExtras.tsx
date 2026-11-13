@@ -1,0 +1,297 @@
+/**
+ * Aba "Extras" — cadastro de freelas/diaristas (adendo E.1): nome, função, contato, pontuação padrão e valor da diária.
+ */
+import { useEffect, useId, useState } from 'react'
+import { CalendarPlus, Pencil, Plus, Power, Search, Trash2, UserRoundPlus } from 'lucide-react'
+import type { Extra } from '@/tipos/banco'
+import { AreaTexto, Botao, Campo, Cartao, Entrada, EntradaMoeda, ErroCarga, Interruptor, Modal, Selo, Tabela, Vazio, type Coluna } from '@/componentes/ui'
+import { useAvisos } from '@/componentes/avisos'
+import { useAtivarExtra, useExcluirExtra, useExtras, useSalvarExtra } from '@/consultas/extras'
+import { filtrarExtras, formatarTelefone, lerPontos, pontosTexto } from '@/lib/extras'
+import { formatarCentavos, formatarData } from '@/lib/formato'
+
+export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void }) {
+  const avisos = useAvisos()
+  const [inativos, setInativos] = useState(false)
+  const [busca, setBusca] = useState('')
+  const lista = useExtras(inativos)
+  const ativar = useAtivarExtra()
+  const excluir = useExcluirExtra()
+  const [modal, setModal] = useState<{ extra: Extra | null } | null>(null)
+  const linhas = filtrarExtras(lista.data ?? [], busca)
+  const idBusca = useId()
+
+  const alternarAtivo = async (x: Extra) => {
+    if (x.ativo) {
+      const ok = await avisos.confirmar({
+        titulo: `Desativar ${x.nome}?`,
+        mensagem: 'Os dias já lançados continuam valendo; só não dá para lançar dias novos até reativar.',
+        textoConfirmar: 'Desativar',
+      })
+      if (!ok) return
+    }
+    try {
+      await ativar.mutateAsync({ extra: x, ativo: !x.ativo })
+      avisos.sucesso(x.ativo ? `${x.nome} desativado` : `${x.nome} reativado`)
+    } catch (e) {
+      avisos.erro(e)
+    }
+  }
+
+  const apagar = async (x: Extra) => {
+    if (!(await avisos.confirmar({ titulo: `Excluir o cadastro de ${x.nome}?`, textoConfirmar: 'Excluir', perigo: true }))) return
+    try {
+      await excluir.mutateAsync(x.id)
+      avisos.sucesso('Cadastro excluído')
+    } catch (e) {
+      avisos.erro(e)
+    }
+  }
+
+  const colunas: Coluna<Extra>[] = [
+    {
+      id: 'nome',
+      titulo: 'Extra',
+      render: (x) => (
+        <div className="min-w-0">
+          <p className="flex flex-wrap items-center gap-2 font-semibold text-creme">
+            <span className="truncate">{x.nome}</span>
+            {!x.ativo && <Selo>Inativo</Selo>}
+          </p>
+          <p className="text-xs text-lavanda">{[x.funcao, formatarTelefone(x.telefone)].filter(Boolean).join(' · ') || '—'}</p>
+        </div>
+      ),
+    },
+    { id: 'pontos', titulo: 'Pontos', alinhar: 'direita', render: (x) => <span className="numero">{pontosTexto(x.pontos_padrao)}</span> },
+    {
+      id: 'diaria',
+      titulo: 'Diária',
+      alinhar: 'direita',
+      render: (x) => <span className="numero">{x.valor_diaria_centavos == null ? '—' : formatarCentavos(x.valor_diaria_centavos)}</span>,
+    },
+    {
+      id: 'dias',
+      titulo: 'Dias lançados',
+      alinhar: 'direita',
+      ocultarNoCelular: true,
+      render: (x) => (
+        <span className="numero text-lavanda">
+          {x.dias_lancados}
+          {x.ultimo_dia && <span className="block text-[11px]">último {formatarData(x.ultimo_dia)}</span>}
+        </span>
+      ),
+    },
+    {
+      id: 'acoes',
+      titulo: '',
+      alinhar: 'direita',
+      render: (x) => (
+        <div className="flex justify-end gap-1">
+          {x.ativo && (
+            <Botao variante="secundario" tamanho="p" icone={<CalendarPlus aria-hidden />} aria-label={`Lançar dia de ${x.nome}`} onClick={() => aoLancarDia(x.id)}>
+              <span className="hidden sm:inline">Lançar dia</span>
+            </Botao>
+          )}
+          <Botao variante="fantasma" tamanho="p" icone={<Pencil aria-hidden />} aria-label={`Editar ${x.nome}`} onClick={() => setModal({ extra: x })} />
+          <Botao
+            variante="fantasma"
+            tamanho="p"
+            icone={<Power aria-hidden />}
+            aria-label={x.ativo ? `Desativar ${x.nome}` : `Reativar ${x.nome}`}
+            title={x.ativo ? 'Desativar' : 'Reativar'}
+            disabled={ativar.isPending}
+            onClick={() => alternarAtivo(x)}
+          />
+          {x.dias_lancados === 0 && (
+            <Botao variante="fantasma" tamanho="p" icone={<Trash2 aria-hidden />} aria-label={`Excluir ${x.nome}`} onClick={() => apagar(x)} />
+          )}
+        </div>
+      ),
+    },
+  ]
+
+  return (
+    <Cartao
+      titulo="Cadastro de extras"
+      sobrancelha={`${(lista.data ?? []).filter((x) => x.ativo).length} ativo(s)`}
+      acoes={
+        <Botao tamanho="p" icone={<Plus aria-hidden />} onClick={() => setModal({ extra: null })}>
+          Novo extra
+        </Botao>
+      }
+    >
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="relative min-w-0 flex-1 basis-56">
+          <Search aria-hidden className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-lavanda" />
+          <label htmlFor={idBusca} className="sr-only">
+            Buscar extra
+          </label>
+          <Entrada id={idBusca} className="pl-10" placeholder="Buscar por nome, função, telefone ou documento" value={busca} onChange={(e) => setBusca(e.target.value)} />
+        </div>
+        <Interruptor rotulo="Mostrar inativos" marcado={inativos} aoMudar={setInativos} />
+      </div>
+      {lista.error ? (
+        <ErroCarga erro={lista.error} aoTentar={() => lista.refetch()} />
+      ) : (
+        <Tabela
+          colunas={colunas}
+          linhas={linhas}
+          chave={(x) => x.id}
+          carregando={lista.isLoading}
+          vazio={
+            busca.trim() ? (
+              <Vazio titulo="Nenhum extra encontrado" descricao="Confira a busca ou mostre os inativos." />
+            ) : (
+              <Vazio
+                icone={<UserRoundPlus aria-hidden />}
+                titulo="Nenhum extra cadastrado"
+                descricao="Cadastre os freelas e diaristas com a pontuação e o valor da diária de costume."
+                acao={
+                  <Botao icone={<Plus aria-hidden />} onClick={() => setModal({ extra: null })}>
+                    Novo extra
+                  </Botao>
+                }
+              />
+            )
+          }
+        />
+      )}
+      <ModalExtra aberto={!!modal} extra={modal?.extra ?? null} aoFechar={() => setModal(null)} />
+    </Cartao>
+  )
+}
+
+export function ModalExtra({
+  aberto,
+  extra,
+  aoFechar,
+  aoSalvar,
+  nomeInicial,
+}: {
+  aberto: boolean
+  extra: Extra | null
+  aoFechar(): void
+  /** chamado com o id depois de salvar (ex.: lançar o dia em seguida) */
+  aoSalvar?(id: string): void
+  nomeInicial?: string
+}) {
+  const avisos = useAvisos()
+  const salvar = useSalvarExtra()
+  const id = useId()
+  const [nome, setNome] = useState('')
+  const [funcao, setFuncao] = useState('')
+  const [telefone, setTelefone] = useState('')
+  const [documento, setDocumento] = useState('')
+  const [pontos, setPontos] = useState('')
+  const [valor, setValor] = useState<number | null>(null)
+  const [observacoes, setObservacoes] = useState('')
+  const [ativo, setAtivo] = useState(true)
+  const [tentou, setTentou] = useState(false)
+
+  useEffect(() => {
+    if (!aberto) return
+    setNome(extra?.nome ?? nomeInicial ?? '')
+    setFuncao(extra?.funcao ?? '')
+    setTelefone(extra?.telefone ?? '')
+    setDocumento(extra?.documento ?? '')
+    setPontos(extra ? pontosTexto(extra.pontos_padrao) : '')
+    setValor(extra?.valor_diaria_centavos ?? null)
+    setObservacoes(extra?.observacoes ?? '')
+    setAtivo(extra?.ativo ?? true)
+    setTentou(false)
+  }, [aberto, extra, nomeInicial])
+
+  const pontosLidos = pontos.trim() === '' ? 0 : lerPontos(pontos)
+  const erros = {
+    nome: !nome.trim() ? 'Informe o nome' : null,
+    pontos: pontosLidos == null ? 'Pontos inválidos (0 a 9999,99)' : null,
+    valor: valor != null && (valor < 0 || valor > 100_000_000) ? 'Valor inválido' : null,
+  }
+
+  const enviar = async () => {
+    setTentou(true)
+    const primeiro = Object.values(erros).find(Boolean)
+    if (primeiro) return avisos.erro(primeiro)
+    try {
+      const novoId = await salvar.mutateAsync({
+        id: extra?.id,
+        dados: {
+          nome: nome.trim(),
+          funcao: funcao.trim() || null,
+          pontosPadrao: pontosLidos ?? 0,
+          valorDiariaCentavos: valor,
+          telefone: telefone.trim() || null,
+          documento: documento.trim() || null,
+          observacoes: observacoes.trim() || null,
+          ativo,
+        },
+      })
+      avisos.sucesso(extra ? 'Cadastro atualizado' : `${nome.trim()} cadastrado`)
+      aoSalvar?.(novoId)
+      aoFechar()
+    } catch (e) {
+      avisos.erro(e)
+    }
+  }
+
+  return (
+    <Modal
+      aberto={aberto}
+      aoFechar={aoFechar}
+      titulo={extra ? `Editar ${extra.nome}` : 'Novo extra'}
+      rodape={
+        <>
+          <Botao variante="secundario" onClick={aoFechar}>
+            Cancelar
+          </Botao>
+          <Botao onClick={enviar} carregando={salvar.isPending}>
+            {extra ? 'Salvar' : 'Cadastrar'}
+          </Botao>
+        </>
+      }
+    >
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <Campo rotulo="Nome" htmlFor={`${id}-n`} obrigatorio erro={tentou ? erros.nome : null}>
+            <Entrada id={`${id}-n`} value={nome} maxLength={120} autoComplete="off" onChange={(e) => setNome(e.target.value)} />
+          </Campo>
+        </div>
+        <Campo rotulo="Função" htmlFor={`${id}-f`} ajuda="Ex.: Garçom, Cozinha, Bar">
+          <Entrada id={`${id}-f`} value={funcao} maxLength={80} onChange={(e) => setFuncao(e.target.value)} />
+        </Campo>
+        <Campo rotulo="Telefone" htmlFor={`${id}-t`}>
+          <Entrada id={`${id}-t`} type="tel" inputMode="tel" value={telefone} maxLength={40} autoComplete="off" onChange={(e) => setTelefone(e.target.value)} />
+        </Campo>
+        <Campo rotulo="Pontuação padrão" htmlFor={`${id}-p`} erro={tentou ? erros.pontos : null} ajuda="Pontos de comissão em cada dia trabalhado.">
+          <Entrada
+            id={`${id}-p`}
+            className="numero"
+            inputMode="decimal"
+            placeholder="0"
+            value={pontos}
+            invalido={tentou && !!erros.pontos}
+            onChange={(e) => setPontos(e.target.value.replace(/[^\d,.]/g, ''))}
+          />
+        </Campo>
+        <Campo rotulo="Valor da diária" htmlFor={`${id}-v`} erro={tentou ? erros.valor : null} ajuda="Em branco: informar a cada dia.">
+          <EntradaMoeda id={`${id}-v`} centavos={valor} aoMudar={setValor} />
+        </Campo>
+        <div className="sm:col-span-2">
+          <Campo rotulo="Documento" htmlFor={`${id}-d`} ajuda="CPF ou RG (opcional).">
+            <Entrada id={`${id}-d`} value={documento} maxLength={40} autoComplete="off" onChange={(e) => setDocumento(e.target.value)} />
+          </Campo>
+        </div>
+        <div className="sm:col-span-2">
+          <Campo rotulo="Observações" htmlFor={`${id}-o`}>
+            <AreaTexto id={`${id}-o`} className="min-h-16" value={observacoes} onChange={(e) => setObservacoes(e.target.value)} />
+          </Campo>
+        </div>
+        {extra && (
+          <div className="sm:col-span-2">
+            <Interruptor rotulo="Ativo (pode receber dias novos)" marcado={ativo} aoMudar={setAtivo} />
+          </div>
+        )}
+      </div>
+    </Modal>
+  )
+}

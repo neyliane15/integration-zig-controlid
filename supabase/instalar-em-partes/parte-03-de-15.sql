@@ -1,8 +1,73 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 03 DE 11.
+-- Meu Dia de Gerente — instalação do banco, PARTE 03 DE 15.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000120_integracoes_sync.sql. Não edite à mão.
 
 begin;
+create or replace function public.integracoes_antes_gravar() returns trigger
+language plpgsql security definer
+set search_path = public, extensions, pg_temp
+as $$
+begin
+  new.nome := btrim(new.nome);
+  if jsonb_typeof(new.parametros) is distinct from 'object' then
+    new.parametros := '{}'::jsonb;
+  end if;
+  new.parametros := public.integracao_parametros_padrao(new.tipo) || new.parametros;
+  if new.tipo in ('controlid_acesso', 'controlid_rep') then
+    new.parametros := jsonb_set(new.parametros, '{envio}',
+      public.integracao_envio_padrao(new.tipo, new.parametros ->> 'modelo')
+      || case when jsonb_typeof(new.parametros -> 'envio') = 'object' then new.parametros -> 'envio' else '{}'::jsonb end);
+  end if;
+  if tg_op = 'INSERT' then
+    if not public.eh_sistema() then
+      new.cursor := '{}'::jsonb;
+      new.ultimo_sucesso_em := null;
+      new.ultima_execucao_em := null;
+      new.ultimo_status := null;
+      new.ultimo_erro := null;
+    end if;
+  else
+    new.id := old.id;
+    new.tipo := old.tipo;
+    new.empresa_id := old.empresa_id;
+    new.criado_em := old.criado_em;
+    if not public.eh_sistema() then
+      new.cursor := old.cursor;
+      new.ultimo_sucesso_em := old.ultimo_sucesso_em;
+      new.ultima_execucao_em := old.ultima_execucao_em;
+      new.ultimo_status := old.ultimo_status;
+      new.ultimo_erro := old.ultimo_erro;
+    end if;
+  end if;
+  return new;
+end $$;
+comment on function public.integracoes_antes_gravar() is
+  '[interno] Gatilho: tipo/empresa imutáveis; cursor e ultimo_* só pelo serviço; parâmetros padrão.';
+
+drop trigger if exists integracoes_antes_gravar on public.integracoes;
+create trigger integracoes_antes_gravar before insert or update on public.integracoes
+  for each row execute function public.integracoes_antes_gravar();
+drop trigger if exists integracoes_tocar on public.integracoes;
+create trigger integracoes_tocar before update on public.integracoes
+  for each row execute function public.tocar_atualizado_em();
+
+-- empresa_id dos filhos de integracoes vem do pai.
+create or replace function public.empresa_da_integracao() returns trigger
+language plpgsql security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v uuid;
+begin
+  if new.integracao_id is not null then
+    select empresa_id into v from public.integracoes where id = new.integracao_id;
+    if v is null then
+      raise exception 'Integração não encontrada' using errcode = 'P0002';
+    end if;
+    new.empresa_id := v;
+  end if;
+  return new;
+end $$;
 comment on function public.empresa_da_integracao() is '[interno] Gatilho: empresa_id = empresa da integração.';
 
 drop trigger if exists integracoes_segredos_empresa on public.integracoes_segredos;
@@ -126,6 +191,7 @@ as $$
     when 'zig' then array['token']
     when 'controlid_acesso' then array['url', 'login', 'senha']
     when 'controlid_rep' then array['url', 'login', 'senha']
+    when 'tagme' then array['token', 'cliente_id', 'cliente_segredo']
     else array[]::text[]
   end
 $$;
@@ -200,10 +266,11 @@ language sql immutable
 set search_path = public, extensions, pg_temp
 as $$
   select case p_escopo
-    when 'tudo' then p_tipo in ('zig', 'controlid_acesso', 'controlid_rep')
+    when 'tudo' then p_tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')
     when 'funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep')
     when 'batidas' then p_tipo in ('controlid_acesso', 'controlid_rep')
     when 'vendas' then p_tipo = 'zig'
+    when 'reservas' then p_tipo = 'tagme'
     when 'exportar_funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep')
     else false
   end
@@ -227,7 +294,7 @@ declare
   v_existe boolean;
   r record;
 begin
-  if p_escopo is null or p_escopo not in ('tudo', 'funcionarios', 'batidas', 'vendas', 'exportar_funcionarios',
+  if p_escopo is null or p_escopo not in ('tudo', 'funcionarios', 'batidas', 'vendas', 'reservas', 'exportar_funcionarios',
                                          'apurar_ponto', 'exportar_fechamento') then
     raise exception 'Escopo inválido' using errcode = '22023';
   end if;
@@ -556,68 +623,5 @@ end $$;
 comment on function public.ingestao_sync_pegar_solicitacoes(int) is
   '[servico] Pega as solicitações pendentes mais antigas (for update skip locked) e as passa a em_andamento.';
 
-create or replace function public.ingestao_sync_concluir_solicitacao(
-  p_solicitacao uuid, p_status text, p_mensagem text default null, p_execucao uuid default null
-) returns void
-language plpgsql volatile security definer
-set search_path = public, extensions, pg_temp
-as $$
-begin
-  if p_status is null or p_status not in ('concluida', 'erro') then
-    raise exception 'Status inválido' using errcode = '22023';
-  end if;
-  update public.sync_solicitacoes
-     set status = p_status, mensagem = p_mensagem, execucao_id = coalesce(p_execucao, execucao_id),
-         concluido_em = public.agora()
-   where id = p_solicitacao;
-  if not found then
-    raise exception 'Solicitação não encontrada' using errcode = 'P0002';
-  end if;
-end $$;
-comment on function public.ingestao_sync_concluir_solicitacao(uuid, text, text, uuid) is
-  '[servico] Conclui uma solicitação da fila (concluida | erro).';
-
-create or replace function public.ingestao_sync_iniciar(
-  p_tipo text, p_gatilho text, p_workflow text, p_empresa uuid default null, p_integracao uuid default null,
-  p_solicitacao uuid default null, p_periodo_inicio date default null, p_periodo_fim date default null,
-  p_n8n_execution_id text default null
-) returns uuid
-language plpgsql volatile security definer
-set search_path = public, extensions, pg_temp
-as $$
-declare
-  v_empresa uuid := p_empresa;
-  v_id uuid;
-begin
-  if p_integracao is not null then
-    select empresa_id into v_empresa from public.integracoes where id = p_integracao;
-    if v_empresa is null then
-      raise exception 'Integração não encontrada' using errcode = 'P0002';
-    end if;
-  elsif v_empresa is not null and not exists (select 1 from public.empresas where id = v_empresa) then
-    raise exception 'Empresa não encontrada' using errcode = 'P0002';
-  end if;
-
-  update public.sync_execucoes
-     set status = 'erro', erro = 'Expirada', finalizado_em = public.agora()
-   where status = 'executando' and tipo = p_tipo
-     and integracao_id is not distinct from p_integracao
-     and empresa_id is not distinct from v_empresa
-     and iniciado_em < public.agora() - interval '30 minutes';
-
-  insert into public.sync_execucoes (empresa_id, integracao_id, solicitacao_id, tipo, gatilho, workflow, n8n_execution_id,
-                                     status, iniciado_em, periodo_inicio, periodo_fim)
-  values (v_empresa, p_integracao, p_solicitacao, p_tipo, p_gatilho, coalesce(nullif(btrim(p_workflow), ''), '?'),
-          p_n8n_execution_id, 'executando', public.agora(), p_periodo_inicio, p_periodo_fim)
-  returning id into v_id;
-
-  if p_integracao is not null then
-    update public.integracoes set ultima_execucao_em = public.agora() where id = p_integracao;
-  end if;
-  return v_id;
-end $$;
-comment on function public.ingestao_sync_iniciar(text, text, text, uuid, uuid, uuid, date, date, text) is
-  '[servico] Abre uma sync_execucoes (executando) e marca ultima_execucao_em da integração.';
-
 commit;
-select 'parte 03 de 11 instalada' as resultado;
+select 'parte 03 de 15 instalada' as resultado;

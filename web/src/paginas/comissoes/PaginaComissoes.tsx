@@ -1,13 +1,14 @@
 import { useId, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { HandCoins, Plus } from 'lucide-react'
-import { Botao, CabecalhoPagina, Campo, Entrada, ErroCarga, FiltroPeriodo, Interruptor, Modal, Selecao, Selo, Tabela, Vazio, type Coluna } from '@/componentes/ui'
+import { Botao, CabecalhoPagina, Campo, Entrada, ErroCarga, FiltroPeriodo, Interruptor, Modal, Pilulas, Selecao, Selo, Tabela, Vazio, type Coluna } from '@/componentes/ui'
 import { useAvisos } from '@/componentes/avisos'
 import { useContextoEmpresa } from '@/consultas/funcionarios'
 import { useCriarFechamento, useFechamentos, type FechamentoNaLista } from '@/consultas/comissoes'
 import { useLojasZig } from '@/consultas/vendas'
 import { formatarCentavos, formatarData, somarDias } from '@/lib/formato'
-import { rotuloStatusFechamento } from '@/lib/rotulos'
+import type { ModoRateio } from '@/tipos/banco'
+import { descricaoModoRateio, rotuloModoRateio, rotuloStatusFechamento } from '@/lib/rotulos'
 import { tituloPadraoFechamento, validarPeriodoFechamento } from '@/lib/comissao'
 
 export function PaginaComissoes() {
@@ -35,7 +36,12 @@ export function PaginaComissoes() {
     {
       id: 'status',
       titulo: 'Situação',
-      render: (f) => <Selo tom={f.status === 'fechado' ? 'sucesso' : 'ouro'}>{rotuloStatusFechamento[f.status]}</Selo>,
+      render: (f) => (
+        <span className="flex flex-wrap items-center gap-1.5">
+          <Selo tom={f.status === 'fechado' ? 'sucesso' : 'ouro'}>{rotuloStatusFechamento[f.status]}</Selo>
+          <span className="text-xs text-lavanda">{rotuloModoRateio[f.modo_rateio]}</span>
+        </span>
+      ),
     },
     { id: 'servico', titulo: 'Serviço bruto', alinhar: 'direita', ocultarNoCelular: true, render: (f) => <span className="numero">{formatarCentavos(f.servico_bruto_centavos)}</span> },
     { id: 'base', titulo: 'Base distribuível', alinhar: 'direita', render: (f) => <span className="numero font-semibold text-ouro-claro">{formatarCentavos(f.base_distribuivel_centavos)}</span> },
@@ -58,7 +64,7 @@ export function PaginaComissoes() {
             Comissões <span className="titulo-italico">da equipe</span>
           </>
         }
-        subtitulo="Serviço (10%) da Zig menos a retenção, rateado pelos pontos de comissão de cada funcionário."
+        subtitulo="Serviço (10%) da Zig menos a retenção, rateado dia a dia pelos pontos de quem trabalhou — funcionários e extras."
         acoes={
           <Botao icone={<Plus aria-hidden className="size-4" />} onClick={() => setNovo(true)}>
             Novo fechamento
@@ -101,13 +107,14 @@ function ModalNovoFechamento({ aoFechar, aoCriar }: { aoFechar(): void; aoCriar(
   const [titulo, setTitulo] = useState('')
   const [loja, setLoja] = useState('')
   const [proporcional, setProporcional] = useState(false)
+  const [modo, setModo] = useState<ModoRateio>('diario')
   const id = useId()
   const erro = validarPeriodoFechamento(inicio, fim)
 
   const salvar = async () => {
     if (erro) return avisos.erro(erro)
     try {
-      const novoId = await criar.mutateAsync({ inicio, fim, titulo: titulo.trim() || null, loja: loja || null, proporcional })
+      const novoId = await criar.mutateAsync({ inicio, fim, titulo: titulo.trim() || null, loja: loja || null, proporcional: modo === 'periodo' && proporcional, modo })
       avisos.sucesso('Rascunho criado')
       aoCriar(novoId)
     } catch (e) {
@@ -160,9 +167,23 @@ function ModalNovoFechamento({ aoFechar, aoCriar }: { aoFechar(): void; aoCriar(
             </Selecao>
           </Campo>
         )}
-        <Interruptor rotulo="Proporcional aos dias trabalhados" marcado={proporcional} aoMudar={setProporcional} />
+        <div>
+          <p className="mb-1.5 text-sm font-semibold text-lavanda">Rateio</p>
+          <Pilulas<ModoRateio>
+            rotulo="Modo de rateio"
+            opcoes={[
+              { id: 'diario', rotulo: 'Diário (recomendado)' },
+              { id: 'periodo', rotulo: 'Por período' },
+            ]}
+            valor={modo}
+            aoMudar={setModo}
+          />
+          <p className="mt-1.5 text-xs text-lavanda">{descricaoModoRateio[modo]}</p>
+        </div>
+        {modo === 'periodo' && <Interruptor rotulo="Proporcional aos dias trabalhados" marcado={proporcional} aoMudar={setProporcional} />}
         <p className="text-xs text-lavanda">
-          Entram os funcionários ativos, que participam da comissão e com pontos no fim do período. Você ajusta tudo no rascunho antes de fechar.
+          Entram os funcionários ativos que participam da comissão e os extras com dias lançados no período. Você ajusta tudo no rascunho antes
+          de fechar.
         </p>
       </div>
     </Modal>

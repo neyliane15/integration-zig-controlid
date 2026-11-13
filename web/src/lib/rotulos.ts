@@ -9,7 +9,9 @@ import type {
   GatilhoExecucao,
   OperacaoEnvio,
   OrigemBatida,
+  ModoRateio,
   Papel,
+  TipoParticipanteComissao,
   Prioridade,
   Recorrencia,
   SituacaoDia,
@@ -17,6 +19,9 @@ import type {
   StatusEnvioControlId,
   StatusExecucao,
   StatusFechamento,
+  StatusReserva,
+  OrigemReserva,
+  TipoOcorrencia,
   StatusSolicitacao,
   StatusTarefa,
   StatusUltimaExecucao,
@@ -64,6 +69,7 @@ export const rotuloSituacaoDia: Record<SituacaoDia, string> = {
   sem_escala: 'Sem escala',
   abonado: 'Abonado',
   em_andamento: 'Em andamento',
+  suspenso: 'Suspenso',
 }
 
 export const rotuloOrigemBatida: Record<OrigemBatida, string> = {
@@ -79,6 +85,7 @@ export const rotuloTipoAbono: Record<TipoAbono, string> = {
   atestado: 'Atestado',
   compensacao: 'Compensação',
   outro: 'Outro',
+  suspensao: 'Suspensão',
 }
 
 export const rotuloTipoLancamento: Record<TipoLancamento, string> = {
@@ -92,6 +99,7 @@ export const rotuloTipoIntegracao: Record<TipoIntegracao, string> = {
   zig: 'Zig',
   controlid_acesso: 'Control iD — controle de acesso',
   controlid_rep: 'Control iD — relógio de ponto (REP)',
+  tagme: 'Tagme — reservas',
 }
 
 export const rotuloStatusExecucao: Record<StatusExecucao, string> = {
@@ -141,6 +149,7 @@ export const rotuloEscopoSync: Record<EscopoSync, string> = {
   exportar_funcionarios: 'Enviar funcionários ao equipamento',
   apurar_ponto: 'Recalcular ponto',
   exportar_fechamento: 'Enviar fechamento por e-mail',
+  reservas: 'Reservas',
 }
 
 export const rotuloTipoExecucao: Record<TipoExecucao, string> = {
@@ -155,6 +164,7 @@ export const rotuloTipoExecucao: Record<TipoExecucao, string> = {
   apurar_ponto: 'Apuração do ponto',
   tarefas_gerar: 'Geração de tarefas',
   exportar_fechamento: 'Envio de fechamento',
+  tagme_importar: 'Tagme · reservas',
 }
 
 export const rotuloGatilhoExecucao: Record<GatilhoExecucao, string> = {
@@ -210,4 +220,41 @@ export const rotuloOperacaoEnvio: Record<OperacaoEnvio, string> = {
 export const rotuloAoDesligar: Record<'remover' | 'bloquear', string> = {
   remover: 'Remover do equipamento',
   bloquear: 'Bloquear (manter cadastro)',
+}
+
+// ---------------------------------------- adendo extras / ocorrências / reservas
+export const rotuloTipoOcorrencia: Record<TipoOcorrencia, string> = {
+  advertencia: 'Advertência',
+  suspensao: 'Suspensão',
+}
+
+export const rotuloStatusReserva: Record<StatusReserva, string> = {
+  confirmada: 'Confirmada',
+  pendente: 'Pendente',
+  cancelada: 'Cancelada',
+  sentada: 'Sentada',
+  concluida: 'Concluída',
+  nao_compareceu: 'Não compareceu',
+}
+
+export const rotuloOrigemReserva: Record<OrigemReserva, string> = {
+  tagme: 'Tagme',
+  manual: 'Manual',
+  importacao: 'Importada (CSV)',
+}
+
+/** adendo E.3 */
+export const rotuloModoRateio: Record<ModoRateio, string> = {
+  diario: 'Diário',
+  periodo: 'Por período',
+}
+
+export const descricaoModoRateio: Record<ModoRateio, string> = {
+  diario: 'O serviço de cada dia é dividido entre quem trabalhou naquele dia (batida no ponto ou extra lançado), pelos pontos.',
+  periodo: 'O serviço do período inteiro é dividido pelos pontos de cada um (sem olhar a presença dia a dia).',
+}
+
+export const rotuloTipoParticipante: Record<TipoParticipanteComissao, string> = {
+  funcionario: 'Funcionário',
+  extra: 'Extra',
 }

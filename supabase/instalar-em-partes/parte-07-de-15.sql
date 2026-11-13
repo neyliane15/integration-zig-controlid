@@ -1,8 +1,89 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 07 DE 11.
+-- Meu Dia de Gerente — instalação do banco, PARTE 07 DE 15.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql. Não edite à mão.
 
 begin;
+-- ========================================================================= RLS
+alter table public.ponto_batidas enable row level security;
+alter table public.ponto_dias enable row level security;
+alter table public.ponto_alarmes enable row level security;
+alter table public.ponto_ajustes enable row level security;
+alter table public.ponto_abonos enable row level security;
+alter table public.banco_horas_lancamentos enable row level security;
+
+drop policy if exists ponto_batidas_ler on public.ponto_batidas;
+create policy ponto_batidas_ler on public.ponto_batidas for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
+drop policy if exists ponto_dias_ler on public.ponto_dias;
+create policy ponto_dias_ler on public.ponto_dias for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
+drop policy if exists ponto_alarmes_ler on public.ponto_alarmes;
+create policy ponto_alarmes_ler on public.ponto_alarmes for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
+drop policy if exists ponto_ajustes_ler on public.ponto_ajustes;
+create policy ponto_ajustes_ler on public.ponto_ajustes for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+drop policy if exists ponto_abonos_ler on public.ponto_abonos;
+create policy ponto_abonos_ler on public.ponto_abonos for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
+drop policy if exists banco_horas_ler on public.banco_horas_lancamentos;
+create policy banco_horas_ler on public.banco_horas_lancamentos for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
+
+-- ================================================================ auxiliares
+create or replace function public.ponto_validar_periodo(p_inicio date, p_fim date, p_max_dias int)
+returns void language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+begin
+  if p_inicio is null or p_fim is null or p_fim < p_inicio then
+    raise exception 'Período inválido' using errcode = '22023';
+  end if;
+  if p_fim - p_inicio + 1 > p_max_dias then
+    raise exception 'Período máximo de % dias', p_max_dias using errcode = '22023';
+  end if;
+end $$;
+comment on function public.ponto_validar_periodo(date, date, int) is '[interno] Valida período (Período inválido / Período máximo de N dias).';
+
+create or replace function public.ponto_nome_autor()
+returns text language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  select coalesce((select p.nome from public.perfis p where p.id = auth.uid()), 'Sistema')
+$$;
+comment on function public.ponto_nome_autor() is '[interno] Nome do perfil logado ou ''Sistema''.';
+
+-- resolver_empresa (b1) + checagem nula-segura do nível (defesa em profundidade).
+create or replace function public.ponto_resolver_empresa(p_empresa uuid, p_nivel text)
+returns uuid language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v uuid;
+begin
+  v := public.resolver_empresa(p_empresa, p_nivel);
+  if (case p_nivel when 'ler' then public.pode_ler(v) when 'operar' then public.pode_operar(v)
+                   when 'administrar' then public.pode_administrar(v) end) is not true then
+    raise exception 'Sem permissão' using errcode = '42501';
+  end if;
+  return v;
+end $$;
+comment on function public.ponto_resolver_empresa(uuid, text) is '[interno] resolver_empresa com checagem nula-segura do nível.';
+
+-- Instante do horário de escala t no dia de trabalho D (§2.4).
+create or replace function public.ponto_instante_escala(p_data date, p_hora time, p_fuso text, p_virada time)
+returns timestamptz language sql stable set search_path = public, extensions, pg_temp as $$
+  select ((p_data + p_hora) + (case when p_hora < p_virada then interval '1 day' else interval '0' end)) at time zone p_fuso
+$$;
+comment on function public.ponto_instante_escala(date, time, text, time) is '[interno] Instante de um horário de escala no dia de trabalho (§2.4).';
+
+create or replace function public.ponto_fmt_minutos(p_minutos bigint)
+returns text language sql immutable set search_path = public, extensions, pg_temp as $$
+  select case when p_minutos < 0 then '-' else '' end
+      || (abs(p_minutos) / 60)::text || 'h' || lpad((abs(p_minutos) % 60)::text, 2, '0')
+$$;
+comment on function public.ponto_fmt_minutos(bigint) is '[interno] Minutos como 7h30 / -3h26.';
+
+-- Funcionário dentro do vínculo na data?
+create or replace function public.ponto_no_vinculo(p_admissao date, p_desligamento date, p_data date)
+returns boolean language sql immutable set search_path = public, extensions, pg_temp as $$
+  select (p_admissao is null or p_data >= p_admissao) and (p_desligamento is null or p_data <= p_desligamento)
+$$;
+comment on function public.ponto_no_vinculo(date, date, date) is '[interno] Data dentro do vínculo (admissão/desligamento).';
+
 -- ============================================== gatilhos das tabelas de ponto
 create or replace function public.ponto_empresa_do_funcionario()
 returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -294,6 +375,7 @@ begin
 
   -- 7. Situação
   if not v_encerrado then v_situacao := 'em_andamento';
+  elsif v_abono = 'suspensao' then v_situacao := 'suspenso';
   elsif v_abono is not null then v_situacao := 'abonado';
   elsif v_k = 0 and v_n = 0 then v_situacao := case when j.id is null then 'sem_escala' else 'folga' end;
   elsif v_n = 0 then v_situacao := 'ausente';
@@ -523,109 +605,5 @@ drop trigger if exists ponto_documentos on public.funcionarios;
 create trigger ponto_documentos after insert or update of cpf, pis on public.funcionarios
   for each row execute function public.ponto_gatilho_funcionario_documentos();
 
-create or replace function public.ponto_gatilho_funcionario_vinculo()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_atual date;
-begin
-  v_atual := public.dia_de_trabalho(public.agora(), new.empresa_id);
-  perform public.ponto_apurar(new.id, v_atual - 93, v_atual);
-  return null;
-end $$;
-comment on function public.ponto_gatilho_funcionario_vinculo() is '[interno] §7.8: mudança de admissão/desligamento/ativo → reapura 93 dias.';
-
-drop trigger if exists ponto_vinculo on public.funcionarios;
-create trigger ponto_vinculo after update of data_admissao, data_desligamento, ativo on public.funcionarios
-  for each row
-  when (old.data_admissao is distinct from new.data_admissao
-        or old.data_desligamento is distinct from new.data_desligamento
-        or old.ativo is distinct from new.ativo)
-  execute function public.ponto_gatilho_funcionario_vinculo();
-
-create or replace function public.ponto_gatilho_funcionario_jornada()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_func   uuid;
-  v_desde  date;
-  v_empresa uuid;
-  v_atual  date;
-begin
-  if tg_op = 'DELETE' then
-    v_func := old.funcionario_id; v_desde := old.vigente_desde;
-  elsif tg_op = 'UPDATE' then
-    v_func := new.funcionario_id; v_desde := least(old.vigente_desde, new.vigente_desde);
-    if old.funcionario_id is distinct from new.funcionario_id then
-      select f.empresa_id into v_empresa from public.funcionarios f where f.id = old.funcionario_id;
-      if v_empresa is not null then
-        v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
-        perform public.ponto_apurar(old.funcionario_id, greatest(old.vigente_desde, v_atual - 93), v_atual);
-      end if;
-    end if;
-  else
-    v_func := new.funcionario_id; v_desde := new.vigente_desde;
-  end if;
-  select f.empresa_id into v_empresa from public.funcionarios f where f.id = v_func;
-  if v_empresa is null then return null; end if;
-  v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
-  perform public.ponto_apurar(v_func, greatest(v_desde, v_atual - 93), v_atual);
-  return null;
-end $$;
-comment on function public.ponto_gatilho_funcionario_jornada() is '[interno] §7.8: escala do funcionário mudou → reapura desde vigente_desde (máx. 93 dias).';
-
-drop trigger if exists ponto_reapurar on public.funcionario_jornadas;
-create trigger ponto_reapurar after insert or update or delete on public.funcionario_jornadas
-  for each row execute function public.ponto_gatilho_funcionario_jornada();
-
-create or replace function public.ponto_gatilho_jornada()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_jornada uuid;
-  v_empresa uuid;
-  v_atual   date;
-  f         record;
-begin
-  if tg_table_name = 'jornadas' then
-    v_jornada := coalesce(new.id, old.id);
-  else
-    v_jornada := coalesce(new.jornada_id, old.jornada_id);
-  end if;
-  select j.empresa_id into v_empresa from public.jornadas j where j.id = v_jornada;
-  if v_empresa is null then return null; end if;
-  v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
-  for f in
-    select distinct fj.funcionario_id from public.funcionario_jornadas fj
-     where fj.jornada_id = v_jornada
-  loop
-    perform public.ponto_apurar(f.funcionario_id, v_atual - 31, v_atual);
-  end loop;
-  return null;
-end $$;
-comment on function public.ponto_gatilho_jornada() is '[interno] §7.8: jornada/jornada_dias mudou → reapura 31 dias dos funcionários dessa jornada.';
-
-drop trigger if exists ponto_reapurar on public.jornada_dias;
-create trigger ponto_reapurar after insert or update or delete on public.jornada_dias
-  for each row execute function public.ponto_gatilho_jornada();
-drop trigger if exists ponto_reapurar on public.jornadas;
-create trigger ponto_reapurar after update of tolerancia_batida_minutos, tolerancia_diaria_minutos on public.jornadas
-  for each row execute function public.ponto_gatilho_jornada();
-
--- Empresa: mudar fuso/virada/janela/alarme de atraso → reapura 31 dias.
-create or replace function public.ponto_gatilho_empresa()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_atual date;
-begin
-  v_atual := public.dia_de_trabalho(public.agora(), new.id);
-  perform public.ponto_apurar_empresa(new.id, v_atual - 31, v_atual);
-  return null;
-end $$;
-comment on function public.ponto_gatilho_empresa() is '[interno] Parâmetros de ponto da empresa mudaram → reapura 31 dias.';
-
-drop trigger if exists ponto_reapurar on public.empresas;
-create trigger ponto_reapurar after update of fuso, virada_dia, ponto_janela_duplicada_minutos, ponto_alarme_atraso on public.empresas
-  for each row
-  when (old.fuso is distinct from new.fuso or old.virada_dia is distinct from new.virada_dia
-        or old.ponto_janela_duplicada_minutos is distinct from new.ponto_janela_duplicada_minutos
-        or old.ponto_alarme_atraso is distinct from new.ponto_alarme_atraso)
-  execute function public.ponto_gatilho_empresa();
-
 commit;
-select 'parte 07 de 11 instalada' as resultado;
+select 'parte 07 de 15 instalada' as resultado;

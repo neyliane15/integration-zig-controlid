@@ -161,12 +161,12 @@ begin
   v_fim_ant := v_ini_mes - 1;
   if not exists (select 1 from public.comissao_fechamentos
                   where empresa_id = v_empresa and data_inicio = v_ini_ant and data_fim = v_fim_ant) then
-    v_fech := public.comissao_criar_fechamento(v_ini_ant, v_fim_ant, null, null, false, v_empresa);
+    v_fech := public.comissao_criar_fechamento(v_ini_ant, v_fim_ant, null, null, false, v_empresa, 'diario');
     perform public.comissao_fechar(v_fech);
   end if;
   if not exists (select 1 from public.comissao_fechamentos
                   where empresa_id = v_empresa and data_inicio = v_ini_mes and status = 'rascunho') then
-    v_fech := public.comissao_criar_fechamento(v_ini_mes, v_hoje, null, null, true, v_empresa);
-    perform public.comissao_atualizar_fechamento(v_fech, null, 0, null, null, 'Prévia do mês corrente (proporcional aos dias trabalhados).');
+    v_fech := public.comissao_criar_fechamento(v_ini_mes, v_hoje, null, null, false, v_empresa, 'diario');
+    perform public.comissao_atualizar_fechamento(v_fech, null, 0, null, null, 'Prévia do mês corrente (rateio diário por presença).');
   end if;
 end $$;
