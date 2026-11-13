@@ -9,35 +9,96 @@
   --font-sans: 'Manrope Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', Menlo, monospace;
 
-  --color-noite: #060a17;
-  --color-noite-2: #0a1022;
-  --color-cartao: #121a30;
-  --color-cartao-2: #18223d;
-  --color-entrada: #0c1326;
-  --color-borda: #232c47;
-  --color-borda-forte: #34406a;
-  --color-ouro: #c9a23d;
-  --color-ouro-claro: #e8c878;
-  --color-ouro-escuro: #9e7c27;
-  --color-tinta-ouro: #1a1405;
-  --color-creme: #f4eedc;
-  --color-lavanda: #8d93b8;
-  --color-lavanda-escuro: #848ab0; /* revisão 2: era #5e6488 (contraste 2,7–3,4:1); agora ≥ 4,6:1 em todos os fundos */
-  --color-sucesso: #4fb286;
-  --color-alerta: #e8873a;
-  --color-perigo: #e5604f;
-  --color-info: #6fa8dc;
+  /* Paleta do cliente (modelo da escala, v4). Os NOMES antigos continuam sendo a API (bg-noite = fundo,
+     text-creme = texto, ouro = acento verde-oliva...). Valores abaixo = modo CLARO (padrão); o escuro é
+     redefinido em @layer base (prefers-color-scheme: dark e :root[data-theme='dark']). */
+  --color-noite: #f6f1e4; /* --bg: fundo da página */
+  --color-noite-2: #efe8d6; /* barra lateral, rodapés fixos */
+  --color-cartao: #fffdf7; /* --card */
+  --color-cartao-2: #f1ecdf; /* hover de linha, cabeçalho de tabela */
+  --color-entrada: #faf7ee; /* fundo de inputs */
+  --color-borda: #e3dcc8; /* --ln */
+  --color-borda-forte: #cbc2a6;
+  --color-ouro: #5f6b3a; /* --ac: acento, botão primário, item ativo */
+  --color-ouro-claro: #4d5730; /* destaques em texto, hover do primário */
+  --color-ouro-escuro: #434c29; /* pressionado do primário */
+  --color-tinta-ouro: #f6f1e4; /* texto sobre o acento (= --bg) */
+  --color-creme: #2b2f1e; /* --ink: texto principal */
+  --color-lavanda: #5f634d; /* texto secundário (--mut #6f7360 escurecido p/ AA) */
+  --color-lavanda-escuro: #676b58; /* placeholders, rótulos secundários (≥ 4,5:1) */
+  --color-sucesso: #5f6b3a; /* = acento */
+  --color-alerta: #8a5a0c; /* aviso: âmbar suave */
+  --color-perigo: #a8432f; /* erro/folga em texto: terracota (--off escurecido p/ AA) */
+  --color-info: #3f6a8a;
+  --color-acento-suave: #e4e8d2; /* --acs */
+  --color-folga: #c8553d; /* --off: preenchimentos/contornos de folga e alerta */
+  --color-folga-suave: #f7ddd5; /* --offs */
+  --color-veu: #2b2f1e; /* fundo escurecido de modais (usar com /opacidade) */
 
   --radius-cartao: 20px;
   --radius-entrada: 12px;
   --radius-pilula: 999px;
 
-  --shadow-cartao: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 24px 48px -24px rgb(0 0 0 / 0.6);
+  --shadow-cartao: 0 1px 2px rgb(43 47 30 / 0.05), 0 18px 40px -26px rgb(43 47 30 / 0.35);
 }
 
 @layer base {
   :root {
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      color-scheme: dark;
+      --color-noite: #1c1f14;
+      --color-noite-2: #181b11;
+      --color-cartao: #262a1b;
+      --color-cartao-2: #2e3322;
+      --color-entrada: #1f2316;
+      --color-borda: #3a3f2a;
+      --color-borda-forte: #4d5438;
+      --color-ouro: #a9bb6c;
+      --color-ouro-claro: #bccb86;
+      --color-ouro-escuro: #93a65a;
+      --color-tinta-ouro: #1c1f14;
+      --color-creme: #f1eddc;
+      --color-lavanda: #a9ad98;
+      --color-lavanda-escuro: #9a9e88;
+      --color-sucesso: #a9bb6c;
+      --color-alerta: #e0b45a;
+      --color-perigo: #ee8a72;
+      --color-info: #8fb4d6;
+      --color-acento-suave: #363d22;
+      --color-folga: #ee8a72;
+      --color-folga-suave: #4a2a22;
+      --color-veu: #0b0d07;
+      --shadow-cartao: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 24px 48px -24px rgb(0 0 0 / 0.6);
+    }
+  }
+  :root[data-theme='dark'] {
     color-scheme: dark;
+    --color-noite: #1c1f14;
+    --color-noite-2: #181b11;
+    --color-cartao: #262a1b;
+    --color-cartao-2: #2e3322;
+    --color-entrada: #1f2316;
+    --color-borda: #3a3f2a;
+    --color-borda-forte: #4d5438;
+    --color-ouro: #a9bb6c;
+    --color-ouro-claro: #bccb86;
+    --color-ouro-escuro: #93a65a;
+    --color-tinta-ouro: #1c1f14;
+    --color-creme: #f1eddc;
+    --color-lavanda: #a9ad98;
+    --color-lavanda-escuro: #9a9e88;
+    --color-sucesso: #a9bb6c;
+    --color-alerta: #e0b45a;
+    --color-perigo: #ee8a72;
+    --color-info: #8fb4d6;
+    --color-acento-suave: #363d22;
+    --color-folga: #ee8a72;
+    --color-folga-suave: #4a2a22;
+    --color-veu: #0b0d07;
+    --shadow-cartao: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 24px 48px -24px rgb(0 0 0 / 0.6);
   }
   html,
   body {
@@ -75,8 +136,8 @@
     transition: background-color 9999s ease-out 0s;
   }
   ::-webkit-calendar-picker-indicator {
-    filter: invert(0.75) sepia(0.4) saturate(2) hue-rotate(5deg);
     cursor: pointer;
+    opacity: 0.7;
   }
   ::selection {
     background: color-mix(in srgb, var(--color-ouro) 35%, transparent);
@@ -112,15 +173,15 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* fundo das telas de acesso: noite com um brilho dourado muito discreto */
+  /* fundo das telas de acesso: fundo com um brilho do acento muito discreto */
   .fundo-noite {
     background:
-      radial-gradient(1100px 520px at 50% -12%, rgb(201 162 61 / 0.075), transparent 62%),
-      radial-gradient(900px 600px at 100% 110%, rgb(52 64 106 / 0.22), transparent 60%),
+      radial-gradient(1100px 520px at 50% -12%, color-mix(in srgb, var(--color-ouro) 9%, transparent), transparent 62%),
+      radial-gradient(900px 600px at 100% 110%, color-mix(in srgb, var(--color-folga) 7%, transparent), transparent 60%),
       var(--color-noite);
   }
 
-  /* fio dourado no topo de cartões de destaque */
+  /* fio do acento no topo de cartões de destaque */
   .fio-ouro {
     position: relative;
   }
@@ -129,12 +190,12 @@
     position: absolute;
     inset: 0 24px auto;
     height: 1px;
-    background: linear-gradient(90deg, transparent, rgb(201 162 61 / 0.55), transparent);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-ouro) 55%, transparent), transparent);
     pointer-events: none;
   }
 
   .esqueleto {
-    background: linear-gradient(90deg, var(--color-cartao-2) 0%, #1f2a4a 45%, var(--color-cartao-2) 90%);
+    background: linear-gradient(90deg, var(--color-cartao-2) 0%, var(--color-borda) 45%, var(--color-cartao-2) 90%);
     background-size: 220% 100%;
     animation: mdg-brilho 1.4s ease-in-out infinite;
   }

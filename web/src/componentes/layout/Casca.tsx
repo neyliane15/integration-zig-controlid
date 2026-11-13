@@ -5,10 +5,11 @@
 import { Suspense, useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import clsx from 'clsx'
-import { Building2, LogOut, Menu as IconeMenu, MoreHorizontal, X } from 'lucide-react'
+import { Building2, LogOut, Menu as IconeMenu, Monitor, Moon, MoreHorizontal, Sun, X } from 'lucide-react'
 import { useSessao, useEmpresaAtual, usePerfil } from '@/lib/sessao'
 import { rotuloPapel } from '@/lib/rotulos'
 import { ehMaster } from '@/lib/permissoes'
+import { useTema, type Tema } from '@/lib/tema'
 import { Carregando, FOCO, Vazio } from '../ui'
 import { Marca } from './Marca'
 import { MenuLateral, itensDoPapel } from './Menu'
@@ -47,6 +48,38 @@ function BlocoUsuario() {
   )
 }
 
+const OPCOES_TEMA: { id: Tema; rotulo: string; icone: typeof Sun }[] = [
+  { id: 'claro', rotulo: 'Claro', icone: Sun },
+  { id: 'escuro', rotulo: 'Escuro', icone: Moon },
+  { id: 'auto', rotulo: 'Automático', icone: Monitor },
+]
+
+function AlternadorTema() {
+  const [tema, definir] = useTema()
+  return (
+    <div role="radiogroup" aria-label="Tema" className="flex gap-1 rounded-entrada border border-borda bg-cartao/60 p-1">
+      {OPCOES_TEMA.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          role="radio"
+          aria-checked={tema === o.id}
+          title={`Tema ${o.rotulo.toLowerCase()}`}
+          onClick={() => definir(o.id)}
+          className={clsx(
+            'flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors',
+            tema === o.id ? 'bg-ouro text-tinta-ouro' : 'text-lavanda hover:bg-cartao-2 hover:text-creme',
+            FOCO,
+          )}
+        >
+          <o.icone aria-hidden className="size-3.5" />
+          {o.rotulo}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function NomeEmpresa() {
   const { empresa } = useEmpresaAtual()
   if (!empresa) return null
@@ -66,7 +99,10 @@ function ConteudoLateral({ aoNavegar }: { aoNavegar?(): void }) {
       <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-width:thin]">
         <MenuLateral papel={perfil.papel} aoNavegar={aoNavegar} />
       </div>
-      <BlocoUsuario />
+      <div className="flex flex-col gap-2">
+        <AlternadorTema />
+        <BlocoUsuario />
+      </div>
     </div>
   )
 }
@@ -138,7 +174,7 @@ export function Casca() {
       {/* gaveta — celular */}
       {gaveta && (
         <div className="fixed inset-0 z-50 lg:hidden">
-          <div aria-hidden className="modal-fundo absolute inset-0 bg-[#02040b]/75" onClick={() => setGaveta(false)} />
+          <div aria-hidden className="modal-fundo absolute inset-0 bg-veu/60" onClick={() => setGaveta(false)} />
           <div
             id="gaveta-menu"
             role="dialog"

@@ -81,7 +81,7 @@ export function FotoFacial({
     ctx.clearRect(0, 0, c.width, c.height)
     ctx.drawImage(origem.img, sx, sy, sw, sh, 0, 0, c.width, c.height)
     // guia oval do rosto
-    ctx.strokeStyle = 'rgba(232,200,120,0.8)'
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--color-ouro').trim() || '#5f6b3a'
     ctx.setLineDash([6, 6])
     ctx.lineWidth = 2
     ctx.beginPath()

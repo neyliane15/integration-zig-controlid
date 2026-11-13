@@ -36,7 +36,7 @@ export interface BotaoProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const VARIANTES: Record<NonNullable<BotaoProps['variante']>, string> = {
   primario:
-    'bg-ouro text-tinta-ouro font-bold shadow-[0_1px_0_rgb(255_255_255/0.25)_inset,0_8px_24px_-12px_rgb(201_162_61/0.55)] hover:bg-ouro-claro active:bg-ouro-escuro',
+    'bg-ouro text-tinta-ouro font-bold shadow-[0_8px_22px_-14px_var(--color-ouro)] hover:bg-ouro-claro active:bg-ouro-escuro',
   secundario: 'border border-borda bg-entrada text-creme font-semibold hover:border-borda-forte hover:bg-cartao-2',
   fantasma: 'bg-transparent text-lavanda font-semibold hover:bg-cartao-2 hover:text-creme',
   perigo: 'border border-perigo/50 bg-perigo/10 text-perigo font-bold hover:bg-perigo hover:text-noite',
@@ -828,7 +828,7 @@ export function Modal({
   if (!aberto) return null
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-6">
-      <div aria-hidden className="modal-fundo absolute inset-0 bg-[#02040b]/75 backdrop-blur-[2px]" onClick={aoFechar} />
+      <div aria-hidden className="modal-fundo absolute inset-0 bg-veu/60 backdrop-blur-[2px]" onClick={aoFechar} />
       <div
         ref={caixa}
         role="dialog"
