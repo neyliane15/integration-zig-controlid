@@ -54,7 +54,11 @@
       "id": "2909e7cb-74de-417d-85e6-a7ecd754dfd7",
       "parameters": {
         "source": "database",
-        "workflowId": "={{ $json._despacho.workflow_id }}",
+        "workflowId": {
+          "__rl": true,
+          "value": "={{ $json._despacho.workflow_id }}",
+          "mode": "id"
+        },
         "mode": "each",
         "options": {
           "waitForSubWorkflow": true
@@ -62,7 +66,7 @@
       },
       "name": "Executar subfluxo",
       "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.1,
+      "typeVersion": 1.2,
       "position": [
         520,
         0
