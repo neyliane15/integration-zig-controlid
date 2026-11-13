@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Escala 5x2 · Macaw Camboinhas</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f1e4;--card:#fffdf7;--ink:#2b2f1e;--mut:#6f7360;--ac:#5f6b3a;--acs:#e4e8d2;--off:#c8553d;--offs:#f7ddd5;--ln:#e3dcc8}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1f14;--card:#262a1b;--ink:#f1eddc;--mut:#a9ad98;--ac:#a9bb6c;--acs:#363d22;--off:#ee8a72;--offs:#4a2a22;--ln:#3a3f2a}}
+:root[data-theme="dark"]{--bg:#1c1f14;--card:#262a1b;--ink:#f1eddc;--mut:#a9ad98;--ac:#a9bb6c;--acs:#363d22;--off:#ee8a72;--offs:#4a2a22;--ln:#3a3f2a}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.4}
+.w{max-width:980px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:22px;margin:0}.sub{color:var(--mut);font-size:14px;margin:4px 0 18px}
+.tabs,.days{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px}
+button{font:inherit;cursor:pointer;border:1px solid var(--ln);background:var(--card);color:var(--ink);border-radius:999px;padding:8px 14px;white-space:nowrap}
+button.on{background:var(--ac);border-color:var(--ac);color:var(--bg);font-weight:600}
+button.pri{background:var(--ac);border-color:var(--ac);color:var(--bg);font-weight:600}
+.card{background:var(--card);border:1px solid var(--ln);border-radius:16px;padding:16px;margin-top:14px}
+.card[hidden]{display:none}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 10px;font-weight:600}
+.sc{overflow-x:auto}
+table{border-collapse:separate;border-spacing:0 4px;width:100%;min-width:480px}
+th{font-size:12px;color:var(--mut);font-weight:600;padding:4px;text-align:center}
+th.d{cursor:pointer}th.d.on{color:var(--ac);text-decoration:underline}
+td{padding:8px 4px;text-align:center;font-size:13px}
+td.n{text-align:left;font-weight:600;padding-left:10px;border-radius:10px 0 0 10px;cursor:pointer}
+tr.r td{background:var(--bg)}tr.r.hl td{background:var(--acs)}
+td.l{border-radius:0 10px 10px 0}
+.t{display:inline-block;width:100%;max-width:44px;padding:4px 0;border-radius:8px;font-size:11px;font-weight:600;background:var(--acs);color:var(--ac)}
+.f{background:var(--offs);color:var(--off)}
+.cnt td{font-weight:700;color:var(--ac);border-top:1px solid var(--ln);padding-top:10px}
+.path{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:6px 0}
+.chip{background:var(--acs);color:var(--ac);border-radius:8px;padding:4px 10px;font-weight:600;font-size:13px}
+.ar{color:var(--mut)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:560px){.two{grid-template-columns:1fr}}
+.lst{display:flex;flex-wrap:wrap;gap:6px}
+.lst .chip.o{background:var(--offs);color:var(--off)}
+.hint{font-size:12px;color:var(--mut);margin-top:10px}
+input,textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--ln);border-radius:10px;padding:8px 10px;width:100%}
+.eg{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+@media(max-width:560px){.eg{grid-template-columns:1fr}}
+.er{display:flex;flex-direction:column;gap:2px}.er .hint{margin:0}
+.ctl{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+.ctl label.c{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut)}
+.ctl label.c input{width:auto}.ctl input[type=number]{width:90px}
+.ctl label.k{flex-direction:row;align-items:center;gap:8px;font-size:14px;color:var(--ink)}
+.ctl input[type=checkbox]{width:18px;height:18px;padding:0}
+#mtab{margin-top:14px}
+#mtab table{width:max-content;min-width:0;border-spacing:0}
+#mtab th,#mtab td{padding:5px 0;min-width:30px;font-size:11px;border-bottom:1px solid var(--ln);text-align:center}
+#mtab th small{font-weight:500;font-size:9px}
+#mtab th.n,#mtab td.n{position:sticky;left:0;z-index:1;background:var(--card);min-width:118px;max-width:190px;padding-left:6px;text-align:left;border-radius:0;cursor:default;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#mtab td.mf{background:var(--offs);color:var(--off);font-weight:700}
+#mtab .mon{border-left:2px solid var(--ln)}
+#mtab tr.sh td{background:var(--acs);color:var(--ac);font-weight:700;text-align:left;padding:6px;font-size:12px}
+#mtab td.tt,#mtab th.tt{min-width:46px;font-weight:700;color:var(--ac)}
+#mtab tr.cnt td{border-top:2px solid var(--ln);color:var(--ac);font-weight:700;background:var(--card)}
+#ta{margin-top:10px;height:120px;font-size:12px}
+.vr{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:4px}.vr label{display:flex;align-items:center;gap:6px;font-size:13px}.vr input[type=checkbox]{width:18px;height:18px;padding:0}.vr input[type=date],.vr input[type=time]{width:auto;padding:4px 8px;font-size:12px}
+#mtab td.mv{background:var(--acs);color:var(--mut);font-weight:700}
+#mtab td input{width:100%;min-width:34px;border:0;background:transparent;text-align:center;font:inherit;font-size:11px;padding:3px 0;border-radius:0;color:var(--ink)}
+#mtab td input:focus{outline:2px solid var(--ac);outline-offset:-2px}
+#mtab td.mf input{color:var(--off);font-weight:700}#mtab td.mv input{color:var(--mut);font-weight:700}
+#edp{min-height:112px}
+.vr input[data-ak]{width:80px;padding:4px 8px;font-size:12px}#mtab td.ed{box-shadow:inset 0 0 0 2px var(--ac)}#mtab td.sel{outline:2px solid var(--ink);outline-offset:-2px}#mtab td small{font-size:9px;font-weight:600;color:var(--ac)}#mtab td.n small{color:var(--mut);margin-left:4px}
+.ep{background:var(--acs);border-radius:12px;padding:12px;margin-top:12px;font-size:14px}.ep button{padding:6px 12px;font-size:13px}
+#mtab td.tt small{font-weight:500;font-size:9px;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="w">
+<h1>Escala mensal 5x2</h1>
+<p class="sub">Macaw Camboinhas · folgas por equipe, nomes editáveis e escala do mês com rodízio</p>
+<div class="tabs" id="tabs"></div>
+<div class="card" id="ov"></div>
+<div class="card" id="c1"><h2>Escolha um dia</h2><div class="days" id="days"></div>
+<div class="two" style="margin-top:12px"><div><h2>Trabalham</h2><div class="lst" id="work"></div></div><div><h2>Folgam</h2><div class="lst" id="off"></div></div></div></div>
+<div class="card" id="c2"><h2>Grade semanal (semana base)</h2><div class="sc"><table id="grid"></table></div>
+<p class="hint">Toque no nome para destacar a pessoa e em um dia para ver a equipe daquele dia.</p></div>
+<div class="card" id="c3"><h2>Caminho a seguir (rodízio)</h2><div id="paths"></div>
+<p class="hint">A cada semana, cada pessoa assume a folga da próxima posição do caminho. Ao chegar ao fim, volta ao início.</p></div>
+
+<div class="card" id="eq" hidden><h2>Nomes da equipe</h2>
+<p class="hint" style="margin-top:0">Troque os nomes abaixo. Eles ficam salvos neste navegador e aparecem em todas as telas e na escala do mês.</p>
+<div id="eqb"></div>
+<p style="margin:16px 0 0"><button id="rst">Restaurar nomes padrão</button></p></div>
+
+<div class="card" id="mo" hidden><h2>Escala do mês</h2>
+<div class="ctl">
+<label class="c">Mês<input type="month" id="mes"></label>
+<label class="c">Semana do rodízio no dia 1<input type="number" id="ini" min="1" value="1"></label>
+<label class="c k"><input type="checkbox" id="rod" checked>Aplicar rodízio semanal</label>
+<button class="pri" id="cp">Copiar para Excel</button>
+</div>
+<p class="hint">As semanas vão de segunda a domingo. Com o rodízio ligado, cada pessoa avança uma posição no caminho a cada semana. Chef e Gerente têm folga fixa. Para continuar o rodízio do mês anterior, aumente o número da semana inicial. Quem está de férias (marcado na aba Equipe) aparece como FÉ e não entra na contagem de quem está na escala. Na grade, clique na célula e digite o horário de chegada (8 vira 8h, 11:30 vira 11h30). Digite f para folga e fe para férias; deixe vazio para limpar. Enter ou ↓ desce, ↑ sobe e ← → andam para o lado. O horário padrão de cada pessoa fica na aba Equipe e vai junto na cópia para o Excel quando a célula está vazia.</p>
+<p class="hint" id="msg" style="color:var(--ac)"></p>
+<textarea id="ta" hidden></textarea>
+<div id="edp"></div>
+<div class="sc" id="mtab"></div></div>
+</div>
+<script>
+const D=["SEG","TER","QUA","QUI","SEX","SÁB","DOM"];
+/* e = [nome padrão, folgas na semana base]; p = caminhos do rodízio (índices de e) */
+const S={
+"Salão":{p:[[0,1,2,3],[4,5,6,7]],e:[["Garçom 1","QUA,QUI"],["Garçom 2","QUA,QUI"],["Garçom 3","QUA,QUI"],["Cumim 2","QUA,DOM"],["Garçom 4","SEG,TER"],["Garçom 5","SEG,TER"],["Garçom 6","SEG,TER"],["Cumim 1","TER,DOM"]]},
+"Maître":{p:[[1,0,4,2]],e:[["Maître 1","SEG,TER"],["Maître 2","TER,QUI"],["Maître 3","QUA,QUI"],["Gerente","QUA"],["Recepção","SEG,DOM"]]},
+"Areia":{p:[[1,0,2,3,4]],e:[["Areia 1","SEG,DOM"],["Areia 2","SEG,TER"],["Areia 3","QUA,QUI"],["Areia 4","QUA,QUI"],["Areia 5","TER,SEX"]]},
+"Bar":{p:[[0,3,2,1]],e:[["Bar 1","SEG,DOM"],["Bar 2","SEG,TER"],["Bar 3","QUA,QUI"],["Bar 4","QUA,QUI"]]},
+"ASG":{p:[[0,1,2]],e:[["ASG 1","SEG,DOM"],["ASG 2","TER,QUA"],["ASG 3","QUI,SEX"]]},
+"Cozinha":{p:[[3,2,1],[4,5,6,7]],e:[["Chef","QUI"],["Cozinha 1","SEG,TER"],["Cozinha 2","SEG,TER"],["Cozinha 3","SEG,DOM"],["Cozinha 4","TER,QUA"],["Cozinha 5","QUA,QUI"],["Cozinha 6","QUI,DOM"],["Cozinha 7","QUA,SEX"]]}
+};
+const KEY="macaw_nomes_v1";
+let names={};
+try{names=JSON.parse(localStorage.getItem(KEY)||"{}")||{}}catch(e){names={}}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(names))}catch(e){}};
+const KF="macaw_ferias_v1";
+let fer={};
+try{fer=JSON.parse(localStorage.getItem(KF)||"{}")||{}}catch(e){fer={}}
+const saveF=()=>{try{localStorage.setItem(KF,JSON.stringify(fer))}catch(e){}};
+const getF=(s,i)=>(fer[s]&&fer[s][i])||null;
+const KA="macaw_chegada_v1",KO="macaw_ajustes_v1";
+let arr={},ov={},sel=null;
+try{arr=JSON.parse(localStorage.getItem(KA)||"{}")||{}}catch(e){arr={}}
+try{ov=JSON.parse(localStorage.getItem(KO)||"{}")||{}}catch(e){ov={}}
+const saveA=()=>{try{localStorage.setItem(KA,JSON.stringify(arr))}catch(e){}};
+const saveO=()=>{try{localStorage.setItem(KO,JSON.stringify(ov))}catch(e){}};
+const hr=(s,i)=>(arr[s]&&arr[s][i])||"";
+const HRE=/^(\d{1,2})(?:[:.,h]?(\d{2}))?\s*(?:h|hs|hrs|hr)?$/i;
+function normT(raw){
+ const s=String(raw||"").trim();if(!s)return "";
+ const l=s.toLowerCase();
+ if(l=="f"||l=="folga")return "F";
+ if(["fe","fé","ferias","férias"].includes(l))return "FÉ";
+ const m=HRE.exec(s);
+ if(m&&+m[1]<=23&&(!m[2]||+m[2]<=59))return (+m[1])+"h"+(m[2]&&m[2]!="00"?m[2]:"");
+ return s.slice(0,6);
+}
+const hrd=(s,i)=>{const r=hr(s,i);return r?normT(r):""};
+const getO=(ym,k,i,d)=>((ov[ym]||{})[k+"|"+i]||{})[d]||{};
+function setO(ym,k,i,d,p){
+ const a=(ov[ym]=ov[ym]||{}),b=(a[k+"|"+i]=a[k+"|"+i]||{}),c=Object.assign({},b[d]||{},p);
+ Object.keys(c).forEach(x=>{if(c[x]===undefined||c[x]==="")delete c[x]});
+ if(Object.keys(c).length)b[d]=c;else delete b[d];
+ saveO();
+}
+let sec="Geral",day=0,hl=null,last="";
+const $=i=>document.getElementById(i);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const nm=(s,i)=>{const v=(names[s]||[])[i];return v&&String(v).trim()?String(v).trim():S[s].e[i][0]};
+const offS=(f,d)=>f.split(",").includes(D[d]);
+const off=(x,d)=>offS(x[1],d);
+/* folga da pessoa i na semana w (rodízio): assume o padrão da próxima posição do caminho */
+function pat(s,i,w,st){
+ const P=S[s].p.find(p=>p.includes(i));
+ if(!P)return S[s].e[i][1];
+ const n=P.length,k=P.indexOf(i);
+ return S[s].e[P[(((k+w+st)%n)+n)%n]][1];
+}
+function overview(){
+ const A=Object.values(S),tot=A.reduce((a,s)=>a+s.e.length,0);
+ let h=`<tr><th></th><th>Total</th>${D.map(d=>`<th>${d}</th>`).join("")}</tr>`;
+ Object.entries(S).forEach(([k,s])=>{h+=`<tr class="r"><td class="n" data-s="${k}">${k}</td><td><span class="t">${s.e.length}</span></td>${D.map((d,i)=>`<td class="${i==6?"l":""}">${s.e.filter(x=>!off(x,i)).length}</td>`).join("")}</tr>`});
+ h+=`<tr class="cnt"><td class="n">Todos</td><td>${tot}</td>${D.map((d,i)=>`<td>${A.reduce((a,s)=>a+s.e.filter(x=>!off(x,i)).length,0)}</td>`).join("")}</tr>`;
+ $("ov").innerHTML=`<h2>Visão geral · ${tot} funcionários</h2><div class="sc"><table>${h}</table></div><p class="hint">Os números por dia indicam quem está na escala. Toque em um setor para ver os detalhes. Use as abas Equipe e Escala do mês para trocar nomes e gerar o mês.</p>`;
+}
+function chegHtml(k,i){return `<div class="vr"><label>Chegada padrão <input data-ak="${esc(k)}" data-ai="${i}" value="${esc(hrd(k,i))}" placeholder="ex.: 8" maxlength="6"></label></div>`}
+function vacHtml(k,i){
+ const f=getF(k,i)||{},a=`data-fk="${esc(k)}" data-fi="${i}"`;
+ let h=`<div class="vr"><label><input type="checkbox" ${a} data-ff="on" ${f.on?"checked":""}>De férias</label>`;
+ if(f.on)h+=`<input type="date" aria-label="Início das férias" ${a} data-ff="de" value="${esc(f.de||"")}"><span class="hint">até</span><input type="date" aria-label="Fim das férias" ${a} data-ff="ate" value="${esc(f.ate||"")}">`;
+ h+=`</div>`;
+ if(f.on)h+=`<span class="hint">Sem datas, vale para o mês inteiro.</span>`;
+ return h;
+}
+function equipe(){
+ $("eqb").innerHTML=Object.entries(S).map(([k,s])=>`<h2 style="margin-top:16px">${k}</h2><div class="eg">${s.e.map((x,i)=>`<div class="er"><input data-es="${esc(k)}" data-ei="${i}" value="${esc(nm(k,i))}" placeholder="${esc(x[0])}" maxlength="30"><span class="hint">Folga na semana base: ${x[1].replace(/,/g,", ")}</span>${chegHtml(k,i)}${vacHtml(k,i)}</div>`).join("")}</div>`).join("");
+}
+function panel(ym){
+ const el=$("edp");
+ if(!sel||!ym){el.innerHTML=`<p class="hint">Clique em uma célula da grade para ver as opções daquela pessoa e dia.</p>`;return}
+ const [y,mo]=ym.split("-").map(Number),dt=new Date(y,mo-1,sel.d),O=getO(ym,sel.k,sel.i,sel.d);
+ const st={F:"Folga ajustada",W:"Trabalha (ajustado)",V:"Férias ajustadas"}[O.s]||"Automático";
+ el.innerHTML=`<div class="ep"><b>${esc(nm(sel.k,sel.i))}</b> · dia ${sel.d} (${D[(dt.getDay()+6)%7]}) · ${st}<div class="vr" style="margin-top:8px"><button data-act="F">Folga</button><button data-act="W">Trabalha</button><button data-act="V">Férias</button><button data-act="A">Automático</button></div><div class="vr"><label>Chegada neste dia <input id="pt" maxlength="6" placeholder="ex.: 8" style="width:90px" value="${esc(O.h||hrd(sel.k,sel.i))}"></label><button data-act="H">Usar horário padrão</button></div></div>`;
+}
+function mAction(m){
+ const ym=$("mes").value;
+ if(m.dataset.mc){const [k,i,d]=m.dataset.mc.split("|");sel={k,i:+i,d:+d};renderMonth();return}
+ if(!sel)return;
+ const P={F:{s:"F"},W:{s:"W"},V:{s:"V"},A:{s:undefined},H:{h:undefined}}[m.dataset.act];
+ if(P)setO(ym,sel.k,sel.i,sel.d,P);
+ renderMonth();
+}
+function renderMonth(keep){
+ const v=$("mes").value;
+ if(!v){$("mtab").innerHTML="";return}
+ const [y,mo]=v.split("-").map(Number),N=new Date(y,mo,0).getDate();
+ const first=new Date(y,mo-1,1),base=new Date(y,mo-1,1-((first.getDay()+6)%7));
+ const ym=v,rod=$("rod").checked,st=(parseInt($("ini").value)||1)-1;
+ const days=[];
+ for(let d=1;d<=N;d++){const dt=new Date(y,mo-1,d);days.push({d,dw:(dt.getDay()+6)%7,w:Math.floor(Math.round((dt-base)/864e5)/7)})}
+ let h=`<tr><th class="n" data-t="Nome">Nome</th>${days.map(o=>`<th class="${o.dw==0?"mon":""}" data-t="${o.d} ${D[o.dw]}">${o.d}<br><small>${D[o.dw]}</small></th>`).join("")}<th class="tt" data-t="Folgas">Folgas</th></tr>`;
+ const tot=days.map(()=>0);
+ let r=0;
+ Object.entries(S).forEach(([k,s])=>{
+  h+=`<tr class="sh"><td colspan="${N+2}">${k}</td></tr>`;
+  s.e.forEach((x,i)=>{
+   let c=0,vv=0;const cells=[],fv=getF(k,i);
+   const vac=o=>{if(!fv||!fv.on)return false;const ds=`${y}-${String(mo).padStart(2,"0")}-${String(o.d).padStart(2,"0")}`;return (!fv.de||ds>=fv.de)&&(!fv.ate||ds<=fv.ate)};
+   days.forEach((o,j)=>{
+    const O=getO(ym,k,i,o.d),vA=vac(o),fA=offS(rod?pat(k,i,o.w,st):x[1],o.dw);
+    const S2=O.s=="V"?"V":O.s=="F"?"F":O.s=="W"?"W":(vA?"V":(fA?"F":"W"));
+    if(S2=="V")vv++;else if(S2=="F")c++;else tot[j]++;
+    const val=S2=="V"?"FÉ":S2=="F"?"F":(O.h||"");
+    const cl=(S2=="V"?"mv ":S2=="F"?"mf ":"")+(o.dw==0?"mon ":"")+(O.s||O.h?"ed":"");
+    cells.push(`<td class="${cl}"><input value="${esc(val)}" maxlength="6" data-ti="${esc(k)}|${i}|${o.d}" data-af="${fA?1:0}" data-av="${vA?1:0}" data-d="${esc(hrd(k,i))}" data-r="${r}" data-c="${j}" aria-label="${esc(nm(k,i))}, dia ${o.d}"></td>`);
+   });
+   h+=`<tr><td class="n" data-t="${esc(nm(k,i))}" title="${esc(nm(k,i))}">${esc(nm(k,i))}${hrd(k,i)?` <small>${esc(hrd(k,i))}</small>`:""}</td>${cells.join("")}<td class="tt" title="${vv} dia(s) de férias">${c}${vv?`<small> +${vv}FÉ</small>`:""}</td></tr>`;
+   r++;
+  });
+ });
+ h+=`<tr class="cnt"><td class="n" data-t="Na escala">Na escala</td>${tot.map((n,j)=>`<td class="${days[j].dw==0?"mon":""}">${n}</td>`).join("")}<td></td></tr>`;
+ $("mtab").innerHTML=`<table>${h}</table>`;
+ if(keep!==true)panel(ym);
+}
+function recount(){
+ const rows=[...document.querySelectorAll("#mtab tr")].filter(r=>r.querySelector("td.tt"));
+ const cnt=document.querySelector("#mtab tr.cnt"),tot=[];
+ rows.forEach(r=>{
+  let c=0,v=0;
+  [...r.children].forEach((td,idx)=>{
+   if(idx==0||td.classList.contains("tt"))return;
+   if(td.classList.contains("mv"))v++;else if(td.classList.contains("mf"))c++;else tot[idx-1]=(tot[idx-1]||0)+1;
+  });
+  const tt=r.querySelector("td.tt");tt.title=v+" dia(s) de férias";tt.innerHTML=c+(v?`<small> +${v}FÉ</small>`:"");
+ });
+ if(cnt)[...cnt.children].forEach((td,idx)=>{if(idx>0&&idx<cnt.children.length-1)td.textContent=tot[idx-1]||0});
+}
+function commitCell(t){
+ const [k,i0,d0]=t.dataset.ti.split("|"),i=+i0,d=+d0,ym=$("mes").value;
+ const raw=normT(t.value),af=t.dataset.af=="1",av=t.dataset.av=="1";
+ let s,h;
+ if(raw=="F"){s=(af&&!av)?undefined:"F"}
+ else if(raw=="FÉ"){s=av?undefined:"V"}
+ else{s=(af||av)?"W":undefined;h=raw||undefined}
+ setO(ym,k,i,d,{s,h});
+ const O=getO(ym,k,i,d);
+ const S2=O.s=="V"?"V":O.s=="F"?"F":O.s=="W"?"W":(av?"V":(af?"F":"W"));
+ t.value=S2=="V"?"FÉ":S2=="F"?"F":(O.h||"");
+ const td=t.parentElement;
+ td.classList.remove("mf","mv","ed");
+ if(S2=="V")td.classList.add("mv");else if(S2=="F")td.classList.add("mf");
+ if(O.s||O.h)td.classList.add("ed");
+ recount();
+ if(sel&&sel.k==k&&sel.i==i&&sel.d==d)panel(ym);
+}
+function buildTsv(){
+ const rows=[];
+ document.querySelectorAll("#mtab tr").forEach(tr=>{
+  if(tr.classList.contains("sh")){rows.push(tr.textContent.trim());return}
+  rows.push([...tr.children].map(c=>{const i=c.querySelector("input");return i?(i.value||i.dataset.d||""):(c.dataset.t!==undefined?c.dataset.t:c.textContent.trim())}).join("\t"));
+ });
+ return rows.join("\n");
+}
+function render(){
+ const G=sec=="Geral",E=sec=="Equipe",M=sec=="Escala do mês",X=!G&&!E&&!M;
+ ["c1","c2","c3"].forEach(i=>$(i).hidden=!X);
+ $("ov").hidden=!G;$("eq").hidden=!E;$("mo").hidden=!M;
+ $("tabs").innerHTML=["Geral",...Object.keys(S),"Equipe","Escala do mês"].map(k=>`<button class="${k==sec?"on":""}" data-s="${k}">${k}</button>`).join("");
+ if(G){overview();return}
+ if(E){equipe();return}
+ if(M){renderMonth();return}
+ const E2=S[sec].e;
+ $("days").innerHTML=D.map((d,i)=>`<button class="${i==day?"on":""}" data-d="${i}">${d}</button>`).join("");
+ $("work").innerHTML=E2.map((x,i)=>[x,i]).filter(([x])=>!off(x,day)).map(([x,i])=>`<span class="chip">${esc(nm(sec,i))}${hrd(sec,i)?" · "+hrd(sec,i):""}</span>`).join("")||"—";
+ $("off").innerHTML=E2.map((x,i)=>[x,i]).filter(([x])=>off(x,day)).map(([x,i])=>`<span class="chip o">${esc(nm(sec,i))}</span>`).join("")||"Ninguém";
+ let h=`<tr><th></th>${D.map((d,i)=>`<th class="d ${i==day?"on":""}" data-d="${i}">${d}</th>`).join("")}</tr>`;
+ E2.forEach((x,i)=>{h+=`<tr class="r ${hl==String(i)?"hl":""}"><td class="n" data-p="${i}">${esc(nm(sec,i))}</td>${D.map((d,j)=>`<td class="${j==6?"l":""}"><span class="t ${off(x,j)?"f":""}">${off(x,j)?"Folga":"●"}</span></td>`).join("")}</tr>`});
+ h+=`<tr class="cnt"><td class="n">Na escala</td>${D.map((d,i)=>`<td>${E2.filter(x=>!off(x,i)).length}</td>`).join("")}</tr>`;
+ $("grid").innerHTML=h;
+ $("paths").innerHTML=S[sec].p.map(p=>`<div class="path">${p.map(c=>`<span class="chip">${esc(nm(sec,c))}</span>`).join('<span class="ar">→</span>')}<span class="ar">↺</span></div>`).join("");
+}
+document.addEventListener("click",e=>{
+ const m=e.target.closest("[data-mc],[data-act]");
+ if(m){mAction(m);return}
+ const t=e.target.closest("[data-s],[data-d],[data-p]");if(!t)return;
+ if(t.dataset.s)sec=t.dataset.s,hl=null;
+ if(t.dataset.d)day=+t.dataset.d;
+ if(t.dataset.p)hl=hl==t.dataset.p?null:t.dataset.p;
+ render();
+});
+document.addEventListener("input",e=>{
+ const t=e.target;
+ if(t.dataset&&t.dataset.es){(names[t.dataset.es]=names[t.dataset.es]||[])[+t.dataset.ei]=t.value;save()}
+ if(t.dataset&&t.dataset.ff){const s=t.dataset.fk,i=+t.dataset.fi;fer[s]=fer[s]||{};const r=(fer[s][i]=fer[s][i]||{});if(t.dataset.ff=="on"){r.on=t.checked;saveF();equipe()}else{r[t.dataset.ff]=t.value;saveF()}}
+ if(t.id=="mes")sel=null;
+ if(t.id=="mes"||t.id=="ini")renderMonth();
+});
+document.addEventListener("change",e=>{
+ const t=e.target,d=t.dataset||{};
+ if(d.ti)commitCell(t);
+ if(d.ak){const v=normT(t.value),ok=(v=="F"||v=="FÉ")?"":v;arr[d.ak]=arr[d.ak]||{};arr[d.ak][+d.ai]=ok;t.value=ok;saveA()}
+ if(t.id=="pt"&&sel){const v=normT(t.value),dflt=hrd(sel.k,sel.i);setO($("mes").value,sel.k,sel.i,sel.d,{h:(v&&v!=="F"&&v!=="FÉ"&&v!==dflt)?v:undefined});renderMonth(true)}
+});
+document.addEventListener("focusin",e=>{
+ const t=e.target;
+ if(t.dataset&&t.dataset.ti){const [k,i,d]=t.dataset.ti.split("|");sel={k,i:+i,d:+d};panel($("mes").value);t.select()}
+});
+document.addEventListener("keydown",e=>{
+ const t=e.target;if(!t.dataset||!t.dataset.ti)return;
+ const key=e.key;let dr=0,dc=0;
+ if(key=="Enter"||key=="ArrowDown")dr=1;
+ else if(key=="ArrowUp")dr=-1;
+ else if(key=="ArrowRight"&&t.selectionEnd==t.value.length)dc=1;
+ else if(key=="ArrowLeft"&&t.selectionStart==0)dc=-1;
+ else return;
+ e.preventDefault();commitCell(t);
+ const n=document.querySelector(`#mtab input[data-r="${+t.dataset.r+dr}"][data-c="${+t.dataset.c+dc}"]`);
+ if(n)n.focus();
+});
+$("rod").addEventListener("change",renderMonth);
+$("rst").addEventListener("click",()=>{names={};save();equipe()});
+$("cp").addEventListener("click",async()=>{
+ $("ta").hidden=true;
+ const txt=buildTsv();
+ try{await navigator.clipboard.writeText(txt);$("msg").textContent="Escala copiada. Cole em uma planilha do Excel ou Google Sheets."}
+ catch(err){const t=$("ta");t.hidden=false;t.value=txt;t.select();$("msg").textContent="Não consegui copiar automaticamente. Copie o texto abaixo (Ctrl+C) e cole na planilha."}
+});
+const now=new Date();
+$("mes").value=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
+render();
+</script>
+</body>
+</html>
