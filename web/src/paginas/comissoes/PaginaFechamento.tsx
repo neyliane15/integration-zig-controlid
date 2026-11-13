@@ -601,7 +601,7 @@ function ListaParticipantes(props: PropsLista) {
     rascunho && editaPontos(i) ? (
       <Entrada
         aria-label={`Pontos de ${i.nome}`}
-        className="numero ml-auto h-9 w-24 text-right"
+        className="numero ml-auto h-9 w-24! min-w-20! shrink-0 px-3! text-right"
         inputMode="decimal"
         placeholder={diario ? 'auto' : fmtPontos(i.pontos)}
         title={diario ? 'Vazio = automático (pontos vigentes de cada dia)' : 'Vazio = pontos vigentes no fim do período'}

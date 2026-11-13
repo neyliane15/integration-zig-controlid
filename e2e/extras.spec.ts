@@ -326,11 +326,13 @@ test('reservas: importar CSV (cabeçalhos em inglês, vírgula, mapeamento manua
   await entrar(page, USUARIOS_DEMO.gerente)
   await page.goto('/reservas')
   const s = sufixo()
+  // "Hoje" da tela é o dia em America/Sao_Paulo (não o dia UTC)
+  const hoje = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date())
   const csv = [
     'Reservation ID,Guest name,Date,Time,Party size,Status,Phone,Coluna X',
-    `T-${s}-1,Importada Um ${s},${new Date().toISOString().slice(0, 10)},20:00,4,Confirmed,11999990000,Janela`,
+    `T-${s}-1,Importada Um ${s},${hoje},20:00,4,Confirmed,11999990000,Janela`,
     `T-${s}-2,Importada Dois ${s},2099-01-01,21:15,2,Canceled,,`,
-    `T-${s}-3,,${new Date().toISOString().slice(0, 10)},20:00,2,Confirmed,,`,
+    `T-${s}-3,,${hoje},20:00,2,Confirmed,,`,
   ].join('\n')
   await page.getByRole('button', { name: 'Importar CSV' }).click()
   const modal = page.getByRole('dialog')
