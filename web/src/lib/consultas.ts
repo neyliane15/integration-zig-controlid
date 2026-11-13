@@ -2,7 +2,8 @@
  * Query keys do react-query (contrato §14.8) + cliente e invalidações compartilhadas. Dono: frontend-1.
  * Use SEMPRE `chaves.x(...)` — nunca monte o array à mão.
  */
-import { QueryClient } from '@tanstack/react-query'
+import { MutationCache, QueryCache, QueryClient } from '@tanstack/react-query'
+import { supabase } from './supabase'
 
 type Id = string | null | undefined
 
@@ -82,9 +83,38 @@ export function invalidarTarefas(qc: QueryClient): Promise<void> {
   return invalidar(qc, 'painel', 'tarefas', 'rotinas')
 }
 
+/** Mensagem que `mensagemDeErro` (lib/supabase) devolve para JWT expirado/inválido. */
+export const MENSAGEM_SESSAO_EXPIRADA = 'Sua sessão expirou. Entre novamente.'
+
+function ehSessaoExpirada(erro: unknown): boolean {
+  return erro instanceof Error && erro.message === MENSAGEM_SESSAO_EXPIRADA
+}
+
+/**
+ * Sessão expirada (ex.: aba aberta muito tempo, sem renovação automática): tenta renovar o token uma vez e
+ * repetir as consultas; se não der, encerra a sessão — o `onAuthStateChange` leva o usuário para o login
+ * em vez de deixar a tela presa em "Sua sessão expirou".
+ */
+let renovacao: Promise<void> | null = null
+function tratarSessaoExpirada(qc: QueryClient): void {
+  if (renovacao) return
+  renovacao = supabase.auth
+    .refreshSession()
+    .then(async ({ error }) => {
+      if (error) await supabase.auth.signOut()
+      else await qc.invalidateQueries()
+    })
+    .catch(() => supabase.auth.signOut().then(() => undefined))
+    .finally(() => {
+      renovacao = null
+    })
+}
+
 /** Cliente único do app (montado em main.tsx). */
 export function criarClienteConsultas(): QueryClient {
-  return new QueryClient({
+  const qc: QueryClient = new QueryClient({
+    queryCache: new QueryCache({ onError: (erro) => ehSessaoExpirada(erro) && tratarSessaoExpirada(qc) }),
+    mutationCache: new MutationCache({ onError: (erro) => ehSessaoExpirada(erro) && tratarSessaoExpirada(qc) }),
     defaultOptions: {
       queries: {
         staleTime: 30_000,
@@ -92,10 +122,12 @@ export function criarClienteConsultas(): QueryClient {
         retry: (tentativas, erro) => {
           const codigo = (erro as { codigo?: string | null } | null)?.codigo
           if (codigo === '42501' || codigo === 'P0002' || codigo === '22023') return false
+          if (ehSessaoExpirada(erro)) return false
           return tentativas < 2
         },
       },
       mutations: { retry: false },
     },
   })
+  return qc
 }
