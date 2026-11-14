@@ -189,15 +189,17 @@ select teste.ok('troca grava ajustes com motivo padrão', (select array_agg(stat
   = array['folga/Troca de folga', 'trabalha/Troca de folga']);
 select public.escala_trocar('e7600000-0000-4000-8000-000000000302', '2026-11-22', 'e7600000-0000-4000-8000-000000000301');
 select teste.ok('trocar de volta = automático (ajustes apagados)', not exists (select 1 from public.escala_ajustes where data = '2026-11-22'));
--- dois dias entre duas pessoas: qua 25/11 (G1 folga, G2 trabalha) e sex 27/11 (os dois trabalham)
+-- dois dias entre duas pessoas: qua 25/11 (os dois folgam) e qui 26/11 (G1 trabalha, G3 folga)
 select public.escala_trocar('e7600000-0000-4000-8000-000000000301', '2026-11-25', 'e7600000-0000-4000-8000-000000000303', '2026-11-26', 'combinado');
-select teste.ok('troca em dois dias', pg_temp.dia('e7600000-0000-4000-8000-000000000301', '2026-11-25') ->> 'status' = 'trabalha'
+select teste.ok('troca em dois dias', true  and pg_temp.dia('e7600000-0000-4000-8000-000000000301', '2026-11-25') ->> 'status' = 'folga'
   and pg_temp.dia('e7600000-0000-4000-8000-000000000303', '2026-11-25') ->> 'status' = 'folga'
   and pg_temp.dia('e7600000-0000-4000-8000-000000000301', '2026-11-26') ->> 'status' = 'folga'
-  and pg_temp.dia('e7600000-0000-4000-8000-000000000303', '2026-11-26') ->> 'status' = 'folga');
+  and pg_temp.dia('e7600000-0000-4000-8000-000000000303', '2026-11-26') ->> 'status' = 'trabalha'
+  and pg_temp.dia('e7600000-0000-4000-8000-000000000303', '2026-11-26') ->> 'motivo' = 'combinado'
+  and not exists (select 1 from public.escala_ajustes where data = '2026-11-25'));
 -- a mesma pessoa muda a folga de dia (dom 29 → sex 27)
 select public.escala_trocar('e7600000-0000-4000-8000-000000000301', '2026-11-29', null, '2026-11-27');
-select teste.ok('mover a própria folga', pg_temp.folgas('e7600000-0000-4000-8000-000000000301', '2026-11') = '04,05,09,11,12,18,19,26,27');
+select teste.ok('mover a própria folga', pg_temp.folgas('e7600000-0000-4000-8000-000000000301', '2026-11') = '04,05,09,11,12,18,19,25,26,27');
 
 -- ------------------------------------------------------------------ leitura e isolamento
 select teste.como('es.lei.a@teste.local');
@@ -240,12 +242,26 @@ update public.funcionarios set nome = 'João Garçom' where nome = 'Garçom 1';
 select teste.ok('renomear e reaplicar não duplica', (public.escala_aplicar_modelo_macaw() ->> 'funcionarios_criados') = '0'
   and teste.contar('select 1 from public.funcionarios') = 34);
 select teste.ok('sem ponto: nenhum alarme para os provisórios', teste.contar('select 1 from public.ponto_alarmes') = 0);
+insert into ex select 'bar5', public.escala_adicionar_funcionario((select id from public.escala_setores where nome = 'Bar'), ' Bar 5 ', 'Bar', '{2,1}', '19:00', 1::smallint);
 select teste.ok('adicionar funcionário direto no setor', (select (f.nome, f.cargo, m.folgas_base, m.chegada_padrao, m.caminho) is not distinct from
   ('Bar 5'::text, 'Bar'::text, '{1,2}'::smallint[], '19:00'::time, 1::smallint)
   from public.funcionarios f join public.escala_membros m on m.funcionario_id = f.id
-  where f.id = public.escala_adicionar_funcionario((select id from public.escala_setores where nome = 'Bar'), ' Bar 5 ', 'Bar', '{2,1}', '19:00', 1::smallint)));
+  where f.id = (select id from ex where nome = 'bar5')));
 select teste.ok('adicionado vai para a próxima posição do caminho', (select posicao from public.escala_membros m join public.funcionarios f on f.id = m.funcionario_id where f.nome = 'Bar 5') = 5);
 select teste.erro('adicionar sem nome', $$select public.escala_adicionar_funcionario((select id from public.escala_setores where nome = 'Bar'), '')$$, 'Informe o nome');
+
+-- empresa recém-criada e VAZIA (criar_minha_empresa, sem funcionários nem ponto) — caso real Macaw Camboinhas.
+-- statement_timeout curto: uma regressão de desempenho (ex.: JIT a cada apuração) falha aqui em vez de travar.
+select teste.como_dono();
+insert into auth.users (id, email, raw_user_meta_data) values ('e7600000-0000-4000-8000-000000000c01', 'es.nova@teste.local', '{"nome":"Dona Macaw"}');
+select teste.como('es.nova@teste.local');
+select public.criar_minha_empresa('Macaw Teste');
+set local statement_timeout = '20s';
+select teste.ok('empresa vazia: modelo Macaw cria tudo e retorna', (public.escala_aplicar_modelo_macaw() - 'ancora')
+  = '{"setores": 6, "membros": 33, "funcionarios_criados": 33}'::jsonb);
+select teste.ok('empresa vazia: reaplicar com âncora antiga (reapura 62 dias) retorna', (public.escala_aplicar_modelo_macaw(null, '2026-09-14') ->> 'membros') = '0');
+select teste.ok('empresa vazia: escala do mês com 33 membros', (select sum(jsonb_array_length(s -> 'membros')) from jsonb_array_elements(public.escala_mes('2026-11') -> 'setores') s) = 33);
+set local statement_timeout = 0;
 
 -- ------------------------------------------------------------------ remover membro / reordenar
 select teste.como('es.ger.a@teste.local');
@@ -261,9 +277,10 @@ select teste.ok('remover da escala: ajustes apagados e ponto volta à jornada', 
   and pg_temp.pd('e7600000-0000-4000-8000-000000000301', '2026-11-11') = 'ausente/450/1'
   and pg_temp.pd('e7600000-0000-4000-8000-000000000301', '2026-11-09') = 'folga/0/0');
 select teste.erro('remover quem não está', $$select public.escala_remover_membro('e7600000-0000-4000-8000-000000000301')$$, 'Funcionário fora da escala', '22023');
-select public.escala_configurar('2026-11-09');
+select public.escala_configurar('2026-11-16');
 select teste.ok('mudar a âncora apaga ajustes anteriores (e o abono de férias)', not exists (select 1 from public.ponto_abonos where escala_ajuste_id is not null)
-  and pg_temp.dia('e7600000-0000-4000-8000-000000000304', '2026-11-08') ->> 'status' = 'fora');
+  and pg_temp.dia('e7600000-0000-4000-8000-000000000304', '2026-11-15') ->> 'status' = 'fora'
+  and pg_temp.pd('e7600000-0000-4000-8000-000000000304', '2026-11-09') = 'folga/0/0');
 select public.escala_excluir_setor((select id from ex where nome = 'salao'));
 select teste.ok('excluir setor tira todos da escala', teste.contar('select 1 from public.escala_membros') = 1);
 rollback;

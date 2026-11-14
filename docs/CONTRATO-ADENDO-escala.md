@@ -200,6 +200,7 @@ Idempotente; pode ser rodada numa empresa **vazia**. Passos:
 2. Setores do modelo, nesta ordem (`ordem` 1..6): **Salão, Maître, Areia, Bar, ASG, Cozinha** — reaproveita setor de mesmo nome.
 3. Para cada **posição do modelo** (tabela abaixo), chave `modelo_posicao = '<setor>|<nome>'`:
    - se já há membro com essa chave na empresa → **não mexe** (o gerente pode ter renomeado/editado; rodar de novo não duplica);
+   - funcionário de mesmo nome que **já está** na escala (em qualquer setor) → só marca a posição do modelo nele, sem mover;
    - senão usa o funcionário da empresa com **o mesmo nome** (sem diferença de maiúsculas/espaços nas pontas) que ainda não está na
      escala; não havendo, **cria** um funcionário provisório: `nome` = nome da posição, `cargo` = função (nome sem o número),
      `pontos_comissao = 0` (participa da comissão pelo padrão, mas com 0 ponto não recebe), sem jornada, sem admissão;

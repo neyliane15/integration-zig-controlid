@@ -25,7 +25,7 @@
   --color-tinta-ouro: #f6f1e4; /* texto sobre o acento (= --bg) */
   --color-creme: #2b2f1e; /* --ink: texto principal */
   --color-lavanda: #5f634d; /* texto secundário (--mut #6f7360 escurecido p/ AA) */
-  --color-lavanda-escuro: #676b58; /* placeholders, rótulos secundários (≥ 4,5:1) */
+  --color-lavanda-escuro: #636753; /* placeholders, rótulos secundários (≥ 4,5:1) */
   --color-sucesso: #5f6b3a; /* = acento */
   --color-alerta: #8a5a0c; /* aviso: âmbar suave */
   --color-perigo: #a8432f; /* erro/folga em texto: terracota (--off escurecido p/ AA) */

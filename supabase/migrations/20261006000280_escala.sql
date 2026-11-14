@@ -171,7 +171,7 @@ create trigger tocar_atualizado_em before update on public.escala_ajustes
 create or replace function public.escala_membros_rodizio(p_empresa uuid, p_setor uuid default null)
 returns table (id uuid, funcionario_id uuid, setor_id uuid, caminho smallint, posicao smallint, k int, n int,
                folgas_base smallint[], chegada_padrao time, fase_setor int, data_admissao date, data_desligamento date)
-language sql stable security definer set search_path = public, extensions, pg_temp as $$
+language sql stable security definer rows 40 set search_path = public, extensions, pg_temp set jit = off as $$
   select m.id, m.funcionario_id, m.setor_id, m.caminho, m.posicao,
          (row_number() over (partition by m.setor_id, m.caminho order by m.posicao, m.id) - 1)::int,
          (count(*) over (partition by m.setor_id, m.caminho))::int,
@@ -194,7 +194,7 @@ comment on function public.escala_semana_num(date, date) is '[interno] Semana do
 create or replace function public.escala_calcular(p_empresa uuid, p_inicio date, p_fim date, p_funcionario uuid default null)
 returns table (funcionario_id uuid, membro_id uuid, setor_id uuid, data date, status text, status_auto text, origem text,
                chegada time, ajustado boolean, ajuste_status text, ajuste_chegada time, motivo text)
-language sql stable security definer set search_path = public, extensions, pg_temp as $$
+language sql stable security definer rows 40 set search_path = public, extensions, pg_temp set jit = off as $$
   with cfg as (select c.ancora, c.fase from public.escala_config c where c.empresa_id = p_empresa),
   mem as materialized (
     select r.* from public.escala_membros_rodizio(p_empresa,
@@ -236,7 +236,7 @@ comment on function public.escala_calcular(uuid, date, date, uuid) is '[interno]
 
 -- Usada por ponto_calcular_dia (…0200): status da escala no dia (null = fora da escala) e chegada.
 create or replace function public.escala_status_ponto(p_funcionario uuid, p_data date, out status text, out chegada time)
-language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+language plpgsql stable security definer set search_path = public, extensions, pg_temp set jit = off as $$
 declare v_empresa uuid; c record;
 begin
   select m.empresa_id into v_empresa from public.escala_membros m where m.funcionario_id = p_funcionario;
@@ -823,7 +823,7 @@ comment on function public.escala_trocar(uuid, date, uuid, date, text) is
 
 -- ================================================================ RPCs de leitura
 create or replace function public.escala_mes(p_ano_mes text, p_empresa uuid default null)
-returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp set jit = off as $$
 declare v_empresa uuid; v_ini date; v_fim date; v_cfg public.escala_config; v_motivo boolean;
 begin
   v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
@@ -882,7 +882,7 @@ end $$;
 comment on function public.escala_mes(text, uuid) is '[api] Escala do mês (AAAA-MM): setores, membros e dias (leitura vê, sem motivos).';
 
 create or replace function public.escala_semana(p_data date default null, p_empresa uuid default null)
-returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp set jit = off as $$
 declare v_empresa uuid; v_cfg public.escala_config; v_data date; v_seg date; v_w int;
 begin
   v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');

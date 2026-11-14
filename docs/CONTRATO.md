@@ -228,6 +228,7 @@ Nas tabelas `[api:crud]`, quem não tem política para a operação recebe 0 lin
 | `20261006000250_ocorrencias.sql` | backend | ocorrências disciplinares, anexos (bucket `funcionarios-documentos`), suspensão → abono (`docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md`) |
 | `20261006000260_extras.sql` | backend | pontos extras (RPCs), diárias, `gastos_periodo` (adendo) |
 | `20261006000270_reservas.sql` | backend | reservas, importação CSV, `ingestao_reservas` (Tagme) (adendo) |
+| `20261006000280_escala.sql` | backend | escala rotativa (setores, membros, caminhos, ajustes, troca, férias → abono, integração com a apuração; `docs/CONTRATO-ADENDO-escala.md`) |
 | `20261006000900_permissoes.sql` | backend-1 | varredura de privilégios por etiqueta (§2.2). **Sempre a última.** |
 
 O backend-2 escreve contra o DDL do §5 **exatamente** como está aqui (nomes, tipos, nulidade).
@@ -1389,7 +1390,7 @@ o Tailwind gera `bg-noite`, `text-creme`, `border-borda`, `rounded-cartao`, `fon
 | `--color-tinta-ouro` | texto sobre o acento | `#F6F1E4` | `#1C1F14` | `--bg` |
 | `--color-creme` | texto principal | `#2B2F1E` | `#F1EDDC` | `--ink` |
 | `--color-lavanda` | texto secundário, rótulos | `#5F634D` | `#A9AD98` | `--mut` (claro escurecido p/ AA) |
-| `--color-lavanda-escuro` | placeholders, rótulos secundários | `#676B58` | `#9A9E88` | |
+| `--color-lavanda-escuro` | placeholders, rótulos secundários | `#636753` | `#9A9E88` | |
 | `--color-sucesso` | sucesso (= acento) | `#5F6B3A` | `#A9BB6C` | `--ac` |
 | `--color-alerta` | aviso (âmbar suave): alarmes abertos, atraso | `#8A5A0C` | `#E0B45A` | |
 | `--color-perigo` | erro, saldo negativo, folga em texto (terracota) | `#A8432F` | `#EE8A72` | `--off` (claro escurecido p/ AA) |
