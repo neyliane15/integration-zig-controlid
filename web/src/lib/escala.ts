@@ -233,3 +233,49 @@ export function montarTsv(dias: DiaDoMes[], secoes: SecaoTsv[], naEscala: number
   linhas.push(['Na escala', ...dias.map((_, j) => String(naEscala[j] ?? 0)), ''].join('\t'))
   return linhas.join('\n')
 }
+
+// ------------------------------------------------------------------ regra do rodízio (adendo §S.2)
+
+/** Número da semana `w` de uma data em relação à âncora (segunda-feira). Pode ser negativo. */
+export function semanaDaData(dataIso: string, ancora: string): number {
+  const d = Date.parse(`${dataIso}T00:00:00Z`)
+  const a = Date.parse(`${ancora}T00:00:00Z`)
+  const dow = indiceSegunda(new Date(d).getUTCDay())
+  const seg = d - dow * 86_400_000
+  return Math.round((seg - a) / 86_400_000 / 7)
+}
+
+export interface SetorRegra {
+  fase: number
+  caminhos: { caminho: number; funcionarios: string[] }[]
+  membros: { funcionario_id: string; folgas_base: number[]; caminho: number | null }[]
+}
+
+/** Membro cujas folgas base `funcionarioId` assume na semana `w` (regra §S.2 passo 4). */
+export function alvoDaSemana(funcionarioId: string, w: number, setor: SetorRegra, faseEmpresa: number): string {
+  const m = setor.membros.find((x) => x.funcionario_id === funcionarioId)
+  if (!m || m.caminho == null) return funcionarioId
+  const P = setor.caminhos.find((c) => c.caminho === m.caminho)?.funcionarios ?? []
+  const n = P.length
+  const k = P.indexOf(funcionarioId)
+  if (n === 0 || k < 0) return funcionarioId
+  const f = faseEmpresa + setor.fase
+  return P[(((k + w + f) % n) + n) % n]!
+}
+
+/** Folgas (0=SEG..6=DOM) do membro na semana `w`. */
+export function folgasDaSemana(funcionarioId: string, w: number, setor: SetorRegra, faseEmpresa: number): number[] {
+  const alvo = alvoDaSemana(funcionarioId, w, setor, faseEmpresa)
+  return setor.membros.find((x) => x.funcionario_id === alvo)?.folgas_base ?? []
+}
+
+/** Status automático (sem ajuste) do membro num dia de semana `w` / `diaSemana` (0=SEG). */
+export function statusAutomatico(
+  funcionarioId: string,
+  w: number,
+  diaSemana: number,
+  setor: SetorRegra,
+  faseEmpresa: number,
+): 'folga' | 'trabalha' {
+  return folgasDaSemana(funcionarioId, w, setor, faseEmpresa).includes(diaSemana) ? 'folga' : 'trabalha'
+}

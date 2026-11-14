@@ -1018,6 +1018,107 @@ export interface PainelDoDia {
 type ArgsPeriodoVendas = { p_inicio: DataISO; p_fim: DataISO; p_loja?: string | null; p_empresa?: Uuid | null }
 
 /** Nome → { args, retorno }. Só RPCs `[api]` (as `[servico]` são do N8N). */
+// ------------------------------------------------------------ escala (adendo escala v2)
+/** Dia da semana da escala: 0 = SEG … 6 = DOM (diferente do dow do Postgres). */
+export type DiaSemanaEscala = 0 | 1 | 2 | 3 | 4 | 5 | 6
+export type StatusEscala = 'trabalha' | 'folga' | 'ferias' | 'fora'
+export type StatusAjusteEscala = 'trabalha' | 'folga' | 'ferias'
+
+export interface EscalaDiaMembro {
+  data: DataISO
+  status: StatusEscala
+  origem: 'auto' | 'ajuste'
+  /** 'HH:MM' só quando trabalha */
+  chegada: string | null
+  ajustado: boolean
+  motivo: string | null
+}
+export interface EscalaDiaFuncionario extends EscalaDiaMembro {
+  funcionario_id: Uuid
+}
+export interface EscalaCaminho {
+  caminho: number
+  funcionarios: Uuid[]
+}
+export interface EscalaMembroMes {
+  membro_id: Uuid
+  funcionario_id: Uuid
+  nome: string
+  cargo: string | null
+  chegada_padrao: string | null
+  folgas_base: number[]
+  caminho: number | null
+  posicao: number | null
+  folga_fixa: boolean
+  trabalha: number
+  folgas: number
+  ferias: number
+  dias: EscalaDiaMembro[]
+}
+export interface EscalaSetorMes {
+  id: Uuid
+  nome: string
+  ordem: number
+  fase: number
+  caminhos: EscalaCaminho[]
+  membros: EscalaMembroMes[]
+  na_escala: number[]
+}
+export interface EscalaMes {
+  empresa_id: Uuid
+  ano_mes: string
+  inicio: DataISO
+  fim: DataISO
+  configurada: boolean
+  ancora: DataISO | null
+  fase: number | null
+  pode_editar: boolean
+  hoje: DataISO
+  dias: { data: DataISO; dia_semana: number; semana: number | null }[]
+  setores: EscalaSetorMes[]
+  na_escala: number[]
+}
+export interface EscalaMembroSemana {
+  funcionario_id: Uuid
+  nome: string
+  cargo: string | null
+  chegada_padrao: string | null
+  caminho: number | null
+  posicao: number | null
+  folga_fixa: boolean
+  folgas_base: number[]
+  folgas_semana: number[]
+}
+export interface EscalaSetorSemana {
+  id: Uuid
+  nome: string
+  ordem: number
+  fase: number
+  total: number
+  caminhos: (EscalaCaminho & { nomes: string[] })[]
+  membros: EscalaMembroSemana[]
+  na_escala_base: number[]
+  na_escala_semana: number[]
+}
+export interface EscalaSemana {
+  empresa_id: Uuid
+  configurada: boolean
+  ancora: DataISO | null
+  fase: number | null
+  semana_inicio: DataISO
+  semana: number | null
+  setores: EscalaSetorSemana[]
+  na_escala_base: number[]
+  na_escala_semana: number[]
+}
+export interface EscalaMembroEntrada {
+  funcionario_id: Uuid
+  folgas_base: number[]
+  chegada_padrao: string | null
+  caminho: number | null
+  posicao: number | null
+}
+
 export interface Rpcs {
   // usuários e empresas (b1)
   admin_criar_usuario: {
@@ -1291,6 +1392,60 @@ export interface Rpcs {
     retorno: Reserva[]
   }
   reservas_importar: { args: { p_linhas: LinhaImportacaoReserva[]; p_empresa?: Uuid | null }; retorno: RetornoImportacaoReservas }
+  // escala (adendo escala v2)
+  escala_configurar: {
+    args: { p_ancora: DataISO; p_fase?: number; p_empresa?: Uuid | null }
+    retorno: { empresa_id: Uuid; ancora: DataISO; fase: number }
+  }
+  escala_salvar_setor: {
+    args: { p_nome: string; p_ordem?: number | null; p_fase?: number; p_setor?: Uuid | null; p_empresa?: Uuid | null }
+    retorno: Uuid
+  }
+  escala_excluir_setor: { args: { p_setor: Uuid }; retorno: null }
+  escala_salvar_membro: {
+    args: {
+      p_setor: Uuid
+      p_funcionario: Uuid
+      p_folgas_base?: number[]
+      p_chegada_padrao?: string | null
+      p_caminho?: number | null
+      p_posicao?: number | null
+      p_ordem?: number | null
+    }
+    retorno: Uuid
+  }
+  escala_definir_membros: { args: { p_setor: Uuid; p_membros: EscalaMembroEntrada[] }; retorno: number }
+  escala_remover_membro: { args: { p_funcionario: Uuid }; retorno: null }
+  escala_adicionar_funcionario: {
+    args: {
+      p_setor: Uuid
+      p_nome: string
+      p_cargo?: string | null
+      p_folgas_base?: number[]
+      p_chegada_padrao?: string | null
+      p_caminho?: number | null
+      p_posicao?: number | null
+    }
+    retorno: Uuid
+  }
+  escala_aplicar_modelo_macaw: {
+    args: { p_empresa?: Uuid | null; p_ancora?: DataISO | null }
+    retorno: { ancora: DataISO; setores: number; membros: number; funcionarios_criados: number }
+  }
+  escala_ajustar: {
+    args: { p_funcionario: Uuid; p_data: DataISO; p_status?: StatusAjusteEscala | 'auto' | null; p_chegada?: string | null; p_motivo?: string | null }
+    retorno: EscalaDiaFuncionario
+  }
+  escala_ajustar_periodo: {
+    args: { p_funcionario: Uuid; p_inicio: DataISO; p_fim: DataISO; p_status: StatusAjusteEscala | 'auto' | null; p_motivo?: string | null }
+    retorno: number
+  }
+  escala_trocar: {
+    args: { p_funcionario_a: Uuid; p_data_a: DataISO; p_funcionario_b?: Uuid | null; p_data_b?: DataISO | null; p_motivo?: string | null }
+    retorno: EscalaDiaFuncionario[]
+  }
+  escala_mes: { args: { p_ano_mes: string; p_empresa?: Uuid | null }; retorno: EscalaMes }
+  escala_semana: { args: { p_data?: DataISO | null; p_empresa?: Uuid | null }; retorno: EscalaSemana }
 }
 
 export type NomeRpc = keyof Rpcs

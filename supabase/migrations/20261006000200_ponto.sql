@@ -126,6 +126,9 @@ create index if not exists ponto_abonos_ocorrencia_idx on public.ponto_abonos (o
 alter table public.ponto_abonos drop constraint if exists ponto_abonos_tipo_check;
 alter table public.ponto_abonos add constraint ponto_abonos_tipo_check
   check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro', 'suspensao'));
+-- (adendo escala) abono 'ferias' gerado por ajuste de férias da escala (FK para escala_ajustes criada em …0280)
+alter table public.ponto_abonos add column if not exists escala_ajuste_id uuid;
+create index if not exists ponto_abonos_escala_ajuste_idx on public.ponto_abonos (escala_ajuste_id);
 alter table public.ponto_dias drop constraint if exists ponto_dias_situacao_check;
 alter table public.ponto_dias add constraint ponto_dias_situacao_check
   check (situacao in ('completo', 'incompleto', 'ausente', 'folga', 'sem_escala', 'abonado', 'suspenso', 'em_andamento'));
@@ -323,6 +326,18 @@ create trigger a_antes before insert or update on public.ponto_batidas
   for each row execute function public.ponto_batidas_antes();
 
 -- ============================================================ cálculo de um dia
+-- (adendo escala) Status da escala rotativa no dia: a função real é definida em …0280_escala.sql. Aqui só um esqueleto
+-- (criado se ainda não existir) para que a apuração funcione antes da …0280 numa instalação/atualização em andamento.
+do $$
+begin
+  if to_regprocedure('public.escala_status_ponto(uuid, date)') is null then
+    execute $f$create function public.escala_status_ponto(p_funcionario uuid, p_data date, out status text, out chegada time)
+      language sql stable security definer set search_path = public, extensions, pg_temp as
+      'select null::text, null::time'$f$;
+    execute $c$comment on function public.escala_status_ponto(uuid, date) is '[interno] Status da escala no dia (esqueleto; ver …0280).'$c$;
+  end if;
+end $$;
+
 -- §7.2/§7.3. Não grava nada. Retorna 0 linhas se o funcionário não existe; fora_do_vinculo = true se D fora do vínculo.
 create or replace function public.ponto_calcular_dia(p_funcionario uuid, p_data date)
 returns table (
@@ -381,6 +396,8 @@ declare
   v_custo      numeric;
   v_melhor     int[];
   v_melhor_c   numeric;
+  v_esc        record;
+  v_desloc     interval;
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -423,10 +440,19 @@ begin
    order by a.funcionario_id nulls last
    limit 1;
 
+  -- (adendo escala §S.5) status da escala rotativa: folga/férias = não escalado; trabalha = escalado com a jornada,
+  -- deslocada para a chegada da escala. null = funcionário fora da escala (só a jornada vale).
+  select * into v_esc from public.escala_status_ponto(f.id, p_data);
+
   v_k := 0;
-  if v_abono is null and j.id is not null then
+  if v_abono is null and j.id is not null and v_esc.status is distinct from 'folga' and v_esc.status is distinct from 'ferias' then
     select * into jd from public.jornada_dias x
      where x.jornada_id = j.id and x.dia_semana = extract(dow from p_data)::smallint;
+    if not found and v_esc.status = 'trabalha' then
+      -- jornada sem este dia da semana: usa o primeiro dia cadastrado (SEG→DOM) como modelo de horários
+      select * into jd from public.jornada_dias x
+       where x.jornada_id = j.id order by (x.dia_semana + 6) % 7 limit 1;
+    end if;
     if found then
       v_prev := jd.minutos_previstos;
       v_k := jd.batidas_esperadas;
@@ -442,6 +468,12 @@ begin
         v_slots := array[
           public.ponto_instante_escala(p_data, jd.entrada, e.fuso, e.virada_dia),
           public.ponto_instante_escala(p_data, jd.saida, e.fuso, e.virada_dia)];
+      end if;
+      if v_esc.chegada is not null then
+        v_desloc := public.ponto_instante_escala(p_data, v_esc.chegada, e.fuso, e.virada_dia) - v_slots[1];
+        for i in 1 .. v_k loop
+          v_slots[i] := v_slots[i] + v_desloc;
+        end loop;
       end if;
       for i in 1 .. v_k loop
         v_esperadas := v_esperadas || jsonb_build_object('batida', v_nomes[i], 'instante', v_slots[i]);
@@ -524,7 +556,8 @@ begin
   if not v_encerrado then v_situacao := 'em_andamento';
   elsif v_abono = 'suspensao' then v_situacao := 'suspenso';
   elsif v_abono is not null then v_situacao := 'abonado';
-  elsif v_k = 0 and v_n = 0 then v_situacao := case when j.id is null then 'sem_escala' else 'folga' end;
+  elsif v_k = 0 and v_n = 0 then
+    v_situacao := case when v_esc.status in ('folga', 'ferias') or j.id is not null then 'folga' else 'sem_escala' end;
   elsif v_n = 0 then v_situacao := 'ausente';
   elsif v_n >= v_k and v_n % 2 = 0 then v_situacao := 'completo';
   else v_situacao := 'incompleto';
@@ -1090,6 +1123,11 @@ begin
         where a.funcionario_id = p_funcionario and a.data between p_inicio and p_fim and a.ocorrencia_id is not null) then
     raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
   end if;
+  if p_funcionario is not null and exists (
+       select 1 from public.ponto_abonos a
+        where a.funcionario_id = p_funcionario and a.data between p_inicio and p_fim and a.escala_ajuste_id is not null) then
+    raise exception 'Dia com férias na escala: altere pela escala' using errcode = '22023';
+  end if;
 
   insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por)
   select v_empresa, p_funcionario, g::date, p_tipo, nullif(btrim(p_motivo), ''), auth.uid()
@@ -1116,6 +1154,9 @@ begin
   if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   if a.ocorrencia_id is not null then
     raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
+  if a.escala_ajuste_id is not null then
+    raise exception 'Dia com férias na escala: altere pela escala' using errcode = '22023';
   end if;
   delete from public.ponto_abonos where id = p_abono;
   if a.funcionario_id is not null then

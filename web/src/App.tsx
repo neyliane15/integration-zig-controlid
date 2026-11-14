@@ -59,6 +59,7 @@ const PaginaRotinas = lazy(() => import('./paginas/tarefas/PaginaRotinas').then(
 
 // ------------------------------------------- extras, ocorrências e reservas (adendo)
 const PaginaExtras = lazy(() => import('./paginas/extras/PaginaExtras').then((m) => ({ default: m.PaginaExtras })))
+const PaginaEscala = lazy(() => import('./paginas/escala/PaginaEscala').then((m) => ({ default: m.PaginaEscala })))
 const PaginaReservas = lazy(() => import('./paginas/reservas/PaginaReservas').then((m) => ({ default: m.PaginaReservas })))
 
 function So({ permitir, children }: { permitir(p: Papel): boolean; children: ReactNode }) {
@@ -106,6 +107,7 @@ export function App() {
 
           <Route path="/extras" element={<So permitir={podeOperar}><PaginaExtras /></So>} />
           <Route path="/reservas" element={<PaginaReservas />} />
+          <Route path="/escala" element={<PaginaEscala />} />
 
           <Route path="/tarefas" element={<PaginaTarefas />} />
           <Route path="/tarefas/rotinas" element={<So permitir={podeOperar}><PaginaRotinas /></So>} />

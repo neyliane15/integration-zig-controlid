@@ -37,6 +37,9 @@ export const chaves = {
   valoresDiaria: (empresaId: Id) => ['valores-diaria', empresaId ?? null] as const,
   gastos: (empresaId: Id, inicio: string, fim: string) => ['gastos', empresaId ?? null, inicio, fim] as const,
   reservas: (empresaId: Id, inicio: string, fim: string) => ['reservas', empresaId ?? null, inicio, fim] as const,
+  // adendo escala
+  escalaMes: (empresaId: Id, anoMes: string) => ['escala-mes', empresaId ?? null, anoMes] as const,
+  escalaSemana: (empresaId: Id, data: string | null) => ['escala-semana', empresaId ?? null, data] as const,
 } as const
 
 /** Prefixos (1º elemento) para invalidar todas as variações de uma família. */
@@ -67,6 +70,8 @@ export type FamiliaConsulta =
   | 'valores-diaria'
   | 'gastos'
   | 'reservas'
+  | 'escala-mes'
+  | 'escala-semana'
 
 /** Invalida famílias inteiras (qualquer empresa/parâmetro). */
 export function invalidar(qc: QueryClient, ...familias: FamiliaConsulta[]): Promise<void> {

@@ -14,6 +14,9 @@ import {
   somarMeses,
   textoCelula,
   textoFolgas,
+  folgasDaSemana,
+  semanaDaData,
+  statusAutomatico,
 } from './escala'
 
 describe('normT (igual ao modelo)', () => {
@@ -157,5 +160,56 @@ describe('montarTsv', () => {
       'Bruno\tFÉ\tFÉ\t\t0 +2FÉ',
       'Na escala\t0\t1\t2\t',
     ])
+  })
+})
+
+describe('regra do rodízio — exemplo do adendo §S.2 (Salão, âncora 2026-11-02)', () => {
+  // caminho 1: G1 (QUA,QUI) → G2 (QUA,QUI) → G3 (QUA,QUI) → C2 (QUA,DOM); caminho 2: G4, G5, G6 (SEG,TER) → C1 (TER,DOM)
+  const setor = {
+    fase: 0,
+    caminhos: [
+      { caminho: 1, funcionarios: ['g1', 'g2', 'g3', 'c2'] },
+      { caminho: 2, funcionarios: ['g4', 'g5', 'g6', 'c1'] },
+    ],
+    membros: [
+      { funcionario_id: 'g1', folgas_base: [2, 3], caminho: 1 },
+      { funcionario_id: 'g2', folgas_base: [2, 3], caminho: 1 },
+      { funcionario_id: 'g3', folgas_base: [2, 3], caminho: 1 },
+      { funcionario_id: 'c2', folgas_base: [2, 6], caminho: 1 },
+      { funcionario_id: 'g4', folgas_base: [0, 1], caminho: 2 },
+      { funcionario_id: 'g5', folgas_base: [0, 1], caminho: 2 },
+      { funcionario_id: 'g6', folgas_base: [0, 1], caminho: 2 },
+      { funcionario_id: 'c1', folgas_base: [1, 6], caminho: 2 },
+      { funcionario_id: 'chef', folgas_base: [3], caminho: null },
+    ],
+  }
+  const A = '2026-11-02'
+  it('número da semana contínuo', () => {
+    expect(semanaDaData('2026-11-02', A)).toBe(0)
+    expect(semanaDaData('2026-11-08', A)).toBe(0)
+    expect(semanaDaData('2026-11-09', A)).toBe(1)
+    expect(semanaDaData('2026-11-01', A)).toBe(-1)
+    expect(semanaDaData('2027-02-01', A)).toBe(13)
+  })
+  it('folgas por semana da tabela', () => {
+    expect(folgasDaSemana('g1', 0, setor, 0)).toEqual([2, 3])
+    expect(folgasDaSemana('c2', 0, setor, 0)).toEqual([2, 6])
+    expect(folgasDaSemana('c2', 1, setor, 0)).toEqual([2, 3])
+    expect(folgasDaSemana('g1', 3, setor, 0)).toEqual([2, 6]) // DOM 29
+    expect(folgasDaSemana('g4', 3, setor, 0)).toEqual([1, 6])
+    expect(folgasDaSemana('c1', 1, setor, 0)).toEqual([0, 1])
+    expect(folgasDaSemana('g1', 13, setor, 0)).toEqual(folgasDaSemana('g1', 1, setor, 0))
+    expect(folgasDaSemana('g1', -1, setor, 0)).toEqual([2, 6])
+    expect(folgasDaSemana('chef', 7, setor, 0)).toEqual([3])
+  })
+  it('fase 1 = semana seguinte', () => {
+    expect(folgasDaSemana('c2', 0, setor, 1)).toEqual(folgasDaSemana('c2', 1, setor, 0))
+    expect(folgasDaSemana('c2', 0, { ...setor, fase: 1 }, 0)).toEqual([2, 3])
+  })
+  it('statusAutomatico e "na escala" de 04/11 (QUA)', () => {
+    expect(statusAutomatico('g1', 0, 2, setor, 0)).toBe('folga')
+    expect(statusAutomatico('g4', 0, 2, setor, 0)).toBe('trabalha')
+    const naEscala = setor.membros.filter((m) => m.caminho && statusAutomatico(m.funcionario_id, 0, 2, setor, 0) === 'trabalha').length
+    expect(naEscala).toBe(4)
   })
 })

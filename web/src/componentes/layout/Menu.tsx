@@ -6,6 +6,7 @@ import clsx from 'clsx'
 import {
   Building2,
   CalendarCheck,
+  CalendarRange,
   HandCoins,
   type LucideIcon,
   Clock,
@@ -38,6 +39,7 @@ export const ITENS_MENU: ItemMenu[] = [
   { rotulo: 'Painel', para: '/', icone: LayoutDashboard, grupo: 'Dia a dia', permitir: todos, atalho: true },
   { rotulo: 'Ponto', para: '/ponto', icone: Clock, grupo: 'Dia a dia', permitir: todos, atalho: true },
   { rotulo: 'Banco de horas', para: '/banco-de-horas', icone: Hourglass, grupo: 'Dia a dia', permitir: todos },
+  { rotulo: 'Escala', para: '/escala', icone: CalendarRange, grupo: 'Dia a dia', permitir: todos },
   { rotulo: 'Funcionários', para: '/funcionarios', icone: Users, grupo: 'Dia a dia', permitir: todos },
   { rotulo: 'Reservas', para: '/reservas', icone: CalendarCheck, grupo: 'Dia a dia', permitir: todos },
   { rotulo: 'Vendas', para: '/vendas', icone: Receipt, grupo: 'Loja', permitir: todos, atalho: true },
