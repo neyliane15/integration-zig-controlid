@@ -1,5 +1,8 @@
 # Adendo ao contrato — Escala rotativa (5x2, modelo Macaw) ligada ao ponto
 
+> **Versão 3** — §S.11: **faltas** na escala (código FJ/FI, `escala_ajustar` com status `falta_justificada`/`falta_injustificada`)
+> e a escala como fonte de **presença da comissão** nos dias sem ponto (adendo extras §E.7). Migração `…0290_comissao_presenca.sql`.
+>
 > **Versão 2** — inclui o pedido do cliente para a empresa real "Macaw Camboinhas": `escala_aplicar_modelo_macaw` monta o modelo
 > inteiro (cria funcionários provisórios para as posições sem funcionário), `escala_adicionar_funcionario` cadastra e põe na escala
 > numa chamada só, e a escala funciona **sem nenhuma batida nem integração** de ponto (§S.6).
@@ -156,8 +159,9 @@ Exemplo (testado): jornada 17:00/21:00/21:30/01:00, chegada da escala 18:00 → 
 
 **Reapuração**: toda RPC de escrita reapura os funcionários afetados nos dias afetados, limitados a **[hoje − 61, hoje]**
 (62 dias; o dia corrente incluso). Configuração/setor/membros → membros envolvidos, de `max(âncora, hoje − 61)` a hoje; ajuste/troca →
-só os dias mexidos. Dias mais antigos só mudam com `ponto_reapurar` (botão "Recalcular"). Comissão usa presença por batidas e o
-fechamento fechado é imutável → a escala nunca altera comissão fechada.
+só os dias mexidos. Dias mais antigos só mudam com `ponto_reapurar` (botão "Recalcular"). *(v3)* Comissão: nos dias **sem ponto** a presença
+vem da escala (`trabalha` = presente; `ferias` nunca) — adendo extras §E.7.1; rascunhos são recalculados por `comissao_recalcular`;
+o fechamento fechado é imutável → a escala nunca altera comissão fechada.
 
 **Front de ponto** (`web/src/lib/ponto.ts`, prévia/fuzz): para membro da escala, use sempre `esperadas` devolvido pelo banco
 (`ponto_espelho`/`ponto_dia_empresa`) — não recalcule a partir da jornada.
@@ -285,3 +289,17 @@ Reaproveitadas: `Sem permissão` (42501) · `Informe a empresa` · `Informe o no
 Setores: **Salão** (caminho 1: Ana Souza SEG,TER → Bruno Lima QUA,QUI → Carla Dias SEG,DOM; chegada padrão 17:00),
 **Bar** (Davi Rocha, folga fixa SEG,TER, chegada 17:30), **Cozinha** (Eva Martins, folga fixa DOM). Um ajuste demo: Bruno troca com a Ana
 o primeiro dia futuro em que um folga e o outro trabalha (`escala_trocar`); Carla com férias nos 3 dias seguintes a hoje + 7. Cantina Roma: setor "Salão" com Paolo Bianchi (folga fixa SEG).
+
+## S.11 Faltas na escala (v3)
+Faltas ficam em `funcionario_faltas` (adendo extras §E.7.2 — DDL, regras, ponto e RPCs `falta_*`); a escala só **mostra** e oferece atalho.
+- `escala_mes`: cada objeto-dia ganha `"falta": "justificada" | "injustificada" | null` (o `status` continua o da escala, normalmente
+  `trabalha`); cada membro ganha `"faltas": <nº no mês>`. Código da célula no front/Excel: **FJ** (justificada) / **FI** (injustificada),
+  no lugar de T. `na_escala` não muda (conta quem estava escalado). Leitura vê o código (sem motivo).
+- Objeto-dia de `escala_ajustar`/`escala_trocar` (`escala_dia_json`) ganha `"falta"` também.
+- `escala_ajustar(p_funcionario, p_data, p_status => 'falta_justificada' | 'falta_injustificada', p_motivo => …)` = `falta_registrar`
+  (mesmas validações; `p_chegada` ignorado; o ajuste de status/chegada do dia não muda). Retorna o objeto-dia.
+  Em `escala_ajustar_periodo` e na troca esses status → `Status inválido`.
+- Qualquer **outro** `escala_ajustar`, `escala_ajustar_periodo` (dia não `fora`) ou `escala_trocar` que toque um dia com falta →
+  `Dia com falta em DD/MM/AAAA: remova a falta antes` (22023). Para tirar a falta: `falta_remover(p_funcionario, p_data)`.
+- Falta num dia de `folga` da escala → `Funcionário de folga na escala em DD/MM/AAAA`; em dia de férias → `Já existe abono para o
+  funcionário em DD/MM/AAAA` (o abono de férias).

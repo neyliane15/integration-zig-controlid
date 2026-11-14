@@ -457,6 +457,206 @@ Removidas: `Pontos extras inválidos`, `Informe o funcionário ou o nome`. Reapr
 
 ---
 
+### E.7 Presença do dia, faltas, desligamento e extras sem pontuação (v3 — pedido do cliente)
+
+Vale para os **dois modos** de rateio e para a prévia do front. Migração `…0290_comissao_presenca.sql` (a regra fica numa função
+só, `comissao_presenca`, usada pelo cálculo e pelo `comissao_detalhe`). Fechamento **fechado nunca muda** (nada aqui reabre ou
+recalcula fechado).
+
+#### E.7.1 Presença de um funcionário no dia `d` — `comissao_presenca(p_empresa uuid, p_inicio date, p_fim date, p_funcionario uuid default null)` `[interno]`
+Devolve uma linha por funcionário da empresa × dia: `(funcionario_id, data, presente, fallback, bloqueado, motivo, origem)`.
+Definições objetivas:
+- **Ponto da empresa no dia** = existe `ponto_dias` da empresa em `d` com `batidas_validas > 0` (de **qualquer** funcionário).
+- **Funcionário no ponto** = tem vínculo com o Control iD (`controlid_usuarios.funcionario_id`) **ou** teve ao menos um dia com
+  batida válida em `[p_inicio, p_fim]` (quem nunca bate ponto e não está no relógio não é cobrado pelo ponto).
+- **O ponto vale para o funcionário no dia** = ponto da empresa no dia **e** funcionário no ponto.
+
+Primeira regra que casar (ordem exata):
+| # | condição | presente | fallback | bloqueado | motivo | origem |
+|---|---|---|---|---|---|---|
+| 1 | `d` fora do vínculo (`d < data_admissao` ou `d > data_desligamento`) | não | não | **sim** | `fora_vinculo` | null |
+| 2 | falta registrada no dia (§E.7.2) | não | não | **sim** | `falta_justificada` / `falta_injustificada` | null |
+| 3 | abono **do funcionário** `suspensao`, `ferias` ou `atestado` | não | não | **sim** | o tipo (`suspensao`/`ferias`/`atestado`) | null |
+| 4 | escala com status `ferias` no dia | não | não | **sim** | `ferias` | null |
+| 5 | `ponto_dias.batidas_validas > 0` no dia | **sim** | não | não | null | `ponto` |
+| 6 | outro abono **do funcionário** (`folga`, `compensacao`, `outro`, `feriado` individual) | não | não | **sim** | `abono` | null |
+| 7 | o ponto vale para o funcionário no dia (e ele não bateu) | não | não | não | `sem_batida` | null |
+| 8 | membro da escala com status `trabalha` no dia | **sim** | não | não | null | `escala` |
+| 9 | membro da escala com status `folga` no dia | não | não | não | `folga_escala` | null |
+| 10 | senão (fora da escala, ou dia `fora` da escala, e sem ponto que valha) | não | **sim** | não | `sem_registro` | null |
+
+- Abonos que significam **ausência** (bloqueiam mesmo com batida): `suspensao`, `ferias`, `atestado`. Os demais abonos individuais
+  (`folga`, `compensacao`, `outro`, `feriado` lançado para um funcionário) bloqueiam **só sem batida** (se ele veio e bateu, presente).
+  Abono da **empresa toda** (`funcionario_id null`, ex.: feriado) não afeta a presença (o restaurante costuma abrir no feriado).
+- Falta **prevalece sobre batida**: se chegar batida num dia com falta (o registro é recusado antes, §E.7.2, mas a ingestão do relógio
+  não pode ser recusada), o dia continua sem comissão até o gerente remover a falta.
+- Item **snapshot** (funcionário excluído, `funcionario_id null`): sem presença; só entra no fallback de último recurso (E.3.2 passo 5).
+
+#### E.7.2 Faltas — tabela `funcionario_faltas` e RPCs
+```sql
+-- ================================================================ funcionario_faltas  [api:leitura]  (select: G A M)
+create table if not exists public.funcionario_faltas (
+  id               uuid primary key default gen_random_uuid(),
+  empresa_id       uuid not null references public.empresas (id) on delete cascade,     -- gatilho: do funcionário
+  funcionario_id   uuid not null references public.funcionarios (id) on delete cascade,
+  data             date not null,                                                        -- dia de trabalho
+  tipo             text not null check (tipo in ('justificada', 'injustificada')),
+  motivo           text,                                       -- obrigatório na justificada
+  anexo_caminho    text unique,                                -- '<empresa_id>/faltas/<funcionario_id>/<arquivo>.(jpg|jpeg|png|webp|pdf)'
+  anexo_nome       text,                                       -- nome original (opcional)
+  criado_por       uuid references public.perfis (id) on delete set null,
+  criado_por_nome  text not null,
+  criado_em        timestamptz not null default now(),
+  atualizado_em    timestamptz not null default now(),
+  unique (funcionario_id, data),
+  constraint funcionario_faltas_motivo check (tipo = 'injustificada' or btrim(coalesce(motivo, '')) <> '')
+);
+-- índices: (empresa_id, data), (criado_por). Escrita só por RPC. Anexo no bucket privado `funcionarios-documentos` (§O.2:
+-- as políticas do Storage já liberam `<empresa_id>/...` para G A M; o banco não apaga objetos — as RPCs devolvem o caminho).
+```
+Regras (todas as RPCs `[api]`, **G A M**; leitura → `Sem permissão`):
+- Data ≤ dia de trabalho atual (`Data no futuro`) e ≥ hoje − 366 (`Data fora do limite`); dentro do vínculo
+  (`Dia fora do vínculo do funcionário`); fora de fechamento **fechado** da empresa (`Período de comissão já fechado`).
+- **Dia com batidas → recusado**: batida não desconsiderada do funcionário no dia →
+  `Funcionário com batidas em DD/MM/AAAA: desconsidere as batidas antes de registrar a falta`.
+- Abono **do funcionário** no dia (manual, atestado, suspensão, férias da escala…) → `Já existe abono para o funcionário em DD/MM/AAAA`.
+  Feriado da empresa toda não conflita (a falta prevalece no ponto).
+- Membro da escala com status `folga` no dia → `Funcionário de folga na escala em DD/MM/AAAA`.
+- Ao contrário: `ponto_abonar` de um funcionário, suspensão (`ocorrencia_criar/atualizar`) e qualquer ajuste/troca/férias da escala
+  num dia com falta → `Dia com falta em DD/MM/AAAA: remova a falta antes` (22023).
+- Toda escrita **reapura o dia** do funcionário no ponto e **recalcula os rascunhos** de comissão da empresa que contêm o dia.
+
+| assinatura | retorno / regra |
+|---|---|
+| `falta_registrar(p_funcionario uuid, p_data date, p_tipo text, p_motivo text default null, p_anexo_caminho text default null, p_anexo_nome text default null) returns jsonb` | **upsert** por (funcionário, data); objeto-falta (abaixo) + `"anexo_anterior"` (caminho substituído, para `storage.remove`, ou null). `p_anexo_caminho null` mantém o anexo atual. `Tipo de falta inválido`, `Informe o motivo` (justificada), `Informe a data`, `Funcionário não encontrado` (P0002), anexo: `Anexo inválido`, `Anexo não encontrado no armazenamento` (P0002), `Anexo já registrado` (23505) |
+| `falta_remover(p_funcionario uuid, p_data date) returns text` | caminho do anexo (ou null) para `storage.remove`. `Falta não encontrada` (P0002); trava de comissão |
+| `falta_definir_anexo(p_funcionario uuid, p_data date, p_caminho text, p_nome_arquivo text default null) returns text` | troca/remove (`p_caminho null`) o anexo; devolve o caminho antigo (ou null). Não reapura nem trava (não muda a comissão) |
+| `faltas_listar(p_inicio date, p_fim date, p_funcionario uuid default null, p_empresa uuid default null) returns jsonb` | lista de objetos-falta, máx. 366 dias, ordem `data desc, nome collate "C", id` |
+
+Objeto-falta: `{"id","funcionario_id","funcionario_nome","data":"AAAA-MM-DD","tipo":"justificada","motivo":"Atestado",
+"anexo_caminho":null,"anexo_nome":null,"criado_por_nome":"Gerente","criado_em":"ISO","atualizado_em":"ISO"}`.
+
+**Ponto** (`ponto_calcular_dia`, §7.2): novas situações `falta_justificada` e `falta_injustificada` (prevalecem sobre
+`em_andamento`, abono da empresa e escala).
+- **Justificada**: como um abono — `previsto = 0`, `esperadas = 0`, **sem alarmes**, saldo = trabalhado (0 sem batida).
+- **Injustificada**: o comportamento atual do ponto para a ausência — `previsto` da jornada/escala e, encerrado sem batida,
+  **saldo = −previsto** (vira débito no banco de horas); a diferença é que **não gera** `sem_batida_dia_escalado` (a falta já foi tratada).
+- `abono_tipo` fica null. Rótulos (front e `banco_horas_extrato`): **"Falta justificada"**, **"Falta injustificada"**.
+- Na **escala** (§S.11 do adendo de escala): a célula ganha `"falta": "justificada" | "injustificada" | null` → código **FJ** / **FI**.
+- **Extras**: falta não se aplica (extra não tem falta; o dia dele é o lançamento).
+
+#### E.7.3 Desligamento
+- Dias com `d > data_desligamento` (ou antes da admissão) são `fora_vinculo` → o funcionário sai do rateio desses dias (os anteriores ficam).
+- Gatilho em `funcionarios` (`after update of data_admissao, data_desligamento`): **recalcula os rascunhos** de comissão em que o
+  funcionário tem item. Fechados não mudam. Criar fechamento continua só com quem tem vínculo em algum dia do período.
+
+#### E.7.4 Modo `periodo` com a presença v3
+- `dias_presentes` = `dias_trabalhados` = nº de dias do período com `presente` **ou** `fallback` (sem registro conta como trabalhado,
+  equivalente ao fallback do modo diário). No modo diário `dias_presentes` continua = dias com `presente` (ponto ou escala).
+- `pontos_efetivos` do funcionário: não incluído → 0; **todos os dias bloqueados** (desligado/admitido fora do período, férias ou
+  suspensão o período inteiro…) → **0**; `proporcional_dias` → `round(pontos × dias_trabalhados / dias_periodo, 6)`; senão `pontos`.
+  Snapshot sem id: como antes (`pontos`, ou 0 no proporcional). Extras: como no E.3 (pendentes valem 0).
+
+#### E.7.5 Extras com pontuação pendente
+```sql
+alter table public.extras  add column if not exists pontos_pendente boolean not null default false;   -- cadastro sem pontuação
+alter table public.diarias add column if not exists pontos_pendente boolean not null default false;   -- dia lançado sem pontuação
+-- diarias: check (not pontos_pendente or (tipo = 'extra' and pontos = 0))
+alter table public.comissao_fechamentos add column if not exists extras_sem_pontuacao int not null default 0;
+alter table public.comissao_itens       add column if not exists pontos_pendente boolean not null default false;  -- extra com dia pendente
+```
+- Extra pendente: `pontos_padrao = 0` e `pontos_pendente = true`. Dia lançado **sem `p_pontos`** de extra pendente → `pontos = 0`,
+  `pontos_pendente = true`; com `p_pontos` → dia normal. `diaria_atualizar` com `p_pontos` informado tira a pendência do dia.
+- **Regra mais segura**: dia pendente **não entra no rateio** (vale 0) **e** o fechamento acusa: `extras_sem_pontuacao` = nº de extras
+  **incluídos** com dia pendente no período; o item do extra tem `pontos_pendente = true`; **fechar é recusado** com
+  `Há extras sem pontuação: preencha antes de fechar` (22023). Tirar o extra (`comissao_definir_extra(…, false)`) libera o fechamento.
+- `extra_definir_pontuacao(p_extra uuid, p_pontos numeric) returns int` `[api]` G A M: grava `pontos_padrao`, tira a pendência do
+  cadastro e aplica `p_pontos` a **todos os dias pendentes** do extra fora de fechamento fechado; retorna nº de dias atualizados.
+  Recalcula os rascunhos da empresa que contêm esses dias. `Pontos inválidos`, `Extra não encontrado`.
+- `extra_atualizar` de extra pendente com `p_pontos_padrao` **não nulo** = `extra_definir_pontuacao`; com `null` mantém a pendência.
+  `extra_criar(…, p_pontos_padrao => null)` continua criando com 0 **sem** pendência (a pendência só nasce na importação, §E.7.6).
+- `extras_listar` ganha a coluna `pontos_pendente boolean` (antes de `dias_lancados`) e `dias_pendentes int` (após `ultimo_dia`);
+  `diarias_listar` ganha `pontos_pendente boolean` (após `pontos`). O front destaca ("pontuação pendente").
+- `comissao_detalhe`: item extra com `"pontos_pendente"`; entrada do extra `{"data","presente":true,"pontos","pendente"}`.
+
+#### E.7.6 Importação de extras — `extras_importar(p_itens jsonb, p_empresa uuid default null) returns jsonb` `[api]` G A M
+Origem: "outro sistema do Macaw" (formato ainda indefinido — o front/N8N converte para isto). `p_itens` = array (até **1000** linhas):
+```json
+[ { "nome": "Zé Pereira", "funcao": "Cumim", "telefone": "21999990000", "documento": "123.456.789-00",
+    "valor_diaria_centavos": 15000, "pontos": null,
+    "dias_trabalhados": [ { "data": "2026-09-03", "valor_centavos": 15000, "pontos": null } ] } ]
+```
+Por linha (cada linha é atômica: erro desfaz só a linha e entra em `erros`; as demais seguem):
+1. `nome` obrigatório (`Informe o nome`). Casamento com extra existente da empresa: `documento` informado → mesmo documento
+   **normalizado** (só letras e dígitos, minúsculas); não achando, mesmo **nome normalizado** (`lower`, espaços colapsados, sem pontas)
+   entre extras **sem** documento. Sem documento → mesmo nome normalizado; mais de um → `Mais de um extra com este nome: informe o documento`.
+2. Criar (não casou): `pontos` informado → `pontos_padrao = pontos`; ausente/null → `0` e **`pontos_pendente = true`**.
+   Atualizar (casou): `funcao`, `telefone`, `documento`, `valor_diaria_centavos` informados (não nulos) substituem; `pontos` informado
+   = `extra_definir_pontuacao`; null **mantém** (não torna pendente um extra que já tem pontuação). Importar **reativa** o extra (`ativo = true`).
+3. `dias_trabalhados` (opcional): por item, `data` obrigatória (validações do `diaria_lancar`: limite de data, trava de comissão,
+   `valor` padrão do cadastro, `Informe o valor da diária`); `pontos` do dia → senão `pontos_padrao` do extra → se o extra está pendente,
+   dia pendente. **Upsert** por (extra, data): dia já lançado é atualizado (valor/pontos), não duplica.
+4. Validações de campo: `Pontos inválidos`, `Valor inválido`, `Data inválida` (texto que não é data), `Linha inválida` (não é objeto).
+
+Retorno: `{"lidos": 6, "criados": 2, "atualizados": 2, "dias_lancados": 3, "pendentes_pontuacao": 1,
+"erros": [ { "linha": 3, "mensagem": "Informe o nome" }, { "linha": 6, "mensagem": "Data fora do limite" } ]}` — `linha` 1-based;
+`dias_lancados` = dias inseridos ou atualizados; `pendentes_pontuacao` = extras das linhas aceitas que terminaram pendentes.
+`p_itens` que não é array → `Lista de extras inválida` (22023); mais de 1000 → `Máximo de 1000 linhas por importação` (22023).
+Não recalcula rascunhos (como `diaria_lancar`: o front chama `comissao_recalcular`).
+
+#### E.7.7 `comissao_detalhe` e prévia do front (v3)
+- `fechamento` ganha `extras_sem_pontuacao`; `itens[]` ganha `"pontos_pendente"`.
+- `entrada` do **funcionário** (um por dia): `{"data","presente","fallback","bloqueado","motivo","origem","pontos"}` (E.7.1).
+  Prévia (modo diário) por dia: participantes = `presente` **+** (`fallback` **se** `base_d > 0`), todos com `pontos_d > 0`; se ninguém
+  (nem extra) e `base_d > 0` → último recurso: itens incluídos com `bloqueado = false` (e snapshots). `fallback` do rateio = entrou
+  por fallback individual ou de último recurso; `sem_presenca` do dia = algum `fallback`.
+- `entrada` do **extra**: `{"data","presente":true,"pontos","pendente"}`; pendente vale 0 (não entra).
+
+#### E.7.8 Vetores (banco `58_comissao_presenca.sql` e vitest)
+**V7 — diário, 01 a 04/09/2026, retenção 20%, ajuste 0.** Tips: 01 `100000`, 02 `50000`, 03 `30000`, 04 `20001` → bases
+`80000`, `40000`, `24000`, `16001` (retenção 04/09 = round(4000,2) = 4000). Escala com âncora 31/08 (seg): Ana, Bruno (folga fixa QUA),
+Carla e Davi membros; Eva fora da escala, mas vinculada ao Control iD. Pontos: Ana 10, Bruno 10, Carla 6, Davi 8, Eva 4.
+Extras: Marcos 5 pontos (lançado 03/09) e Zé (importado **sem pontuação**, lançado 03/09).
+
+| dia | ponto? | Ana | Bruno | Carla | Davi | Eva | extras | soma | valores |
+|---|---|---|---|---|---|---|---|---|---|
+| 01/09 | sim (Ana, Bruno, Carla bateram) | ponto 10 | ponto 10 | ponto 6 | **falta injustificada** | `sem_batida` (vinculada) | — | 26 | Ana 30769, Bruno 30769, Carla **18462** |
+| 02/09 | não | escala 10 | folga | **falta justificada** | **suspensão** | fallback 4 | — | 14 | Ana 28571, Eva **11429** |
+| 03/09 | não | **férias** (escala) | escala 10 | escala 6 | **desligado** em 02/09 | fallback 4 | Marcos 5; Zé pendente (fora) | 25 | Bruno 9600, Carla 5760, Eva 3840, Marcos 4800 |
+| 04/09 | não | escala 10 | escala 10 | **atestado** | desligado | fallback 4 | — | 24 | Ana 6667, Bruno 6667, Eva **2667** |
+
+Totais: **Ana 66007, Bruno 47036, Carla 24222, Davi 0, Eva 17936, Marcos 4800, Zé 0** = 160001 = Σ bases; `dias_sem_presenca = 3`;
+`dias_presentes` Ana 3, Bruno 3, Carla 2, Davi 0, Eva 0; `extras_sem_pontuacao = 1` → fechar recusado.
+Antes do desligamento (Davi sem data de desligamento) Davi entra em 03 e 04 pela escala; desligar recalcula o rascunho e chega no V7.
+
+**V7b — `extra_definir_pontuacao(Zé, 3)`**: 03/09 soma 28: pisos Bruno 8571, Carla 5142, Eva 3428, Marcos 4285, Zé 2571 (Σ 23997),
+sobra 3 → Carla (resto 24), Marcos (20), Eva (16): **Bruno 8571, Carla 5143, Eva 3429, Marcos 4286, Zé 2571**.
+Totais: **Ana 66007, Bruno 46007, Carla 23605, Eva 17525, Marcos 4286, Zé 2571** = 160001; `extras_sem_pontuacao = 0`; fecha.
+
+**V8 — modo período, mesmo cenário (após V7b), proporcional, 4 dias**: base 160001 (bruto 200001, retenção 40000).
+Dias trabalhados (presente ou fallback): Ana 3, Bruno 3, Carla 2, Davi 0 (todos bloqueados), Eva 3 (01 `sem_batida` não conta).
+pe: Ana 7,5, Bruno 7,5, Carla 3, Eva 3, Davi 0, Marcos 5/4 = 1,25, Zé 3/4 = 0,75 → soma 23.
+Pisos 52174, 52174, 20869, 20869, 8695, 5217 (Σ 159998), sobra 3 → Marcos (resto 16,25), Carla (16; empata com Eva, ganha pelo nome),
+Eva (16): **Ana 52174, Bruno 52174, Carla 20870, Eva 20870, Marcos 8696, Zé 5217, Davi 0** = 160001.
+**V8b — não proporcional**: pe Ana 10, Bruno 10, Carla 6, Eva 4, **Davi 0** (todos os dias bloqueados), Marcos 1,25, Zé 0,75 → soma 32;
+pisos 50000, 50000, 30000, 20000, 6250, 3750 (Σ 160000), sobra 1 → Ana (resto 10, empata com Bruno, nome): **Ana 50001**, Bruno 50000,
+Carla 30000, Eva 20000, Marcos 6250, Zé 3750.
+
+**Ponto** (jornada ter–dom 18:00–23:00, 300 min): Davi 01/09 `falta_injustificada`, previsto 300, saldo −300, 0 alarmes;
+Carla 02/09 `falta_justificada`, previsto 0, saldo 0, 0 alarmes; Eva 01/09 `ausente` com `sem_batida_dia_escalado` (sem mudança).
+
+#### E.7.9 Mensagens novas (v3)
+`Tipo de falta inválido` · `Falta não encontrada` (P0002) · `Dia fora do vínculo do funcionário` ·
+`Funcionário com batidas em DD/MM/AAAA: desconsidere as batidas antes de registrar a falta` ·
+`Funcionário de folga na escala em DD/MM/AAAA` · `Dia com falta em DD/MM/AAAA: remova a falta antes` ·
+`Há extras sem pontuação: preencha antes de fechar` · `Lista de extras inválida` · `Máximo de 1000 linhas por importação` ·
+`Mais de um extra com este nome: informe o documento` · `Linha inválida` · `Data inválida`.
+Reaproveitadas: `Data no futuro`, `Data fora do limite`, `Informe o motivo`, `Informe a data`, `Informe o nome`, `Pontos inválidos`,
+`Valor inválido`, `Informe o valor da diária`, `Já existe abono para o funcionário em DD/MM/AAAA`, `Período de comissão já fechado`,
+`Anexo inválido`, `Anexo não encontrado no armazenamento`, `Anexo já registrado`.
+
+---
+
 ## R. Reservas (Tagme)
 
 A Tagme **não** tem API pública (só parceiros, sob contrato). O banco fica pronto e genérico: tipo de integração `tagme`

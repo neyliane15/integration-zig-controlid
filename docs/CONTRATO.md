@@ -968,6 +968,13 @@ Funcionário inativo (`ativo = false`) **continua** sendo apurado dentro do vín
 > o ajuste manual é repartido entre os dias pelo maior resto; valor do participante = soma dos dias; detalhe por dia em
 > `comissao_rateio_dias`/`comissao_rateio_itens_dia` e na RPC `comissao_detalhe`. **`'periodo'`** — a regra abaixo (passos 1–9),
 > mantida para quem não tem ponto integrado e para os fechamentos existentes. Os "pontos extras" da v1 foram removidos.
+>
+> *(Adendo extras v3 — §E.7, vale para os dois modos)* **Presença do dia** = batida válida; nos dias **sem ponto** na empresa (nenhuma
+> batida de ninguém) ou para quem não está no relógio, vem da **escala** (`trabalha`); fora da escala e sem ponto = **fallback individual**.
+> **Nunca** presente: falta (justificada/injustificada, tabela `funcionario_faltas`), suspensão, férias, atestado, outro abono individual
+> sem batida, fora do vínculo (antes da admissão / depois do desligamento). Extra com **pontuação pendente** (importação) não entra e
+> **impede fechar** (`Há extras sem pontuação: preencha antes de fechar`). Modo período: `dias_trabalhados` pela mesma regra; todos os
+> dias bloqueados → `pontos_efetivos = 0`. Vetores V7/V8 no adendo. Fechamento fechado nunca muda.
 
 Para um fechamento de `[data_inicio, data_fim]` (loja opcional) no **modo período**:
 1. `servico_zig = Σ valor_total` dos itens `Tip` no período (e loja, se definida).
@@ -1106,6 +1113,8 @@ Todas `[api]` L G A M, período máx. 366 dias, `p_loja text default null` (null
 | `comissao_fechar(p_fechamento uuid) returns void` | A M | recalcula e fecha |
 | `comissao_excluir_rascunho(p_fechamento uuid) returns void` | G A M | |
 Leitura: `comissao_fechamentos` e `comissao_itens` direto (RLS G A M).
+*(Adendo extras v3, §E.7)* novas: `falta_registrar`, `falta_remover`, `falta_definir_anexo`, `faltas_listar`,
+`extra_definir_pontuacao`, `extras_importar` (assinaturas e retornos no adendo); `comissao_fechar` recusa extras sem pontuação.
 
 ### 10.7 Painel (backend-2)
 `painel_do_dia(p_empresa uuid default null) returns jsonb` — `[api]` L G A M. Formato exato (TS `PainelDoDia`, §14.6):
