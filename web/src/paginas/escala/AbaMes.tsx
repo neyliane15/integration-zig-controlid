@@ -578,8 +578,11 @@ function Celula({
   tabela: React.RefObject<HTMLDivElement | null>;
 }) {
   const texto = textoDaGrade(membro, dia);
-  const confirmar = (t: string) => {
-    if (!aoConfirmar(t)) setValor(texto);
+  /** false = recusado/desviado (FJ abre o motivo no painel): a célula volta e o foco não anda */
+  const confirmar = (t: string): boolean => {
+    const ok = aoConfirmar(t);
+    if (!ok) setValor(texto);
+    return ok;
   };
   const [valor, setValor] = useState(texto);
   useEffect(() => setValor(texto), [texto]);
@@ -605,7 +608,11 @@ function Celula({
     });
     if (!prox) return;
     e.preventDefault();
-    confirmar(el.value);
+    if (!confirmar(el.value)) {
+      jaGravou.current = true;
+      el.blur();
+      return;
+    }
     const alvo = tabela.current?.querySelector<HTMLInputElement>(
       `input[data-r="${prox.linha}"][data-c="${prox.coluna}"]`,
     );

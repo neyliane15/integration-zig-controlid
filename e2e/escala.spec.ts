@@ -167,3 +167,120 @@ test("empresa sem escala: modelo Macaw → renomear → folga clicando → autom
   expect(linhas.at(-1)).toMatch(/^Na escala\t/);
   await semRolagemHorizontal(page);
 });
+
+test("faltas: FI digitada, FJ pelo painel (motivo), legenda, bloqueios e remover; fechamento exclui o faltoso", async ({
+  page,
+}, info) => {
+  test.setTimeout(90_000);
+  await entrar(page, USUARIOS_DEMO.admin);
+  await page.goto("/escala?aba=mes");
+  const grade = page.locator('[data-teste="grade-mes"]');
+  await expect(grade).toBeVisible();
+  const hoje = (await grade.getAttribute("data-hoje"))!;
+  await expect(page.locator('[data-teste="legenda-escala"]')).toContainText(
+    "Falta injustificada",
+  );
+  await expect(page.locator('[data-teste="legenda-escala"]')).toContainText(
+    "Falta justificada",
+  );
+
+  // quem trabalha hoje (sem batida ainda): uma pessoa por projeto, para os dois rodarem juntos
+  const trabalham = grade.locator(
+    `td[data-data="${hoje}"][data-status="trabalha"]:not([data-falta]) input`,
+  );
+  const rotulos = await trabalham.evaluateAll((els) =>
+    els.map((e) => e.getAttribute("aria-label")!),
+  );
+  const rotulo = rotulos[info.project.name === "celular" ? 1 : 0]!;
+  expect(rotulo).toBeTruthy();
+  const nome = rotulo.split(",")[0]!;
+  const celula = grade.getByLabel(rotulo, { exact: true });
+  const td = grade
+    .locator(`td[data-data="${hoje}"]`)
+    .filter({ has: page.locator(`input[aria-label="${rotulo}"]`) });
+  const painel = page.locator('[data-teste="painel-dia"]');
+
+  // FI digitada na célula
+  await celula.click();
+  await celula.fill("fi");
+  await celula.press("Enter");
+  await expect(page.getByText(`Falta injustificada de ${nome} registrada`)).toBeVisible();
+  await expect(td).toHaveAttribute("data-falta", "injustificada");
+  await expect(celula).toHaveValue("FI");
+  // com falta: folga/troca bloqueadas; remover pelo painel
+  await celula.click();
+  await expect(painel.locator('[data-teste="estado-dia"]')).toContainText("Falta injustificada");
+  await expect(painel.getByRole("button", { name: "Folga", exact: true })).toBeDisabled();
+  await painel.getByRole("button", { name: "Remover falta" }).click();
+  await expect(page.getByText("Falta removida")).toBeVisible();
+  await expect(td).not.toHaveAttribute("data-falta", /.+/);
+
+  // FJ: o botão do painel abre o motivo; digitar "fj" na célula também (motivo obrigatório)
+  await celula.click();
+  await painel.getByRole("button", { name: "Falta justificada", exact: true }).click();
+  await expect(painel.getByLabel("Motivo da falta justificada")).toBeVisible();
+  await painel.getByRole("button", { name: "Falta justificada", exact: true }).click();
+  await expect(painel.getByLabel("Motivo da falta justificada")).toHaveCount(0);
+  await celula.click();
+  await celula.fill("fj");
+  await celula.press("Enter");
+  await expect(painel.getByLabel("Motivo da falta justificada")).toBeFocused();
+  await expect(painel).toContainText(nome);
+  await painel.getByRole("button", { name: "Registrar falta" }).click();
+  await expect(page.getByText("Informe o motivo")).toBeVisible();
+  await painel.getByLabel("Motivo da falta justificada").fill("Atestado médico (e2e)");
+  await expect(painel.getByLabel("Anexo da falta (opcional)")).toHaveAttribute("accept", /pdf/);
+  await painel.getByRole("button", { name: "Registrar falta" }).click();
+  await expect(page.getByText(`Falta justificada de ${nome} registrada`)).toBeVisible();
+  await expect(td).toHaveAttribute("data-falta", "justificada");
+  await expect(celula).toHaveValue("FJ");
+  await semRolagemHorizontal(page);
+
+  // digitar outra coisa num dia com falta é recusado (a célula volta)
+  await celula.click();
+  await celula.fill("f");
+  await celula.press("Enter");
+  await expect(page.getByText(/Dia com falta em \d{2}\/\d{2}\/\d{4}: remova a falta antes/)).toBeVisible();
+  await expect(celula).toHaveValue("FJ");
+
+  // ficha: falta listada; ponto do dia: situação
+  // fechamento de hoje: o faltoso fica fora do rateio, com o motivo
+  await page.goto("/comissoes");
+  await page.getByRole("button", { name: "Novo fechamento" }).first().click();
+  const novo = page.getByRole("dialog");
+  await novo.getByLabel("Data inicial").fill(hoje);
+  await novo.getByLabel("Data final").fill(hoje);
+  await novo.getByRole("button", { name: "Criar rascunho" }).click();
+  await expect(page).toHaveURL(/\/comissoes\/[0-9a-f-]{36}/);
+  await expect(page.getByText("Prévia confere com o banco")).toBeVisible();
+  await page.getByRole("button", { name: new RegExp(`^${dataBR(hoje)}`) }).click();
+  const ausentes = page.locator('[data-teste="ausentes-dia"]');
+  await expect(ausentes.getByRole("listitem").filter({ hasText: nome })).toContainText("Falta justificada");
+  const tabelaDia = page.getByRole("table", { name: `Rateio de ${dataBR(hoje)}` });
+  if (await tabelaDia.count()) await expect(tabelaDia).not.toContainText(nome);
+  await semRolagemHorizontal(page);
+  await page.getByRole("button", { name: "Excluir rascunho" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Excluir" }).click();
+  await expect(page).toHaveURL(/\/comissoes$/);
+
+  // limpa: apagar o código na célula remove a falta
+  await page.goto("/escala?aba=mes");
+  const c = page.locator('[data-teste="grade-mes"]').getByLabel(rotulo, { exact: true });
+  await c.click();
+  await c.fill("");
+  await c.press("Enter");
+  await expect(page.getByText("Falta removida")).toBeVisible();
+});
+
+test("ficha: desligar avisa que a pessoa sai da comissão; aba Comissão lista as faltas", async ({ page }) => {
+  await entrar(page, USUARIOS_DEMO.admin);
+  await page.goto("/funcionarios/a0000000-0000-4000-8000-000000000304");
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("Davi");
+  await page.getByRole("button", { name: "Desligar" }).click();
+  const dialogo = page.getByRole("dialog");
+  await expect(dialogo.locator('[data-teste="aviso-desligamento-comissao"]')).toContainText(/sai do rateio a partir de \d{2}\/\d{2}\/\d{4}/);
+  await dialogo.getByRole("button", { name: "Cancelar" }).click();
+  await page.getByRole("tab", { name: "Comissão" }).click();
+  await expect(page.getByText("Últimos 60 dias", { exact: false })).toBeVisible();
+  await semRolagemHorizontal(page);
+});

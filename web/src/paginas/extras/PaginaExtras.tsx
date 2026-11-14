@@ -53,7 +53,17 @@ export function PaginaExtras() {
       />
       <div className="mt-5">
         {aba === 'extras' ? (
-          <AbaExtras aoLancarDia={(extraId) => mudar({ aba: 'dias', lancar: extraId })} />
+          <AbaExtras
+            aoLancarDia={(extraId) => mudar({ aba: 'dias', lancar: extraId })}
+            soPendentes={params.get('pendentes') === '1'}
+            aoMudarPendentes={(v) => {
+              const p = new URLSearchParams(params)
+              p.set('aba', 'extras')
+              if (v) p.set('pendentes', '1')
+              else p.delete('pendentes')
+              setParams(p, { replace: true })
+            }}
+          />
         ) : (
           <>
             <Cartao className="mb-5">

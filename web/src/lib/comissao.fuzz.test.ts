@@ -263,100 +263,213 @@ describe('comissão — propriedades (fuzz, 3.000 casos, modos diário e períod
 })
 
 // --------------------------------------------------------------- front × banco (opt-in)
+// --------------------------------------------------------------- front × banco (opt-in)
 const BANCO_ATIVO = process.env.MDG_FUZZ_BANCO === '1'
 const sqlTexto = (s: string) => `'${s.replace(/'/g, "''")}'`
 
-describe.skipIf(!BANCO_ATIVO)('comissão — front × banco (fuzz, 200 casos diário/período com extras; MDG_FUZZ_BANCO=1)', () => {
-  it('comissao_calcular dá os mesmos centavos que calcularComissao', { timeout: 300_000 }, () => {
+type Abono = 'suspensao' | 'ferias' | 'atestado' | 'folga' | 'outro'
+type EscalaDia = 'trabalha' | 'folga' | 'ferias'
+/** Fatos de um funcionário no período (o que vai para o banco). */
+interface Fatos {
+  admissao: string
+  desligamento: string | null
+  batidas: Set<string>
+  faltas: Map<string, 'justificada' | 'injustificada'>
+  abonos: Map<string, Abono>
+  /** null = fora da escala; senão o status de cada dia (sem ajuste = trabalha, folgas base vazias) */
+  escala: Map<string, EscalaDia> | null
+}
+
+/**
+ * Referência INDEPENDENTE da presença do dia (adendo extras v3, §E.7.1, tabela de 10 regras — primeira que casa).
+ * `pontoEmpresa` = dias com batida de qualquer funcionário; `noPonto` = o funcionário bateu em algum dia do período.
+ */
+function presencaReferencia(f: Fatos, d: string, pontoEmpresa: Set<string>, noPonto: boolean) {
+  const b = (motivo: string) => ({ presente: false, fallback: false, bloqueado: true, motivo, origem: null })
+  const n = (motivo: string, fallback = false) => ({ presente: false, fallback, bloqueado: false, motivo, origem: null })
+  if (d < f.admissao || (f.desligamento != null && d > f.desligamento)) return b('fora_vinculo')
+  const falta = f.faltas.get(d)
+  if (falta) return b(`falta_${falta}`)
+  const ab = f.abonos.get(d)
+  if (ab === 'suspensao' || ab === 'ferias' || ab === 'atestado') return b(ab)
+  const esc = f.escala?.get(d) ?? null
+  if (esc === 'ferias') return b('ferias')
+  if (f.batidas.has(d)) return { presente: true, fallback: false, bloqueado: false, motivo: null, origem: 'ponto' as const }
+  if (ab) return b('abono')
+  if (pontoEmpresa.has(d) && noPonto) return n('sem_batida')
+  if (esc === 'trabalha') return { presente: true, fallback: false, bloqueado: false, motivo: null, origem: 'escala' as const }
+  if (esc === 'folga') return n('folga_escala')
+  return n('sem_registro', true)
+}
+
+/** Caso para o banco: fatos aleatórios → SQL e a entrada da prévia montada pela referência de presença. */
+function casoBanco(rnd: () => number, i: number): { e: EntradaComissao; sql: string } {
+  const e = caso(rnd, i)
+  const inteiro = (a: number, b: number) => a + Math.floor(rnd() * (b - a + 1))
+  const datas = e.servicoDias!.map((d) => d.data)
+  const n = String(i).padStart(5, '0')
+  const empresa = `e99${n}-0000-4000-8000-00000000eeee`
+  const fid = `e99${n}-0000-4000-8000-00000000ffff`
+  const setor = `e99${n}-0000-4000-8000-00000000aaaa`
+  e.servicoDias!.forEach((d) => (d.servicoZigCentavos %= 100_000_000))
+  e.servicoZigCentavos = e.servicoDias!.reduce((t, d) => t + d.servicoZigCentavos, 0)
+  e.servicoAjusteCentavos %= 100_000_000
+
+  const fatos = new Map<string, Fatos>()
+  for (const p of e.participantes) {
+    if (p.tipo === 'extra' || !p.funcionarioId) continue
+    const dataAleatoria = () => datas[inteiro(0, datas.length - 1)]!
+    const f: Fatos = {
+      admissao: rnd() < 0.15 ? dataAleatoria() : '2026-01-01',
+      desligamento: rnd() < 0.15 ? dataAleatoria() : null,
+      batidas: new Set(),
+      faltas: new Map(),
+      abonos: new Map(),
+      escala: rnd() < 0.5 ? new Map() : null,
+    }
+    if (f.desligamento && f.desligamento < f.admissao) f.desligamento = f.admissao
+    const bate = rnd() < 0.7
+    for (const d of datas) {
+      const x = rnd()
+      if (x < 0.08) f.faltas.set(d, rnd() < 0.5 ? 'justificada' : 'injustificada')
+      else if (x < 0.16) f.abonos.set(d, (['suspensao', 'ferias', 'atestado', 'folga', 'outro'] as const)[inteiro(0, 4)]!)
+      if (bate && rnd() < 0.5) f.batidas.add(d)
+      if (f.escala) {
+        const y = rnd()
+        f.escala.set(d, y < 0.65 ? 'trabalha' : y < 0.9 ? 'folga' : 'ferias')
+      }
+    }
+    fatos.set(p.funcionarioId, f)
+  }
+  const pontoEmpresa = new Set([...fatos.values()].flatMap((f) => [...f.batidas]))
+
+  let sql = `insert into public.empresas (id, nome) values ('${empresa}', 'Fuzz comissão ${i}');\n`
+  sql += `insert into public.escala_config (empresa_id, ancora) values ('${empresa}', '2026-08-31');\n`
+  sql += `insert into public.escala_setores (id, empresa_id, nome) values ('${setor}', '${empresa}', 'Salão');\n`
+  sql += `insert into public.comissao_fechamentos (id, empresa_id, titulo, data_inicio, data_fim, percentual_retencao, servico_ajuste_centavos, proporcional_dias, modo_rateio)
+    values ('${fid}', '${empresa}', 'f${i}', '${e.dataInicio}', '${e.dataFim}', ${e.percentualRetencao}, ${e.servicoAjusteCentavos}, ${e.proporcionalDias}, '${e.modoRateio}');\n`
+  e.servicoDias!.forEach((d, k) => {
+    if (d.servicoZigCentavos !== 0)
+      sql += `insert into public.zig_vendas_itens (empresa_id, loja_id_externo, data_operacao, transaction_id, tipo, valor_total)
+        values ('${empresa}', 'L1', '${d.data}', 't${i}-${k}', 'Tip', ${d.servicoZigCentavos});\n`
+  })
+  e.participantes.forEach((p, k) => {
+    if (p.tipo === 'extra') {
+      sql += `insert into public.extras (id, empresa_id, nome, pontos_padrao) values ('${p.extraId}', '${empresa}', ${sqlTexto(p.nome)}, 0);\n`
+      for (const l of p.entrada ?? [])
+        sql += `insert into public.diarias (tipo, extra_id, pessoa_nome, data, pontos, pontos_pendente, valor_centavos, criado_por_nome)
+          values ('extra', '${p.extraId}', ${sqlTexto(p.nome)}, '${l.data}', ${l.pendente ? 0 : l.pontos}, ${!!l.pendente}, 0, 'Fuzz');\n`
+      sql += `insert into public.comissao_itens (id, empresa_id, fechamento_id, tipo, extra_id, funcionario_nome, incluido, pontos)
+        values ('${p.itemId}', '${empresa}', '${fid}', 'extra', '${p.extraId}', ${sqlTexto(p.nome)}, ${p.incluido}, 0);\n`
+      return
+    }
+    let fun = 'null'
+    const f = p.funcionarioId ? fatos.get(p.funcionarioId) : undefined
+    if (p.funcionarioId && f) {
+      fun = `'${p.funcionarioId}'`
+      const inicial = p.entrada![0]!.pontos
+      sql += `insert into public.funcionarios (id, empresa_id, nome, pontos_comissao, data_admissao, data_desligamento)
+        values (${fun}, '${empresa}', ${sqlTexto(p.nome)}, ${inicial}, '${f.admissao}', ${f.desligamento ? `'${f.desligamento}'` : 'null'});\n`
+      const troca = p.entrada!.find((l) => l.pontos !== inicial)
+      if (troca)
+        sql += `insert into public.funcionario_pontos (empresa_id, funcionario_id, pontos, vigente_desde) values ('${empresa}', ${fun}, ${troca.pontos}, '${troca.data}')
+          on conflict (funcionario_id, vigente_desde) do update set pontos = excluded.pontos;\n`
+      for (const d of f.batidas)
+        sql += `insert into public.ponto_dias (funcionario_id, data, empresa_id, batidas_validas, situacao, encerrado) values (${fun}, '${d}', '${empresa}', 2, 'completo', true);\n`
+      for (const [d, tipo] of f.faltas)
+        sql += `insert into public.funcionario_faltas (empresa_id, funcionario_id, data, tipo, motivo, criado_por_nome) values ('${empresa}', ${fun}, '${d}', '${tipo}', 'Fuzz', 'Fuzz');\n`
+      for (const [d, tipo] of f.abonos)
+        sql += `insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo) values ('${empresa}', ${fun}, '${d}', '${tipo}');\n`
+      if (f.escala) {
+        const membro = `e99${n}-0000-4000-8000-${String(k).padStart(12, 'b')}`
+        sql += `insert into public.escala_membros (id, empresa_id, setor_id, funcionario_id, folgas_base, ordem) values ('${membro}', '${empresa}', '${setor}', ${fun}, '{}', ${k});\n`
+        for (const [d, st] of f.escala)
+          if (st !== 'trabalha' && d >= f.admissao && (!f.desligamento || d <= f.desligamento))
+            sql += `insert into public.escala_ajustes (empresa_id, membro_id, funcionario_id, data, status, criado_por_nome) values ('${empresa}', '${membro}', ${fun}, '${d}', '${st}', 'Fuzz');\n`
+      }
+      // entrada da prévia pela referência de presença (a mesma informação que o comissao_detalhe entrega)
+      p.entrada = p.entrada!.map((l) => ({ ...l, ...presencaReferencia(f, l.data, pontoEmpresa, f.batidas.size > 0) }) as typeof l)
+      p.diasTrabalhados = p.entrada.filter((l) => l.presente).length
+    }
+    sql += `insert into public.comissao_itens (id, empresa_id, fechamento_id, tipo, funcionario_id, funcionario_nome, incluido, pontos, pontos_manual, dias_trabalhados, dias_presentes)
+      values ('${p.itemId}', '${empresa}', '${fid}', 'funcionario', ${fun}, ${sqlTexto(p.nome)}, ${p.incluido}, ${p.pontos}, ${!!p.pontosManual}, ${p.diasTrabalhados}, ${p.diasTrabalhados});\n`
+  })
+  sql += `select public.comissao_calcular('${fid}');\n`
+  return { e, sql }
+}
+
+describe.skipIf(!BANCO_ATIVO)('comissão — front × banco (fuzz v3: ponto, escala, faltas, abonos, vínculo, extras pendentes; MDG_FUZZ_BANCO=1)', () => {
+  it('comissao_calcular dá os mesmos centavos, dias e pendências que calcularComissao', { timeout: 600_000 }, () => {
     const rnd = gerador(Number(process.env.MDG_FUZZ_SEMENTE ?? 424242))
     const casos: EntradaComissao[] = []
-    for (let i = 0; i < 200; i++) {
-      const e = caso(rnd, i)
-      // colunas numeric(18,6) do banco: limita o serviço a R$ 1 milhão (realista)
-      e.servicoDias!.forEach((d) => (d.servicoZigCentavos %= 100_000_000))
-      e.servicoZigCentavos = e.servicoDias!.reduce((t, d) => t + d.servicoZigCentavos, 0)
-      e.servicoAjusteCentavos %= 100_000_000
-      casos.push(e)
-    }
-    // uma empresa por caso (os dias dos extras entram em qualquer fechamento da empresa que cubra a data)
     let sql = `begin;\nset local client_min_messages = warning;\n`
-    casos.forEach((e, i) => {
-      const n = String(i).padStart(5, '0')
-      const empresa = `e99${n}-0000-4000-8000-00000000eeee`
-      const fid = `e99${n}-0000-4000-8000-00000000ffff`
-      sql += `insert into public.empresas (id, nome) values ('${empresa}', 'Fuzz comissão ${i}');\n`
-      sql += `insert into public.comissao_fechamentos (id, empresa_id, titulo, data_inicio, data_fim, percentual_retencao, servico_ajuste_centavos, proporcional_dias, modo_rateio)
-        values ('${fid}', '${empresa}', 'f${i}', '${e.dataInicio}', '${e.dataFim}', ${e.percentualRetencao}, ${e.servicoAjusteCentavos}, ${e.proporcionalDias}, '${e.modoRateio}');\n`
-      e.servicoDias!.forEach((d, k) => {
-        if (d.servicoZigCentavos !== 0)
-          sql += `insert into public.zig_vendas_itens (empresa_id, loja_id_externo, data_operacao, transaction_id, tipo, valor_total)
-            values ('${empresa}', 'L1', '${d.data}', 't${i}-${k}', 'Tip', ${d.servicoZigCentavos});\n`
-      })
-      e.participantes.forEach((p) => {
-        if (p.tipo === 'extra') {
-          sql += `insert into public.extras (id, empresa_id, nome, pontos_padrao) values ('${p.extraId}', '${empresa}', ${sqlTexto(p.nome)}, 0);\n`
-          for (const l of p.entrada ?? [])
-            sql += `insert into public.diarias (tipo, extra_id, pessoa_nome, data, pontos, valor_centavos, criado_por_nome)
-              values ('extra', '${p.extraId}', ${sqlTexto(p.nome)}, '${l.data}', ${l.pontos}, 0, 'Fuzz');\n`
-          // o item pré-criado guarda o "incluído" (o cálculo só cria o item de extra que ainda não existe)
-          sql += `insert into public.comissao_itens (id, empresa_id, fechamento_id, tipo, extra_id, funcionario_nome, incluido, pontos)
-            values ('${p.itemId}', '${empresa}', '${fid}', 'extra', '${p.extraId}', ${sqlTexto(p.nome)}, ${p.incluido}, 0);\n`
-          return
-        }
-        let fun = 'null'
-        if (p.funcionarioId) {
-          fun = `'${p.funcionarioId}'`
-          const inicial = p.entrada![0]!.pontos
-          sql += `insert into public.funcionarios (id, empresa_id, nome, pontos_comissao, data_admissao) values (${fun}, '${empresa}', ${sqlTexto(p.nome)}, ${inicial}, '2026-01-01');\n`
-          const troca = p.entrada!.find((l) => l.pontos !== inicial)
-          if (troca)
-            sql += `insert into public.funcionario_pontos (empresa_id, funcionario_id, pontos, vigente_desde) values ('${empresa}', ${fun}, ${troca.pontos}, '${troca.data}');\n`
-          for (const l of p.entrada!)
-            if (l.presente)
-              sql += `insert into public.ponto_dias (funcionario_id, data, empresa_id, batidas_validas, situacao, encerrado) values (${fun}, '${l.data}', '${empresa}', 2, 'completo', true);\n`
-        }
-        sql += `insert into public.comissao_itens (id, empresa_id, fechamento_id, tipo, funcionario_id, funcionario_nome, incluido, pontos, pontos_manual, dias_trabalhados, dias_presentes)
-          values ('${p.itemId}', '${empresa}', '${fid}', 'funcionario', ${fun}, ${sqlTexto(p.nome)}, ${p.incluido}, ${p.pontos}, ${!!p.pontosManual}, ${p.diasTrabalhados}, ${p.diasTrabalhados});\n`
-      })
-      sql += `select public.comissao_calcular('${fid}');\n`
-    })
+    for (let i = 0; i < 200; i++) {
+      const c = casoBanco(rnd, i)
+      casos.push(c.e)
+      sql += c.sql
+    }
     sql += `select json_agg(json_build_object('f', f.titulo, 'base', f.base_distribuivel_centavos, 'ret', f.retencao_centavos,
-              'sp', f.dias_sem_presenca, 'spart', f.dias_sem_participantes,
-              'itens', (select json_agg(json_build_object('id', i.id, 'v', i.valor_centavos, 'd', i.dias_presentes)) from public.comissao_itens i where i.fechamento_id = f.id)))
+              'sp', f.dias_sem_presenca, 'spart', f.dias_sem_participantes, 'pend', f.extras_sem_pontuacao,
+              'itens', (select json_agg(json_build_object('id', i.id, 'v', i.valor_centavos, 'd', i.dias_presentes)) from public.comissao_itens i where i.fechamento_id = f.id),
+              'entrada', (select json_agg(json_build_object('id', i.id, 'e', d.e)) from public.comissao_itens i,
+                            lateral (select (public.comissao_detalhe(f.id) -> 'itens') as x) dd,
+                            lateral (select it -> 'entrada' as e from jsonb_array_elements(dd.x) it where (it ->> 'id')::uuid = i.id) d
+                          where i.fechamento_id = f.id and i.tipo = 'funcionario' and i.funcionario_id is not null)))
             from public.comissao_fechamentos f where f.empresa_id::text like 'e99%-0000-4000-8000-00000000eeee';\nrollback;\n`
     const base = process.env.MDG_PG_DIR ?? `${process.env.TMPDIR ?? '/tmp'}/mdg-postgres`
     const r = spawnSync('psql', ['-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1', '-d', process.env.MDG_PG_BANCO ?? 'mdg_local'], {
       input: sql,
       encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
+      maxBuffer: 256 * 1024 * 1024,
       env: { ...process.env, PGHOST: process.env.PGHOST ?? `${base}/socket`, PGPORT: process.env.PGPORT ?? process.env.MDG_PG_PORTA ?? '54329', PGUSER: process.env.PGUSER ?? 'postgres' },
     })
     expect(r.status, r.stderr).toBe(0)
     const linhaJson = r.stdout.split('\n').find((l) => l.startsWith('['))!
-    type Banco = { f: string; base: number; ret: number; sp: number; spart: number; itens: { id: string; v: number; d: number }[] | null }
+    type Banco = {
+      f: string
+      base: number
+      ret: number
+      sp: number
+      spart: number
+      pend: number
+      itens: { id: string; v: number; d: number }[] | null
+      entrada: { id: string; e: { data: string; presente: boolean; fallback: boolean; bloqueado: boolean; motivo: string | null; origem: string | null }[] }[] | null
+    }
     const banco = new Map((JSON.parse(linhaJson) as Banco[]).map((x) => [x.f, x]))
     let diarios = 0
+    let bloqueados = 0
     casos.forEach((e, i) => {
-      const r = calcularComissao(e)
+      // pela presença do banco é que a tela calcula: confere a referência dia a dia
       const b = banco.get(`f${i}`)!
       const contexto = JSON.stringify(e)
+      const entradas = new Map((b.entrada ?? []).map((x) => [x.id, x.e]))
+      for (const p of e.participantes) {
+        const doBanco = entradas.get(p.itemId!)
+        if (!doBanco) continue
+        const resumo = (l: { data: string; presente: boolean; fallback?: boolean; bloqueado?: boolean; motivo?: string | null; origem?: string | null }) =>
+          `${l.data}:${l.presente}:${!!l.fallback}:${!!l.bloqueado}:${l.motivo ?? ''}:${l.origem ?? ''}`
+        expect(doBanco.map(resumo), `${contexto}\n${p.nome}`).toEqual(p.entrada!.map(resumo))
+        bloqueados += doBanco.filter((l) => l.bloqueado).length
+      }
+      const r = calcularComissao(e)
       if (e.modoRateio === 'diario') diarios++
       expect(b.base, contexto).toBe(r.baseCentavos)
       expect(b.ret, contexto).toBe(r.retencaoCentavos)
       expect(b.sp, contexto).toBe(r.diasSemPresenca)
       expect(b.spart, contexto).toBe(r.diasSemParticipantes)
+      expect(b.pend, contexto).toBe(r.extrasSemPontuacao)
       const doBanco = new Map((b.itens ?? []).map((x) => [x.id, x]))
       for (const it of r.itens) {
         const x = doBanco.get(it.itemId!)
-        // item de extra sem dia lançado no período é apagado pelo banco (e vale 0 na prévia)
         if (!x) {
           expect(it.tipo === 'extra' && it.valorCentavos === 0 && (it.entrada ?? []).length === 0, contexto).toBe(true)
           continue
         }
         expect(x.v, `${contexto}\n${it.nome}`).toBe(it.valorCentavos)
-        expect(x.d, `${contexto}\n${it.nome}`).toBe(it.diasTrabalhados)
+        expect(x.d, `${contexto}\n${it.nome}`).toBe(it.diasPresentes)
       }
     })
     expect(diarios).toBeGreaterThan(80)
+    expect(bloqueados).toBeGreaterThan(100)
   })
 })

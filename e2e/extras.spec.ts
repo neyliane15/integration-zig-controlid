@@ -278,6 +278,88 @@ test('comissão diária: o extra entra só no dia em que trabalhou; detalhe por 
   await expect(page).toHaveURL(/\/comissoes$/)
 })
 
+test('importar extras: CSV com pontuação pendente (prévia, erros por linha), filtro, edição rápida e fechamento bloqueado', async ({ page }) => {
+  test.setTimeout(90_000)
+  await entrar(page, USUARIOS_DEMO.admin)
+  const s = sufixo()
+  const hoje = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date())
+  const ontem = somar(hoje, -1)
+  const pendente = `Pendente ${s}`
+  const comPontos = `Com Pontos ${s}`
+  const csv = [
+    'Nome completo;Cargo;CPF;Diária;Pontuação;Datas trabalhadas',
+    `${pendente};Cumim;DOC-${s};150,00;;${br(ontem)}`,
+    `${comPontos};Bar;;R$ 160;5;${br(ontem)}, ${br(hoje)}`,
+    `Antigo ${s};Bar;;100;3;01/01/2020`,
+    `Errado ${s};;;;abc;`,
+  ].join('\r\n')
+
+  await page.goto('/extras')
+  await page.getByRole('button', { name: 'Importar extras' }).click()
+  const modal = page.getByRole('dialog', { name: 'Importar extras' })
+  const [download] = await Promise.all([page.waitForEvent('download'), modal.getByRole('button', { name: 'Baixar modelo' }).click()])
+  expect(download.suggestedFilename()).toBe('modelo-extras.csv')
+  await modal.getByLabel('Arquivo CSV de extras').setInputFiles({ name: 'macaw.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) })
+  // colunas reconhecidas pelo nome
+  await expect(modal.getByRole('combobox', { name: 'Nome', exact: true })).toHaveValue('0')
+  await expect(modal.getByRole('combobox', { name: 'Pontos', exact: true })).toHaveValue('4')
+  await expect(modal.getByRole('combobox', { name: 'Dias trabalhados (data)' })).toHaveValue('5')
+  const previa = modal.locator('[data-teste="previa-extras"]')
+  await expect(previa.getByText('3 extra(s)')).toBeVisible()
+  await expect(previa.getByText('1 sem pontuação')).toBeVisible()
+  await expect(previa.getByText('1 com problema')).toBeVisible()
+  await expect(previa.getByText(/Linha 5: Pontos inválidos/)).toBeVisible()
+  await expect(previa.getByRole('row').filter({ hasText: pendente })).toContainText('Pendente')
+  await semRolagemHorizontal(page)
+  await modal.getByRole('button', { name: 'Importar 3 extra(s)' }).click()
+  const resultado = modal.locator('[data-teste="resultado-importacao"]')
+  await expect(resultado).toBeVisible()
+  await expect(resultado.getByText(/Linha 4: Data fora do limite/)).toBeVisible()
+  await expect(resultado).toContainText('ficaram com pontuação pendente')
+  await modal.getByRole('button', { name: 'Preencher pontuação' }).click()
+
+  // filtro "só pendentes": o importado sem pontos aparece com selo; o com pontos não
+  await expect(page).toHaveURL(/pendentes=1/)
+  await expect(page.getByText(pendente, { exact: true }).filter({ visible: true })).toBeVisible()
+  await expect(page.getByText(comPontos, { exact: true }).filter({ visible: true })).toHaveCount(0)
+  await expect(page.getByText('Pontuação pendente').filter({ visible: true }).first()).toBeVisible()
+  await semRolagemHorizontal(page)
+
+  // dias trabalhados: o dia importado sem pontos aparece pendente
+  await page.goto(`/extras?aba=dias&de=${ontem}&ate=${hoje}`)
+  const linhaDia = page.getByRole(test.info().project.name === 'celular' ? 'listitem' : 'row').filter({ hasText: pendente })
+  await expect(linhaDia.first()).toContainText('Pontuação pendente')
+
+  // fechamento de ontem a hoje: aviso e "Fechar" bloqueado
+  await page.goto('/comissoes')
+  await page.getByRole('button', { name: 'Novo fechamento' }).first().click()
+  const novo = page.getByRole('dialog')
+  await novo.getByLabel('Data inicial').fill(ontem)
+  await novo.getByLabel('Data final').fill(hoje)
+  await novo.getByRole('button', { name: 'Criar rascunho' }).click()
+  await expect(page).toHaveURL(/\/comissoes\/[0-9a-f-]{36}/)
+  const urlFechamento = page.url()
+  const aviso = page.locator('[data-teste="aviso-extras-pendentes"]')
+  await expect(aviso).toContainText(pendente)
+  await expect(page.getByRole('button', { name: 'Fechar comissão' })).toBeDisabled()
+  await expect(page.getByText('Prévia confere com o banco')).toBeVisible()
+  const participante = page.getByRole(test.info().project.name === 'celular' ? 'listitem' : 'row').filter({ hasText: pendente })
+  await expect(participante.first()).toContainText('Pontuação pendente')
+
+  // edição rápida na lista de extras → o rascunho é recalculado pelo banco
+  await aviso.getByRole('link', { name: 'Preencher pontuação' }).click()
+  await page.getByLabel(`Pontos de ${pendente}`, { exact: true }).filter({ visible: true }).fill('4')
+  await page.getByRole('button', { name: `Salvar pontos de ${pendente}` }).filter({ visible: true }).click()
+  await expect(page.getByText(new RegExp(`Pontuação de ${pendente} definida`))).toBeVisible()
+  await expect(page.getByText(pendente, { exact: true }).filter({ visible: true })).toHaveCount(0)
+  await page.goto(urlFechamento)
+  await expect(page.getByText('Prévia confere com o banco')).toBeVisible()
+  await expect(page.locator('[data-teste="aviso-extras-pendentes"]').filter({ hasText: pendente })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Excluir rascunho' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Excluir' }).click()
+  await expect(page).toHaveURL(/\/comissoes$/)
+})
+
 test('gastos do período: cartões, gráfico, tabela por pessoa (extras com selo) e CSV', async ({ page }) => {
   await entrar(page, USUARIOS_DEMO.admin)
   await page.goto('/extras?aba=gastos')

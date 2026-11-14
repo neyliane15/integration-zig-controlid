@@ -361,7 +361,7 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
       {extrasPendentes > 0 && (
         <div role="alert" data-teste="aviso-extras-pendentes" className="mb-4 flex flex-wrap items-start gap-3 rounded-cartao border border-alerta/50 bg-alerta/10 p-4 text-sm text-alerta">
           <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-          <span className="min-w-0 flex-1">
+          <span className="min-w-0 flex-1 basis-56">
             <strong>
               {extrasPendentes} extra(s) com pontuação pendente
             </strong>
