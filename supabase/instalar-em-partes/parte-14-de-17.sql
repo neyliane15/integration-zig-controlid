@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 14 DE 15.
+-- Meu Dia de Gerente — instalação do banco, PARTE 14 DE 17.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000260_extras.sql, 20261006000270_reservas.sql. Não edite à mão.
 
@@ -476,4 +476,4 @@ begin
 end $$;
 
 commit;
-select 'parte 14 de 15 instalada' as resultado;
+select 'parte 14 de 17 instalada' as resultado;

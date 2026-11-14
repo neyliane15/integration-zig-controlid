@@ -1,8 +1,48 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 10 DE 15.
+-- Meu Dia de Gerente — instalação do banco, PARTE 10 DE 17.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000220_comissoes.sql. Não edite à mão.
 
 begin;
+drop trigger if exists a_protecao on public.comissao_itens;
+create trigger a_protecao before insert or update or delete on public.comissao_itens
+  for each row execute function public.comissao_itens_protecao();
+
+-- Detalhe do rateio: segue o status do fechamento (fechado = imutável); empresa_id do fechamento.
+create or replace function public.comissao_rateio_protecao()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_status text; v_empresa uuid; v_fech uuid;
+begin
+  v_fech := case when tg_op = 'DELETE' then old.fechamento_id else new.fechamento_id end;
+  select f.status, f.empresa_id into v_status, v_empresa from public.comissao_fechamentos f where f.id = v_fech;
+  if tg_op = 'INSERT' then
+    if v_empresa is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
+    if v_status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
+    new.empresa_id := v_empresa;
+    return new;
+  end if;
+  if tg_op = 'UPDATE' and old.fechamento_id is distinct from new.fechamento_id then
+    raise exception 'Item não pode mudar de fechamento' using errcode = '22023';
+  end if;
+  if v_status = 'fechado' then
+    if tg_op = 'DELETE' and pg_trigger_depth() > 1
+       and not exists (select 1 from public.empresas e where e.id = old.empresa_id) then
+      return old;
+    end if;
+    raise exception 'Fechamento já está fechado' using errcode = '22023';
+  end if;
+  if tg_op = 'DELETE' then return old; end if;
+  new.empresa_id := coalesce(v_empresa, old.empresa_id);
+  return new;
+end $$;
+comment on function public.comissao_rateio_protecao() is '[interno] Detalhe do rateio de fechamento fechado é imutável.';
+
+drop trigger if exists a_protecao on public.comissao_rateio_dias;
+create trigger a_protecao before insert or update or delete on public.comissao_rateio_dias
+  for each row execute function public.comissao_rateio_protecao();
+drop trigger if exists a_protecao on public.comissao_rateio_itens_dia;
+create trigger a_protecao before insert or update or delete on public.comissao_rateio_itens_dia
+  for each row execute function public.comissao_rateio_protecao();
+
 -- ================================================================ cálculo (§9)
 create or replace function public.comissao_pontos_vigentes(p_funcionario uuid, p_data date)
 returns numeric language sql stable security definer set search_path = public, extensions, pg_temp as $$
@@ -436,4 +476,4 @@ end $$;
 comment on function public.comissao_excluir_rascunho(uuid) is '[api] Exclui um rascunho de comissão.';
 
 commit;
-select 'parte 10 de 15 instalada' as resultado;
+select 'parte 10 de 17 instalada' as resultado;

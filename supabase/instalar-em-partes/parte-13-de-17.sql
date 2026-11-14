@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 13 DE 15.
+-- Meu Dia de Gerente — instalação do banco, PARTE 13 DE 17.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000250_ocorrencias.sql, 20261006000260_extras.sql. Não edite à mão.
 
@@ -438,4 +438,4 @@ end $$;
 comment on function public.diaria_checar_duplicada(uuid, date, uuid) is '[interno] Um lançamento por extra por dia (E.2).';
 
 commit;
-select 'parte 13 de 15 instalada' as resultado;
+select 'parte 13 de 17 instalada' as resultado;

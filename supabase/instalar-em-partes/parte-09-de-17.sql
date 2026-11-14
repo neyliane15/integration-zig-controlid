@@ -1,8 +1,42 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 09 DE 15.
+-- Meu Dia de Gerente — instalação do banco, PARTE 09 DE 17.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql, 20261006000210_zig.sql, 20261006000220_comissoes.sql. Não edite à mão.
 
 begin;
+comment on function public.banco_horas_extrato(uuid, date, date) is '[api] Extrato do banco de horas (máx. 366 dias).';
+
+create or replace function public.banco_horas_lancar(p_funcionario uuid, p_data date, p_tipo text, p_minutos integer,
+                                                     p_motivo text)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid; v_id uuid;
+begin
+  select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
+  if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if p_tipo is null or p_tipo not in ('saldo_inicial', 'ajuste', 'compensacao', 'pagamento') then
+    raise exception 'Tipo de lançamento inválido' using errcode = '22023';
+  end if;
+  if p_tipo = 'saldo_inicial' and not public.pode_administrar(v_empresa) then
+    raise exception 'Sem permissão' using errcode = '42501';
+  end if;
+  if p_motivo is null or btrim(p_motivo) = '' then raise exception 'Informe o motivo' using errcode = '22023'; end if;
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  if p_minutos is null then raise exception 'Informe os minutos' using errcode = '22023'; end if;
+  -- (revisão 2) limite de sanidade: ±100.000 min (≈ 1.666 h); 2.147.483.647 min era aceito e distorcia o saldo
+  if abs(p_minutos::bigint) > 100000 then
+    raise exception 'Minutos fora do limite (máximo 100.000)' using errcode = '22023';
+  end if;
+  if p_tipo = 'saldo_inicial'
+     and exists (select 1 from public.banco_horas_lancamentos
+                  where funcionario_id = p_funcionario and data = p_data and tipo = 'saldo_inicial') then
+    raise exception 'Já existe saldo inicial nesta data' using errcode = '23505';
+  end if;
+
+  insert into public.banco_horas_lancamentos (empresa_id, funcionario_id, data, tipo, minutos, motivo, criado_por, criado_por_nome)
+  values (v_empresa, p_funcionario, p_data, p_tipo, p_minutos, btrim(p_motivo), auth.uid(), public.ponto_nome_autor())
+  returning id into v_id;
+  return v_id;
+end $$;
 comment on function public.banco_horas_lancar(uuid, date, text, integer, text) is '[api] Lança ajuste/compensação/pagamento (saldo inicial só administrador).';
 
 create or replace function public.banco_horas_excluir_lancamento(p_lancamento uuid)
@@ -460,45 +494,5 @@ begin
 end $$;
 comment on function public.comissao_itens_protecao() is '[interno] Itens de fechamento fechado são imutáveis; empresa_id do fechamento.';
 
-drop trigger if exists a_protecao on public.comissao_itens;
-create trigger a_protecao before insert or update or delete on public.comissao_itens
-  for each row execute function public.comissao_itens_protecao();
-
--- Detalhe do rateio: segue o status do fechamento (fechado = imutável); empresa_id do fechamento.
-create or replace function public.comissao_rateio_protecao()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_status text; v_empresa uuid; v_fech uuid;
-begin
-  v_fech := case when tg_op = 'DELETE' then old.fechamento_id else new.fechamento_id end;
-  select f.status, f.empresa_id into v_status, v_empresa from public.comissao_fechamentos f where f.id = v_fech;
-  if tg_op = 'INSERT' then
-    if v_empresa is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-    if v_status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
-    new.empresa_id := v_empresa;
-    return new;
-  end if;
-  if tg_op = 'UPDATE' and old.fechamento_id is distinct from new.fechamento_id then
-    raise exception 'Item não pode mudar de fechamento' using errcode = '22023';
-  end if;
-  if v_status = 'fechado' then
-    if tg_op = 'DELETE' and pg_trigger_depth() > 1
-       and not exists (select 1 from public.empresas e where e.id = old.empresa_id) then
-      return old;
-    end if;
-    raise exception 'Fechamento já está fechado' using errcode = '22023';
-  end if;
-  if tg_op = 'DELETE' then return old; end if;
-  new.empresa_id := coalesce(v_empresa, old.empresa_id);
-  return new;
-end $$;
-comment on function public.comissao_rateio_protecao() is '[interno] Detalhe do rateio de fechamento fechado é imutável.';
-
-drop trigger if exists a_protecao on public.comissao_rateio_dias;
-create trigger a_protecao before insert or update or delete on public.comissao_rateio_dias
-  for each row execute function public.comissao_rateio_protecao();
-drop trigger if exists a_protecao on public.comissao_rateio_itens_dia;
-create trigger a_protecao before insert or update or delete on public.comissao_rateio_itens_dia
-  for each row execute function public.comissao_rateio_protecao();
-
 commit;
-select 'parte 09 de 15 instalada' as resultado;
+select 'parte 09 de 17 instalada' as resultado;

@@ -1,8 +1,44 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 08 DE 15.
+-- Meu Dia de Gerente — instalação do banco, PARTE 08 DE 17.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql. Não edite à mão.
 
 begin;
+create trigger ponto_vinculo_batidas after update of funcionario_id on public.controlid_usuarios
+  for each row when (old.funcionario_id is distinct from new.funcionario_id)
+  execute function public.ponto_gatilho_controlid_usuario();
+drop trigger if exists ponto_vinculo_batidas_ins on public.controlid_usuarios;
+create trigger ponto_vinculo_batidas_ins after insert on public.controlid_usuarios
+  for each row when (new.funcionario_id is not null)
+  execute function public.ponto_gatilho_controlid_usuario();
+
+create or replace function public.ponto_gatilho_funcionario_documentos()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_datas date[]; v_dia date;
+begin
+  if new.cpf is null and new.pis is null then return null; end if;
+  with alt as (
+    update public.ponto_batidas b
+       set funcionario_id = new.id
+     where b.empresa_id = new.empresa_id
+       and b.origem = 'controlid_rep'
+       and b.funcionario_id is null
+       and b.pessoa_externa is not null
+       and b.pessoa_externa in (new.cpf, new.pis)
+    returning b.data_trabalho)
+  select array_agg(distinct alt.data_trabalho) into v_datas from alt;
+  if v_datas is not null then
+    foreach v_dia in array v_datas loop
+      perform public.ponto_apurar(new.id, v_dia, v_dia);
+    end loop;
+  end if;
+  return null;
+end $$;
+comment on function public.ponto_gatilho_funcionario_documentos() is '[interno] §7.8: CPF/PIS do funcionário → batidas REP sem vínculo.';
+
+drop trigger if exists ponto_documentos on public.funcionarios;
+create trigger ponto_documentos after insert or update of cpf, pis on public.funcionarios
+  for each row execute function public.ponto_gatilho_funcionario_documentos();
+
 create or replace function public.ponto_gatilho_funcionario_vinculo()
 returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare v_atual date;
@@ -341,6 +377,11 @@ begin
         where a.funcionario_id = p_funcionario and a.data between p_inicio and p_fim and a.ocorrencia_id is not null) then
     raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
   end if;
+  if p_funcionario is not null and exists (
+       select 1 from public.ponto_abonos a
+        where a.funcionario_id = p_funcionario and a.data between p_inicio and p_fim and a.escala_ajuste_id is not null) then
+    raise exception 'Dia com férias na escala: altere pela escala' using errcode = '22023';
+  end if;
 
   insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por)
   select v_empresa, p_funcionario, g::date, p_tipo, nullif(btrim(p_motivo), ''), auth.uid()
@@ -367,6 +408,9 @@ begin
   if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   if a.ocorrencia_id is not null then
     raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
+  if a.escala_ajuste_id is not null then
+    raise exception 'Dia com férias na escala: altere pela escala' using errcode = '22023';
   end if;
   delete from public.ponto_abonos where id = p_abono;
   if a.funcionario_id is not null then
@@ -480,40 +524,6 @@ begin
     return next;
   end loop;
 end $$;
-comment on function public.banco_horas_extrato(uuid, date, date) is '[api] Extrato do banco de horas (máx. 366 dias).';
-
-create or replace function public.banco_horas_lancar(p_funcionario uuid, p_data date, p_tipo text, p_minutos integer,
-                                                     p_motivo text)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid; v_id uuid;
-begin
-  select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
-  if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if public.pode_operar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  if p_tipo is null or p_tipo not in ('saldo_inicial', 'ajuste', 'compensacao', 'pagamento') then
-    raise exception 'Tipo de lançamento inválido' using errcode = '22023';
-  end if;
-  if p_tipo = 'saldo_inicial' and not public.pode_administrar(v_empresa) then
-    raise exception 'Sem permissão' using errcode = '42501';
-  end if;
-  if p_motivo is null or btrim(p_motivo) = '' then raise exception 'Informe o motivo' using errcode = '22023'; end if;
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  if p_minutos is null then raise exception 'Informe os minutos' using errcode = '22023'; end if;
-  -- (revisão 2) limite de sanidade: ±100.000 min (≈ 1.666 h); 2.147.483.647 min era aceito e distorcia o saldo
-  if abs(p_minutos::bigint) > 100000 then
-    raise exception 'Minutos fora do limite (máximo 100.000)' using errcode = '22023';
-  end if;
-  if p_tipo = 'saldo_inicial'
-     and exists (select 1 from public.banco_horas_lancamentos
-                  where funcionario_id = p_funcionario and data = p_data and tipo = 'saldo_inicial') then
-    raise exception 'Já existe saldo inicial nesta data' using errcode = '23505';
-  end if;
-
-  insert into public.banco_horas_lancamentos (empresa_id, funcionario_id, data, tipo, minutos, motivo, criado_por, criado_por_nome)
-  values (v_empresa, p_funcionario, p_data, p_tipo, p_minutos, btrim(p_motivo), auth.uid(), public.ponto_nome_autor())
-  returning id into v_id;
-  return v_id;
-end $$;
 
 commit;
-select 'parte 08 de 15 instalada' as resultado;
+select 'parte 08 de 17 instalada' as resultado;

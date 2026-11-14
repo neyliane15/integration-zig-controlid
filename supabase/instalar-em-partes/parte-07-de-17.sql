@@ -1,8 +1,11 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 07 DE 15.
+-- Meu Dia de Gerente — instalação do banco, PARTE 07 DE 17.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql. Não edite à mão.
 
 begin;
+create index if not exists banco_horas_criado_por_idx on public.banco_horas_lancamentos (criado_por);
+comment on table public.banco_horas_lancamentos is '[api:leitura] Lançamentos manuais do banco de horas (saldo inicial, ajustes, compensações, pagamentos).';
+
 -- ========================================================================= RLS
 alter table public.ponto_batidas enable row level security;
 alter table public.ponto_dias enable row level security;
@@ -176,6 +179,18 @@ create trigger a_antes before insert or update on public.ponto_batidas
   for each row execute function public.ponto_batidas_antes();
 
 -- ============================================================ cálculo de um dia
+-- (adendo escala) Status da escala rotativa no dia: a função real é definida em …0280_escala.sql. Aqui só um esqueleto
+-- (criado se ainda não existir) para que a apuração funcione antes da …0280 numa instalação/atualização em andamento.
+do $$
+begin
+  if to_regprocedure('public.escala_status_ponto(uuid, date)') is null then
+    execute $f$create function public.escala_status_ponto(p_funcionario uuid, p_data date, out status text, out chegada time)
+      language sql stable security definer set search_path = public, extensions, pg_temp as
+      'select null::text, null::time'$f$;
+    execute $c$comment on function public.escala_status_ponto(uuid, date) is '[interno] Status da escala no dia (esqueleto; ver …0280).'$c$;
+  end if;
+end $$;
+
 -- §7.2/§7.3. Não grava nada. Retorna 0 linhas se o funcionário não existe; fora_do_vinculo = true se D fora do vínculo.
 create or replace function public.ponto_calcular_dia(p_funcionario uuid, p_data date)
 returns table (
@@ -234,6 +249,8 @@ declare
   v_custo      numeric;
   v_melhor     int[];
   v_melhor_c   numeric;
+  v_esc        record;
+  v_desloc     interval;
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -276,10 +293,19 @@ begin
    order by a.funcionario_id nulls last
    limit 1;
 
+  -- (adendo escala §S.5) status da escala rotativa: folga/férias = não escalado; trabalha = escalado com a jornada,
+  -- deslocada para a chegada da escala. null = funcionário fora da escala (só a jornada vale).
+  select * into v_esc from public.escala_status_ponto(f.id, p_data);
+
   v_k := 0;
-  if v_abono is null and j.id is not null then
+  if v_abono is null and j.id is not null and v_esc.status is distinct from 'folga' and v_esc.status is distinct from 'ferias' then
     select * into jd from public.jornada_dias x
      where x.jornada_id = j.id and x.dia_semana = extract(dow from p_data)::smallint;
+    if not found and v_esc.status = 'trabalha' then
+      -- jornada sem este dia da semana: usa o primeiro dia cadastrado (SEG→DOM) como modelo de horários
+      select * into jd from public.jornada_dias x
+       where x.jornada_id = j.id order by (x.dia_semana + 6) % 7 limit 1;
+    end if;
     if found then
       v_prev := jd.minutos_previstos;
       v_k := jd.batidas_esperadas;
@@ -295,6 +321,12 @@ begin
         v_slots := array[
           public.ponto_instante_escala(p_data, jd.entrada, e.fuso, e.virada_dia),
           public.ponto_instante_escala(p_data, jd.saida, e.fuso, e.virada_dia)];
+      end if;
+      if v_esc.chegada is not null then
+        v_desloc := public.ponto_instante_escala(p_data, v_esc.chegada, e.fuso, e.virada_dia) - v_slots[1];
+        for i in 1 .. v_k loop
+          v_slots[i] := v_slots[i] + v_desloc;
+        end loop;
       end if;
       for i in 1 .. v_k loop
         v_esperadas := v_esperadas || jsonb_build_object('batida', v_nomes[i], 'instante', v_slots[i]);
@@ -377,7 +409,8 @@ begin
   if not v_encerrado then v_situacao := 'em_andamento';
   elsif v_abono = 'suspensao' then v_situacao := 'suspenso';
   elsif v_abono is not null then v_situacao := 'abonado';
-  elsif v_k = 0 and v_n = 0 then v_situacao := case when j.id is null then 'sem_escala' else 'folga' end;
+  elsif v_k = 0 and v_n = 0 then
+    v_situacao := case when v_esc.status in ('folga', 'ferias') or j.id is not null then 'folga' else 'sem_escala' end;
   elsif v_n = 0 then v_situacao := 'ausente';
   elsif v_n >= v_k and v_n % 2 = 0 then v_situacao := 'completo';
   else v_situacao := 'incompleto';
@@ -569,41 +602,6 @@ end $$;
 comment on function public.ponto_gatilho_controlid_usuario() is '[interno] §7.8: vínculo Control iD → batidas de acesso e reapuração.';
 
 drop trigger if exists ponto_vinculo_batidas on public.controlid_usuarios;
-create trigger ponto_vinculo_batidas after update of funcionario_id on public.controlid_usuarios
-  for each row when (old.funcionario_id is distinct from new.funcionario_id)
-  execute function public.ponto_gatilho_controlid_usuario();
-drop trigger if exists ponto_vinculo_batidas_ins on public.controlid_usuarios;
-create trigger ponto_vinculo_batidas_ins after insert on public.controlid_usuarios
-  for each row when (new.funcionario_id is not null)
-  execute function public.ponto_gatilho_controlid_usuario();
-
-create or replace function public.ponto_gatilho_funcionario_documentos()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_datas date[]; v_dia date;
-begin
-  if new.cpf is null and new.pis is null then return null; end if;
-  with alt as (
-    update public.ponto_batidas b
-       set funcionario_id = new.id
-     where b.empresa_id = new.empresa_id
-       and b.origem = 'controlid_rep'
-       and b.funcionario_id is null
-       and b.pessoa_externa is not null
-       and b.pessoa_externa in (new.cpf, new.pis)
-    returning b.data_trabalho)
-  select array_agg(distinct alt.data_trabalho) into v_datas from alt;
-  if v_datas is not null then
-    foreach v_dia in array v_datas loop
-      perform public.ponto_apurar(new.id, v_dia, v_dia);
-    end loop;
-  end if;
-  return null;
-end $$;
-comment on function public.ponto_gatilho_funcionario_documentos() is '[interno] §7.8: CPF/PIS do funcionário → batidas REP sem vínculo.';
-
-drop trigger if exists ponto_documentos on public.funcionarios;
-create trigger ponto_documentos after insert or update of cpf, pis on public.funcionarios
-  for each row execute function public.ponto_gatilho_funcionario_documentos();
 
 commit;
-select 'parte 07 de 15 instalada' as resultado;
+select 'parte 07 de 17 instalada' as resultado;
