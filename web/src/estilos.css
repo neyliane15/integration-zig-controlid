@@ -34,6 +34,11 @@
   --color-folga: #c8553d; /* --off: preenchimentos/contornos de folga e alerta */
   --color-folga-suave: #f7ddd5; /* --offs */
   --color-veu: #2b2f1e; /* fundo escurecido de modais (usar com /opacidade) */
+  /* faltas na escala (v5): injustificada = terracota forte (preenchida), justificada = âmbar suave */
+  --color-falta: #9e3622;
+  --color-tinta-falta: #fffdf7;
+  --color-falta-j: #7a4f0a;
+  --color-falta-j-suave: #f6e6c4;
 
   --radius-cartao: 20px;
   --radius-entrada: 12px;
@@ -71,6 +76,10 @@
       --color-folga: #ee8a72;
       --color-folga-suave: #4a2a22;
       --color-veu: #0b0d07;
+      --color-falta: #e07a5f;
+      --color-tinta-falta: #1c1f14;
+      --color-falta-j: #ecc77a;
+      --color-falta-j-suave: #4a3b18;
       --shadow-cartao: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 24px 48px -24px rgb(0 0 0 / 0.6);
     }
   }
@@ -98,6 +107,10 @@
     --color-folga: #ee8a72;
     --color-folga-suave: #4a2a22;
     --color-veu: #0b0d07;
+    --color-falta: #e07a5f;
+    --color-tinta-falta: #1c1f14;
+    --color-falta-j: #ecc77a;
+    --color-falta-j-suave: #4a3b18;
     --shadow-cartao: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 24px 48px -24px rgb(0 0 0 / 0.6);
   }
   html,

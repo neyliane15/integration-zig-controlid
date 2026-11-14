@@ -43,7 +43,10 @@ function caso(rnd: () => number, i: number, modo: 'diario' | 'periodo' | 'qualqu
     const id = `e99${String(i).padStart(5, '0')}-0000-4000-8000-${String(k).padStart(12, '0')}`
     const itemId = `e99${String(i).padStart(5, '0')}-0000-4000-9000-${String(k).padStart(12, '0')}`
     if (extra) {
-      const entrada = datas.filter(() => rnd() < 0.4).map((data) => ({ data, presente: true, pontos: escolha(PONTOS(inteiro)) }))
+      const pendente = rnd() < 0.15
+      const entrada = datas
+        .filter(() => rnd() < 0.4)
+        .map((data) => (pendente && rnd() < 0.5 ? { data, presente: true, pontos: 0, pendente: true } : { data, presente: true, pontos: escolha(PONTOS(inteiro)), pendente: false }))
       participantes.push({ itemId, tipo: 'extra', funcionarioId: null, extraId: id, nome: escolha(NOMES), incluido: rnd() > 0.1, pontos: 0, diasTrabalhados: entrada.length, entrada })
     } else {
       const snapshot = rnd() < 0.1
@@ -51,7 +54,21 @@ function caso(rnd: () => number, i: number, modo: 'diario' | 'periodo' | 'qualqu
       // pontos vigentes mudam uma vez no meio do período (a partir do dia `corte`)
       const novo = rnd() < 0.2 ? escolha(PONTOS(inteiro)) : null
       const corte = Math.ceil(dias / 2)
-      const entrada = snapshot ? [] : datas.map((data, d) => ({ data, presente: rnd() < 0.6, pontos: novo != null && d >= corte ? novo : pontos }))
+      // v3 (§E.7.1): presente (ponto/escala), fallback individual, bloqueado (falta, férias…) ou ausente sem bloqueio
+      const entrada = snapshot
+        ? []
+        : datas.map((data, d) => {
+            const x = rnd()
+            const estado =
+              x < 0.45
+                ? { presente: true, fallback: false, bloqueado: false, motivo: null, origem: rnd() < 0.5 ? ('ponto' as const) : ('escala' as const) }
+                : x < 0.65
+                  ? { presente: false, fallback: true, bloqueado: false, motivo: 'sem_registro' as const, origem: null }
+                  : x < 0.85
+                    ? { presente: false, fallback: false, bloqueado: true, motivo: escolha(['falta_justificada', 'falta_injustificada', 'ferias', 'suspensao', 'fora_vinculo'] as const), origem: null }
+                    : { presente: false, fallback: false, bloqueado: false, motivo: escolha(['sem_batida', 'folga_escala'] as const), origem: null }
+            return { data, ...estado, pontos: novo != null && d >= corte ? novo : pontos }
+          })
       participantes.push({
         itemId,
         tipo: 'funcionario',
@@ -128,9 +145,12 @@ function referenciaPeriodo(e: EntradaComissao) {
   const diasPeriodo = BigInt(Number(e.dataFim.slice(8, 10)))
   const pe = e.participantes.map((p) => {
     if (!p.incluido) return 0n
-    if (p.tipo === 'extra') return arred((p.entrada ?? []).reduce((t, l) => t + centesimos(l.pontos) * 10_000n, 0n), diasPeriodo)
+    if (p.tipo === 'extra') return arred((p.entrada ?? []).reduce((t, l) => t + (l.pendente ? 0n : centesimos(l.pontos) * 10_000n), 0n), diasPeriodo)
+    const ent = p.funcionarioId ? (p.entrada ?? []) : []
+    if (ent.length && ent.every((l) => l.bloqueado)) return 0n
+    const dias = ent.length ? ent.filter((l) => l.presente || l.fallback).length : p.diasTrabalhados
     const p6 = centesimos(p.pontos) * 10_000n
-    return e.proporcionalDias ? arred(p6 * BigInt(p.diasTrabalhados), diasPeriodo) : p6
+    return e.proporcionalDias ? arred(p6 * BigInt(dias), diasPeriodo) : p6
   })
   const ativos = pe.map((_, i) => i).filter((i) => pe[i]! > 0n)
   const valores = pe.map(() => 0n)
@@ -172,15 +192,17 @@ function referenciaDiario(e: EntradaComissao) {
     const ret = arred(bruto * centesimos(e.percentualRetencao), 10_000n)
     retencao += ret
     base += bruto - ret
-    const pontosDia = (p: ParticipanteComissao, fallback: boolean): bigint => {
+    const baseDia = bruto - ret
+    const pontosDia = (p: ParticipanteComissao, ultimo: boolean): bigint => {
       if (!p.incluido) return 0n
       const l = (p.entrada ?? []).find((x) => x.data === data)
-      if (p.tipo === 'extra') return !fallback && l ? centesimos(l.pontos) : 0n
-      if (!fallback && !l?.presente) return 0n
-      return p.pontosManual || p.funcionarioId == null ? centesimos(p.pontos) : centesimos(l?.pontos ?? 0)
+      if (p.tipo === 'extra') return !ultimo && l && !l.pendente ? centesimos(l.pontos) : 0n
+      const pts = p.pontosManual || p.funcionarioId == null ? centesimos(p.pontos) : centesimos(l?.pontos ?? 0)
+      if (ultimo) return l?.bloqueado ? 0n : pts
+      return l?.presente || (l?.fallback && baseDia > 0n) ? pts : 0n
     }
     let pesos = e.participantes.map((p) => pontosDia(p, false))
-    if (pesos.every((x) => x === 0n) && bruto - ret > 0n) pesos = e.participantes.map((p) => pontosDia(p, true))
+    if (pesos.every((x) => x === 0n) && baseDia > 0n) pesos = e.participantes.map((p) => pontosDia(p, true))
     const ativos = pesos.map((_, i) => i).filter((i) => pesos[i]! > 0n)
     if (!ativos.length) return
     const v = distribuir(bruto - ret, ativos.map((i) => pesos[i]!), ativos.map((i) => e.participantes[i]!))

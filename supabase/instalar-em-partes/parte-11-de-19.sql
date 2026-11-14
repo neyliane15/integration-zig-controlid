@@ -1,8 +1,154 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 12 DE 17.
+-- Meu Dia de Gerente — instalação do banco, PARTE 11 DE 19.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000230_ingestao.sql, 20261006000240_painel.sql, 20261006000250_ocorrencias.sql. Não edite à mão.
 
 begin;
+create or replace function public.ingestao_zig_tipo(p_tipo text)
+returns text language sql immutable set search_path = public, extensions, pg_temp as $$
+  select coalesce((select t from unnest(array['Normal', 'Couvert', 'ZigCard', 'Entrance', 'Tip']) t
+                    where lower(t) = lower(btrim(p_tipo))), 'Outro')
+$$;
+comment on function public.ingestao_zig_tipo(text) is '[interno] type da Zig → tipo (desconhecido = Outro).';
+
+create or replace function public.ingestao_zig_saida_produtos(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig public.integracoes; v_fuso text; x jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0;
+  v_rem int; v_erros jsonb := '[]'::jsonb; v_unit bigint; v_qtd numeric; v_desc bigint; v_tipo_orig text;
+begin
+  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
+  p_itens := public.ingestao_lista(p_itens);
+  select e.fuso into v_fuso from public.empresas e where e.id = ig.empresa_id;
+
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_vendas_itens:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
+  delete from public.zig_vendas_itens where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
+  get diagnostics v_rem = row_count;
+
+  for x in select value from jsonb_array_elements(p_itens) loop
+    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
+    begin
+      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
+      if public.ingestao_texto(x -> 'transactionId') is null then raise exception 'transactionId ausente'; end if;
+      v_unit := public.ingestao_centavos(x -> 'unitValue');
+      v_qtd := coalesce((public.ingestao_texto(x -> 'count'))::numeric, 0);
+      v_desc := public.ingestao_centavos(x -> 'discountValue');
+      v_tipo_orig := public.ingestao_texto(x -> 'type');
+      insert into public.zig_vendas_itens (
+        empresa_id, loja_id_externo, data_operacao, transaction_id, transaction_date, event_id, event_date, invoice_id,
+        product_id, product_sku, product_name, product_category, tipo, tipo_original, unit_value, quantidade,
+        fractional_amount, fraction_unit, discount_value, valor_total, employee_name, additions)
+      values (
+        ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'transactionId'),
+        public.ingestao_ler_instante(x ->> 'transactionDate', v_fuso),
+        public.ingestao_texto(x -> 'eventId'),
+        left(public.ingestao_texto(x -> 'eventDate'), 10)::date,
+        public.ingestao_texto(x -> 'invoiceId'),
+        public.ingestao_texto(x -> 'productId'), public.ingestao_texto(x -> 'productSku'),
+        public.ingestao_texto(x -> 'productName'), public.ingestao_texto(x -> 'productCategory'),
+        public.ingestao_zig_tipo(v_tipo_orig), v_tipo_orig, v_unit, v_qtd,
+        (public.ingestao_texto(x -> 'fractionalAmount'))::numeric, public.ingestao_texto(x -> 'fractionUnit'),
+        v_desc, round(v_unit * v_qtd)::bigint - v_desc,
+        public.ingestao_texto(x -> 'employeeName'),
+        case when jsonb_typeof(x -> 'additions') = 'array' then x -> 'additions' else '[]'::jsonb end);
+      v_grav := v_grav + 1;
+    exception when others then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
+    end;
+  end loop;
+
+  if ig.cursor ->> 'ultimo_dia' is null or p_data > (ig.cursor ->> 'ultimo_dia')::date then
+    update public.integracoes set cursor = cursor || jsonb_build_object('ultimo_dia', p_data) where id = ig.id;
+  end if;
+
+  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
+         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
+end $$;
+comment on function public.ingestao_zig_saida_produtos(uuid, text, date, jsonb) is '[servico] Substitui os itens vendidos do dia/loja (/erp/saida-produtos).';
+
+create or replace function public.ingestao_zig_faturamento(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig public.integracoes; x jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0; v_rem int;
+  v_erros jsonb := '[]'::jsonb;
+begin
+  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
+  p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_faturamento:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
+  delete from public.zig_faturamento where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
+  get diagnostics v_rem = row_count;
+  for x in select value from jsonb_array_elements(p_itens) loop
+    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
+    begin
+      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
+      if public.ingestao_texto(x -> 'paymentId') is null then raise exception 'paymentId ausente'; end if;
+      insert into public.zig_faturamento (empresa_id, loja_id_externo, data_operacao, event_id, event_date, payment_id,
+                                          payment_name, valor)
+      values (ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'eventId'),
+              left(public.ingestao_texto(x -> 'eventDate'), 10)::date,
+              (public.ingestao_texto(x -> 'paymentId'))::int,
+              coalesce(public.ingestao_texto(x -> 'paymentName'), 'Forma ' || public.ingestao_texto(x -> 'paymentId')),
+              public.ingestao_centavos(coalesce(x -> 'value', x -> 'valor', x -> 'totalValue')));
+      v_grav := v_grav + 1;
+    exception when others then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
+    end;
+  end loop;
+  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
+         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
+end $$;
+comment on function public.ingestao_zig_faturamento(uuid, text, date, jsonb) is '[servico] Substitui o faturamento do dia/loja (/erp/faturamento).';
+
+create or replace function public.ingestao_zig_faturamento_bandeiras(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig public.integracoes; x jsonb; v jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0; v_rem int;
+  v_erros jsonb := '[]'::jsonb; v_valores jsonb;
+begin
+  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
+  p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_faturamento_bandeiras:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
+  delete from public.zig_faturamento_bandeiras
+   where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
+  get diagnostics v_rem = row_count;
+  for x in select value from jsonb_array_elements(p_itens) loop
+    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
+    begin
+      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
+      if public.ingestao_texto(x -> 'paymentId') is null then raise exception 'paymentId ausente'; end if;
+      v_valores := case when jsonb_typeof(x -> 'values') = 'array' then x -> 'values' else '[]'::jsonb end;
+      for v in select value from jsonb_array_elements(v_valores) loop
+        insert into public.zig_faturamento_bandeiras (empresa_id, loja_id_externo, data_operacao, event_id, payment_id,
+                                                      payment_name, card_brand, valor)
+        values (ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'eventId'),
+                (public.ingestao_texto(x -> 'paymentId'))::int, public.ingestao_texto(x -> 'paymentName'),
+                coalesce(public.ingestao_texto(v -> 'cardBrand'), public.ingestao_texto(v -> 'brand')),
+                public.ingestao_centavos(coalesce(v -> 'totalValue', v -> 'value', v -> 'valor')));
+        v_grav := v_grav + 1;
+      end loop;
+    exception when others then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
+    end;
+  end loop;
+  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
+         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
+end $$;
+comment on function public.ingestao_zig_faturamento_bandeiras(uuid, text, date, jsonb) is '[servico] Substitui o faturamento por bandeira do dia/loja (cada values[] vira uma linha).';
+
 create or replace function public.ingestao_zig_compradores(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
 returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare
@@ -289,193 +435,5 @@ drop trigger if exists a_empresa on public.funcionario_ocorrencia_anexos;
 create trigger a_empresa before insert or update of ocorrencia_id, empresa_id on public.funcionario_ocorrencia_anexos
   for each row execute function public.ocorrencia_anexo_empresa();
 
--- ================================================================ Storage (documentos)
-do $$
-begin
-  if to_regclass('storage.buckets') is not null then
-    insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-    values ('funcionarios-documentos', 'funcionarios-documentos', false, 5242880,
-            array['image/jpeg', 'image/png', 'image/webp', 'application/pdf'])
-    on conflict (id) do update
-      set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
-  end if;
-  if to_regclass('storage.objects') is not null then
-    execute 'drop policy if exists mdg_docs_ler on storage.objects';
-    execute $p$create policy mdg_docs_ler on storage.objects for select to authenticated
-      using (bucket_id = 'funcionarios-documentos'
-             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
-    execute 'drop policy if exists mdg_docs_inserir on storage.objects';
-    execute $p$create policy mdg_docs_inserir on storage.objects for insert to authenticated
-      with check (bucket_id = 'funcionarios-documentos'
-             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
-    execute 'drop policy if exists mdg_docs_alterar on storage.objects';
-    execute $p$create policy mdg_docs_alterar on storage.objects for update to authenticated
-      using (bucket_id = 'funcionarios-documentos'
-             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))
-      with check (bucket_id = 'funcionarios-documentos'
-             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
-    execute 'drop policy if exists mdg_docs_excluir on storage.objects';
-    execute $p$create policy mdg_docs_excluir on storage.objects for delete to authenticated
-      using (bucket_id = 'funcionarios-documentos'
-             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
-  end if;
-end $$;
-
--- ================================================================ auxiliares
-create or replace function public.ocorrencia_para_operar(p_ocorrencia uuid)
-returns public.funcionario_ocorrencias language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare o public.funcionario_ocorrencias;
-begin
-  select * into o from public.funcionario_ocorrencias where id = p_ocorrencia;
-  if not found then raise exception 'Ocorrência não encontrada' using errcode = 'P0002'; end if;
-  if public.pode_operar(o.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  return o;
-end $$;
-comment on function public.ocorrencia_para_operar(uuid) is '[interno] Ocorrência existente e operável (G A M).';
-
--- Valida os campos e devolve (tipo, dias, início, fim) normalizados.
-create or replace function public.ocorrencia_validar(p_empresa uuid, p_tipo text, p_data date, p_motivo text,
-                                                     p_dias int, p_inicio date,
-                                                     out tipo text, out dias int, out inicio date, out fim date)
-language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-begin
-  if p_tipo is null or p_tipo not in ('advertencia', 'suspensao') then
-    raise exception 'Tipo de ocorrência inválido' using errcode = '22023';
-  end if;
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  if p_data > public.dia_de_trabalho(public.agora(), p_empresa) then
-    raise exception 'Data no futuro' using errcode = '22023';
-  end if;
-  if nullif(btrim(coalesce(p_motivo, '')), '') is null then
-    raise exception 'Informe o motivo' using errcode = '22023';
-  end if;
-  tipo := p_tipo;
-  if p_tipo = 'advertencia' then
-    return;
-  end if;
-  if p_dias is null or p_dias < 1 or p_dias > 30 then
-    raise exception 'Dias de suspensão inválidos (1 a 30)' using errcode = '22023';
-  end if;
-  inicio := coalesce(p_inicio, p_data);
-  if inicio < p_data or inicio > p_data + 60 then
-    raise exception 'Início da suspensão inválido' using errcode = '22023';
-  end if;
-  dias := p_dias;
-  fim := inicio + p_dias - 1;
-end $$;
-comment on function public.ocorrencia_validar(uuid, text, date, text, int, date) is '[interno] Validação de ocorrência (adendo O.3).';
-
--- Ressincroniza os abonos 'suspensao' de uma ocorrência e reapura os dias afetados (antigos e novos).
-create or replace function public.ocorrencia_sincronizar_abonos(p_ocorrencia uuid, p_antigo_inicio date, p_antigo_fim date)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare o public.funcionario_ocorrencias; v_existe boolean; v_conflito date; v_ini date; v_fim date;
-begin
-  select * into o from public.funcionario_ocorrencias where id = p_ocorrencia;
-  v_existe := found;
-  delete from public.ponto_abonos where ocorrencia_id = p_ocorrencia;
-  if v_existe and o.tipo = 'suspensao' then
-    select a.data into v_conflito
-      from public.ponto_abonos a
-     where a.funcionario_id = o.funcionario_id and a.data between o.suspensao_inicio and o.suspensao_fim
-     order by a.data limit 1;
-    if v_conflito is not null then
-      raise exception 'Já existe abono para o funcionário em %', to_char(v_conflito, 'DD/MM/YYYY') using errcode = '22023';
-    end if;
-    insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por, ocorrencia_id)
-    select o.empresa_id, o.funcionario_id, g::date, 'suspensao', left('Suspensão: ' || o.motivo, 500), public.meu_perfil_id(), o.id
-      from generate_series(o.suspensao_inicio, o.suspensao_fim, interval '1 day') g;
-  end if;
-  v_ini := least(p_antigo_inicio, case when o.tipo = 'suspensao' then o.suspensao_inicio end);
-  v_fim := greatest(p_antigo_fim, case when o.tipo = 'suspensao' then o.suspensao_fim end);
-  if v_ini is not null and o.funcionario_id is not null then
-    perform public.ponto_apurar(o.funcionario_id, v_ini, v_fim);
-  end if;
-end $$;
-comment on function public.ocorrencia_sincronizar_abonos(uuid, date, date) is
-  '[interno] Abonos ''suspensao'' da ocorrência (um por dia) + reapuração (adendo O.3).';
-
--- ================================================================ RPCs
-create or replace function public.ocorrencia_criar(p_funcionario uuid, p_tipo text, p_data date, p_motivo text,
-                                                   p_descricao text default null, p_dias_suspensao int default null,
-                                                   p_suspensao_inicio date default null)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare f public.funcionarios; v record; v_id uuid;
-begin
-  f := public.funcionario_para_operar(p_funcionario);
-  select * into v from public.ocorrencia_validar(f.empresa_id, p_tipo, p_data, p_motivo, p_dias_suspensao, p_suspensao_inicio);
-  insert into public.funcionario_ocorrencias (empresa_id, funcionario_id, tipo, data, motivo, descricao, dias_suspensao,
-                                              suspensao_inicio, suspensao_fim, criado_por, criado_por_nome)
-  values (f.empresa_id, f.id, v.tipo, p_data, btrim(p_motivo), nullif(btrim(p_descricao), ''), v.dias, v.inicio, v.fim,
-          public.meu_perfil_id(), public.ponto_nome_autor())
-  returning id into v_id;
-  perform public.ocorrencia_sincronizar_abonos(v_id, null, null);
-  return v_id;
-end $$;
-comment on function public.ocorrencia_criar(uuid, text, date, text, text, int, date) is
-  '[api] Registra advertência/suspensão do funcionário (G A M). Suspensão gera abonos e reapura.';
-
-create or replace function public.ocorrencia_atualizar(p_ocorrencia uuid, p_tipo text, p_data date, p_motivo text,
-                                                       p_descricao text, p_dias_suspensao int default null,
-                                                       p_suspensao_inicio date default null)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare o public.funcionario_ocorrencias; v record;
-begin
-  o := public.ocorrencia_para_operar(p_ocorrencia);
-  select * into v from public.ocorrencia_validar(o.empresa_id, p_tipo, p_data, p_motivo, p_dias_suspensao, p_suspensao_inicio);
-  update public.funcionario_ocorrencias
-     set tipo = v.tipo, data = p_data, motivo = btrim(p_motivo), descricao = nullif(btrim(p_descricao), ''),
-         dias_suspensao = v.dias, suspensao_inicio = v.inicio, suspensao_fim = v.fim
-   where id = o.id;
-  perform public.ocorrencia_sincronizar_abonos(o.id, o.suspensao_inicio, o.suspensao_fim);
-end $$;
-comment on function public.ocorrencia_atualizar(uuid, text, date, text, text, int, date) is
-  '[api] Edita uma ocorrência (G A M); ressincroniza abonos de suspensão e reapura.';
-
-create or replace function public.ocorrencia_excluir(p_ocorrencia uuid)
-returns text[] language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare o public.funcionario_ocorrencias; v_caminhos text[];
-begin
-  o := public.ocorrencia_para_operar(p_ocorrencia);
-  select coalesce(array_agg(a.caminho order by a.criado_em, a.id), array[]::text[]) into v_caminhos
-    from public.funcionario_ocorrencia_anexos a where a.ocorrencia_id = o.id;
-  delete from public.funcionario_ocorrencias where id = o.id;     -- anexos e abonos em cascata
-  if o.tipo = 'suspensao' then
-    perform public.ponto_apurar(o.funcionario_id, o.suspensao_inicio, o.suspensao_fim);
-  end if;
-  return v_caminhos;
-end $$;
-comment on function public.ocorrencia_excluir(uuid) is
-  '[api] Exclui a ocorrência (G A M); devolve os caminhos dos anexos para remover do Storage.';
-
-create or replace function public.ocorrencia_adicionar_anexo(p_ocorrencia uuid, p_caminho text, p_nome_arquivo text default null)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare o public.funcionario_ocorrencias; v text := nullif(btrim(coalesce(p_caminho, '')), ''); v_existe boolean := true; v_id uuid;
-begin
-  o := public.ocorrencia_para_operar(p_ocorrencia);
-  if v is null or position(o.empresa_id::text || '/ocorrencias/' || o.id::text || '/' in v) <> 1
-     or v !~* ('^' || o.empresa_id::text || '/ocorrencias/' || o.id::text || '/[^/]+\.(jpg|jpeg|png|webp|pdf)$') then
-    raise exception 'Anexo inválido' using errcode = '22023';
-  end if;
-  if (select count(*) from public.funcionario_ocorrencia_anexos a where a.ocorrencia_id = o.id) >= 10 then
-    raise exception 'Limite de 10 anexos por ocorrência' using errcode = '22023';
-  end if;
-  if exists (select 1 from public.funcionario_ocorrencia_anexos a where a.caminho = v) then
-    raise exception 'Anexo já registrado' using errcode = '23505';
-  end if;
-  if to_regclass('storage.objects') is not null then
-    execute 'select exists (select 1 from storage.objects where bucket_id = $1 and name = $2)'
-      into v_existe using 'funcionarios-documentos', v;
-  end if;
-  if not v_existe then
-    raise exception 'Anexo não encontrado no armazenamento' using errcode = 'P0002';
-  end if;
-  insert into public.funcionario_ocorrencia_anexos (empresa_id, ocorrencia_id, caminho, nome_arquivo, criado_por)
-  values (o.empresa_id, o.id, v, nullif(btrim(p_nome_arquivo), ''), public.meu_perfil_id())
-  returning id into v_id;
-  return v_id;
-end $$;
-comment on function public.ocorrencia_adicionar_anexo(uuid, text, text) is
-  '[api] Registra um anexo já enviado ao Storage (bucket funcionarios-documentos) (G A M).';
-
 commit;
-select 'parte 12 de 17 instalada' as resultado;
+select 'parte 11 de 19 instalada' as resultado;

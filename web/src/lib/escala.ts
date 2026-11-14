@@ -1,7 +1,7 @@
 /**
  * Escala (rodízio 5x2 mensal) — lógica pura da tela, sem React nem banco. Dono: frontend.
  * Réplica do comportamento do modelo do cliente (docs/referencias/escala-macaw-v3.html):
- * horário digitado (8 → 8h, 11:30 → 11h30), f = folga, fe = férias, vazio = automático;
+ * horário digitado (8 → 8h, 11:30 → 11h30), f = folga, fe = férias, fj/fi = falta justificada/injustificada (v3), vazio = automático;
  * navegação Enter/↓, ↑, ←/→; cópia para o Excel em TSV.
  */
 
@@ -30,7 +30,7 @@ const HRE = /^(\d{1,2})(?:[:.,h]?(\d{2}))?\s*(?:h|hs|hrs|hr)?$/i;
 
 /**
  * Normaliza o que foi digitado numa célula (igual ao `normT` do modelo):
- * '' → '' · 'f'/'folga' → 'F' · 'fe'/'fé'/'ferias'/'férias' → 'FÉ' · '8' → '8h' · '11:30' → '11h30' · '9h00' → '9h'.
+ * '' → '' · 'f'/'folga' → 'F' · 'fe'/'fé'/'ferias'/'férias' → 'FÉ' · 'fj' → 'FJ' · 'fi' → 'FI' · '8' → '8h' · '11:30' → '11h30' · '9h00' → '9h'.
  * Texto que não é horário é cortado em 6 caracteres.
  */
 export function normT(bruto: unknown): string {
@@ -39,6 +39,8 @@ export function normT(bruto: unknown): string {
   const l = s.toLowerCase();
   if (l === "f" || l === "folga") return "F";
   if (["fe", "fé", "ferias", "férias"].includes(l)) return "FÉ";
+  if (["fj", "falta justificada"].includes(l)) return "FJ";
+  if (["fi", "falta", "falta injustificada"].includes(l)) return "FI";
   const m = HRE.exec(s);
   if (m && Number(m[1]) <= 23 && (!m[2] || Number(m[2]) <= 59))
     return `${Number(m[1])}h${m[2] && m[2] !== "00" ? m[2] : ""}`;
@@ -119,11 +121,27 @@ export function interpretarCelula(
   };
 }
 
-/** Texto mostrado na célula. */
+/** Falta registrada no dia (adendo escala §S.11). */
+export type FaltaCelula = "justificada" | "injustificada";
+
+/** Código da falta na célula/Excel: FJ / FI. */
+export function codigoFalta(falta: FaltaCelula | null | undefined): "" | "FJ" | "FI" {
+  return falta === "justificada" ? "FJ" : falta === "injustificada" ? "FI" : "";
+}
+
+/** 'FJ'/'FI' digitado → tipo da falta; outra coisa → null. */
+export function faltaDoTexto(texto: string): FaltaCelula | null {
+  const v = normT(texto);
+  return v === "FJ" ? "justificada" : v === "FI" ? "injustificada" : null;
+}
+
+/** Texto mostrado na célula (a falta vence o status: FJ/FI no lugar do horário). */
 export function textoCelula(
   estado: EstadoDia,
   chegadaDia: string | null,
+  falta: FaltaCelula | null = null,
 ): string {
+  if (falta) return codigoFalta(falta);
   if (estado === "ferias") return "FÉ";
   if (estado === "folga") return "F";
   return horaParaChegada(chegadaDia);

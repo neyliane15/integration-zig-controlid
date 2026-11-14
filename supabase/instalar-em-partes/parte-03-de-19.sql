@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 03 DE 17.
+-- Meu Dia de Gerente — instalação do banco, PARTE 03 DE 19.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000120_integracoes_sync.sql. Não edite à mão.
 
@@ -624,4 +624,4 @@ comment on function public.ingestao_sync_pegar_solicitacoes(int) is
   '[servico] Pega as solicitações pendentes mais antigas (for update skip locked) e as passa a em_andamento.';
 
 commit;
-select 'parte 03 de 17 instalada' as resultado;
+select 'parte 03 de 19 instalada' as resultado;

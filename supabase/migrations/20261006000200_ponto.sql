@@ -47,7 +47,8 @@ create table if not exists public.ponto_dias (
   primeira_batida     timestamptz,
   ultima_batida       timestamptz,
   situacao            text not null check (situacao in ('completo', 'incompleto', 'ausente', 'folga',
-                                                        'sem_escala', 'abonado', 'suspenso', 'em_andamento')),
+                                                        'sem_escala', 'abonado', 'suspenso', 'em_andamento',
+                                                        'falta_justificada', 'falta_injustificada')),
   encerrado           boolean not null,
   alarmes_abertos     smallint not null default 0,
   apurado_em          timestamptz not null default now(),
@@ -131,7 +132,8 @@ alter table public.ponto_abonos add column if not exists escala_ajuste_id uuid;
 create index if not exists ponto_abonos_escala_ajuste_idx on public.ponto_abonos (escala_ajuste_id);
 alter table public.ponto_dias drop constraint if exists ponto_dias_situacao_check;
 alter table public.ponto_dias add constraint ponto_dias_situacao_check
-  check (situacao in ('completo', 'incompleto', 'ausente', 'folga', 'sem_escala', 'abonado', 'suspenso', 'em_andamento'));
+  check (situacao in ('completo', 'incompleto', 'ausente', 'folga', 'sem_escala', 'abonado', 'suspenso', 'em_andamento',
+                      'falta_justificada', 'falta_injustificada'));
 
 -- ======================================================= banco_horas_lancamentos
 create table if not exists public.banco_horas_lancamentos (
@@ -336,6 +338,12 @@ begin
       'select null::text, null::time'$f$;
     execute $c$comment on function public.escala_status_ponto(uuid, date) is '[interno] Status da escala no dia (esqueleto; ver …0280).'$c$;
   end if;
+  -- (adendo extras v3, §E.7.2) falta do funcionário no dia: a função real é definida em …0290_comissao_presenca.sql.
+  if to_regprocedure('public.ponto_falta_do_dia(uuid, date)') is null then
+    execute $f$create function public.ponto_falta_do_dia(p_funcionario uuid, p_data date) returns text
+      language sql stable security definer set search_path = public, extensions, pg_temp as 'select null::text'$f$;
+    execute $c$comment on function public.ponto_falta_do_dia(uuid, date) is '[interno] Falta do funcionário no dia (esqueleto; ver …0290).'$c$;
+  end if;
 end $$;
 
 -- §7.2/§7.3. Não grava nada. Retorna 0 linhas se o funcionário não existe; fora_do_vinculo = true se D fora do vínculo.
@@ -398,6 +406,7 @@ declare
   v_melhor_c   numeric;
   v_esc        record;
   v_desloc     interval;
+  v_falta      text;
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -444,8 +453,14 @@ begin
   -- deslocada para a chegada da escala. null = funcionário fora da escala (só a jornada vale).
   select * into v_esc from public.escala_status_ponto(f.id, p_data);
 
+  -- (adendo extras v3, §E.7.2) falta registrada: prevalece sobre abono da empresa e escala. Justificada = como abono
+  -- (previsto 0); injustificada = dia previsto normal (saldo −previsto sem batida), sem alarmes.
+  v_falta := public.ponto_falta_do_dia(f.id, p_data);
+  if v_falta is not null then v_abono := null; end if;
+
   v_k := 0;
-  if v_abono is null and j.id is not null and v_esc.status is distinct from 'folga' and v_esc.status is distinct from 'ferias' then
+  if v_abono is null and v_falta is distinct from 'justificada' and j.id is not null
+     and v_esc.status is distinct from 'folga' and v_esc.status is distinct from 'ferias' then
     select * into jd from public.jornada_dias x
      where x.jornada_id = j.id and x.dia_semana = extract(dow from p_data)::smallint;
     if not found and v_esc.status = 'trabalha' then
@@ -553,7 +568,8 @@ begin
   end if;
 
   -- 7. Situação
-  if not v_encerrado then v_situacao := 'em_andamento';
+  if v_falta is not null then v_situacao := 'falta_' || v_falta;
+  elsif not v_encerrado then v_situacao := 'em_andamento';
   elsif v_abono = 'suspensao' then v_situacao := 'suspenso';
   elsif v_abono is not null then v_situacao := 'abonado';
   elsif v_k = 0 and v_n = 0 then
@@ -563,8 +579,8 @@ begin
   else v_situacao := 'incompleto';
   end if;
 
-  -- 8. Alarmes (§7.3)
-  if v_abono is null then
+  -- 8. Alarmes (§7.3) — dia abonado ou com falta registrada não gera alarme
+  if v_abono is null and v_falta is null then
     if v_encerrado then
       if v_k > 0 and v_n = 0 then
         v_alarmes := v_alarmes || jsonb_build_object(
@@ -1102,7 +1118,7 @@ comment on function public.ponto_reabrir_alarme(uuid) is '[api] Reabre um alarme
 create or replace function public.ponto_abonar(p_inicio date, p_fim date, p_tipo text, p_motivo text default null,
                                                p_funcionario uuid default null, p_empresa uuid default null)
 returns integer language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid; v_dias int;
+declare v_empresa uuid; v_dias int; v_falta date;
 begin
   if p_funcionario is not null then
     select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
@@ -1127,6 +1143,13 @@ begin
        select 1 from public.ponto_abonos a
         where a.funcionario_id = p_funcionario and a.data between p_inicio and p_fim and a.escala_ajuste_id is not null) then
     raise exception 'Dia com férias na escala: altere pela escala' using errcode = '22023';
+  end if;
+  if p_funcionario is not null then
+    select g::date into v_falta from generate_series(p_inicio, p_fim, interval '1 day') g
+     where public.ponto_falta_do_dia(p_funcionario, g::date) is not null order by g limit 1;
+    if v_falta is not null then
+      raise exception 'Dia com falta em %: remova a falta antes', to_char(v_falta, 'DD/MM/YYYY') using errcode = '22023';
+    end if;
   end if;
 
   insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por)
@@ -1233,7 +1256,8 @@ declare
   v_saldo   bigint;
   r         record;
   v_rotulos constant jsonb := '{"completo":"Completo","incompleto":"Incompleto","ausente":"Ausente","folga":"Folga",
-     "sem_escala":"Sem escala","abonado":"Abonado","suspenso":"Suspenso","em_andamento":"Em andamento"}'::jsonb;
+     "sem_escala":"Sem escala","abonado":"Abonado","suspenso":"Suspenso","em_andamento":"Em andamento",
+     "falta_justificada":"Falta justificada","falta_injustificada":"Falta injustificada"}'::jsonb;
 begin
   select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
   if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;

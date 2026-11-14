@@ -1,8 +1,9 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 07 DE 17.
+-- Meu Dia de Gerente — instalação do banco, PARTE 07 DE 19.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql. Não edite à mão.
 
 begin;
+create index if not exists banco_horas_funcionario_idx on public.banco_horas_lancamentos (funcionario_id, data);
 create index if not exists banco_horas_criado_por_idx on public.banco_horas_lancamentos (criado_por);
 comment on table public.banco_horas_lancamentos is '[api:leitura] Lançamentos manuais do banco de horas (saldo inicial, ajustes, compensações, pagamentos).';
 
@@ -189,6 +190,12 @@ begin
       'select null::text, null::time'$f$;
     execute $c$comment on function public.escala_status_ponto(uuid, date) is '[interno] Status da escala no dia (esqueleto; ver …0280).'$c$;
   end if;
+  -- (adendo extras v3, §E.7.2) falta do funcionário no dia: a função real é definida em …0290_comissao_presenca.sql.
+  if to_regprocedure('public.ponto_falta_do_dia(uuid, date)') is null then
+    execute $f$create function public.ponto_falta_do_dia(p_funcionario uuid, p_data date) returns text
+      language sql stable security definer set search_path = public, extensions, pg_temp as 'select null::text'$f$;
+    execute $c$comment on function public.ponto_falta_do_dia(uuid, date) is '[interno] Falta do funcionário no dia (esqueleto; ver …0290).'$c$;
+  end if;
 end $$;
 
 -- §7.2/§7.3. Não grava nada. Retorna 0 linhas se o funcionário não existe; fora_do_vinculo = true se D fora do vínculo.
@@ -251,6 +258,7 @@ declare
   v_melhor_c   numeric;
   v_esc        record;
   v_desloc     interval;
+  v_falta      text;
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -297,8 +305,14 @@ begin
   -- deslocada para a chegada da escala. null = funcionário fora da escala (só a jornada vale).
   select * into v_esc from public.escala_status_ponto(f.id, p_data);
 
+  -- (adendo extras v3, §E.7.2) falta registrada: prevalece sobre abono da empresa e escala. Justificada = como abono
+  -- (previsto 0); injustificada = dia previsto normal (saldo −previsto sem batida), sem alarmes.
+  v_falta := public.ponto_falta_do_dia(f.id, p_data);
+  if v_falta is not null then v_abono := null; end if;
+
   v_k := 0;
-  if v_abono is null and j.id is not null and v_esc.status is distinct from 'folga' and v_esc.status is distinct from 'ferias' then
+  if v_abono is null and v_falta is distinct from 'justificada' and j.id is not null
+     and v_esc.status is distinct from 'folga' and v_esc.status is distinct from 'ferias' then
     select * into jd from public.jornada_dias x
      where x.jornada_id = j.id and x.dia_semana = extract(dow from p_data)::smallint;
     if not found and v_esc.status = 'trabalha' then
@@ -406,7 +420,8 @@ begin
   end if;
 
   -- 7. Situação
-  if not v_encerrado then v_situacao := 'em_andamento';
+  if v_falta is not null then v_situacao := 'falta_' || v_falta;
+  elsif not v_encerrado then v_situacao := 'em_andamento';
   elsif v_abono = 'suspensao' then v_situacao := 'suspenso';
   elsif v_abono is not null then v_situacao := 'abonado';
   elsif v_k = 0 and v_n = 0 then
@@ -416,8 +431,8 @@ begin
   else v_situacao := 'incompleto';
   end if;
 
-  -- 8. Alarmes (§7.3)
-  if v_abono is null then
+  -- 8. Alarmes (§7.3) — dia abonado ou com falta registrada não gera alarme
+  if v_abono is null and v_falta is null then
     if v_encerrado then
       if v_k > 0 and v_n = 0 then
         v_alarmes := v_alarmes || jsonb_build_object(
@@ -572,36 +587,5 @@ begin
 end $$;
 comment on function public.ponto_apurar_empresa(uuid, date, date) is '[interno] Apura todos os funcionários da empresa no período.';
 
--- ======================================================= gatilhos em tabelas do backend-1 (§7.8)
-create or replace function public.ponto_gatilho_controlid_usuario()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_antigo uuid := case when tg_op = 'UPDATE' then old.funcionario_id end;
-  v_datas  date[];
-  v_dia    date;
-begin
-  with alt as (
-    update public.ponto_batidas b
-       set funcionario_id = new.funcionario_id
-     where b.integracao_id = new.integracao_id
-       and b.pessoa_externa = new.user_id_externo
-       and b.origem = 'controlid_acesso'
-       and (b.funcionario_id is null or b.funcionario_id = v_antigo)
-       and b.funcionario_id is distinct from new.funcionario_id
-    returning b.data_trabalho)
-  select array_agg(distinct alt.data_trabalho) into v_datas from alt;
-
-  if v_datas is not null then
-    foreach v_dia in array v_datas loop
-      perform public.ponto_apurar(v_antigo, v_dia, v_dia);
-      perform public.ponto_apurar(new.funcionario_id, v_dia, v_dia);
-    end loop;
-  end if;
-  return null;
-end $$;
-comment on function public.ponto_gatilho_controlid_usuario() is '[interno] §7.8: vínculo Control iD → batidas de acesso e reapuração.';
-
-drop trigger if exists ponto_vinculo_batidas on public.controlid_usuarios;
-
 commit;
-select 'parte 07 de 17 instalada' as resultado;
+select 'parte 07 de 19 instalada' as resultado;

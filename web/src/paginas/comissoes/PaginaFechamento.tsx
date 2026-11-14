@@ -185,6 +185,8 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
   const disponiveis = (funcionarios.data ?? []).filter((x) => x.ativo && !itens.some((i) => i.funcionario_id === x.id))
   const diasSemParticipantes = sujo ? previa.diasSemParticipantes : f.dias_sem_participantes
   const diasSemPresenca = sujo ? previa.diasSemPresenca : f.dias_sem_presenca
+  const extrasPendentes = sujo ? previa.extrasSemPontuacao : f.extras_sem_pontuacao
+  const nomesPendentes = previa.itens.filter((i) => i.pontosPendente).map((i) => i.nome)
 
   const salvar = async () => {
     if (erroPercentual) return avisos.erro('Percentual de retenção inválido')
@@ -250,7 +252,7 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
         <>
           Base distribuível <strong>{formatarCentavos(f.base_distribuivel_centavos)}</strong> para{' '}
           {itens.filter((i) => i.incluido && i.valor_centavos > 0).length} participante(s).
-          {f.dias_sem_presenca > 0 && <> {f.dias_sem_presenca} dia(s) sem presença registrada foram rateados entre todos os funcionários.</>} Depois de
+          {f.dias_sem_presenca > 0 && <> {f.dias_sem_presenca} dia(s) tiveram gente sem registro de presença (entrou pelo fallback).</>} Depois de
           fechado, o fechamento não pode mais ser alterado nem excluído.
         </>
       ),
@@ -268,7 +270,7 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
   const telaLarga = useMidia('(min-width: 768px)')
   const ocupado = atualizar.isPending || definirItens.isPending || definirExtra.isPending || removerItem.isPending || recalcular.isPending
   const somaIncluidos = previa.itens.reduce((s, i) => s + (i.incluido ? i.pontos : 0), 0)
-  const diasIncluidos = previa.itens.reduce((s, i) => s + (i.incluido ? i.diasTrabalhados : 0), 0)
+  const diasIncluidos = previa.itens.reduce((s, i) => s + (i.incluido ? i.diasPresentes : 0), 0)
   const participantes = previa.itens.filter((i) => i.incluido && i.valorCentavos > 0).length
   const extras = itens.filter((i) => i.tipo === 'extra').length
 
@@ -316,8 +318,14 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
                 icone={<Lock aria-hidden className="size-4" />}
                 onClick={acaoFechar}
                 carregando={fechar.isPending}
-                disabled={sujo || ocupado || f.valor_ponto_centavos == null || f.dias_sem_participantes > 0}
-                title={f.dias_sem_participantes > 0 ? 'Há dias com serviço sem participantes para ratear' : undefined}
+                disabled={sujo || ocupado || f.valor_ponto_centavos == null || f.dias_sem_participantes > 0 || f.extras_sem_pontuacao > 0}
+                title={
+                  f.extras_sem_pontuacao > 0
+                    ? 'Há extras sem pontuação: preencha antes de fechar'
+                    : f.dias_sem_participantes > 0
+                      ? 'Há dias com serviço sem participantes para ratear'
+                      : undefined
+                }
               >
                 Fechar comissão
               </Botao>
@@ -350,10 +358,26 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
           {diasSemParticipantes} dia(s) com serviço sem ninguém para ratear. Inclua funcionários com pontos para poder fechar.
         </p>
       )}
+      {extrasPendentes > 0 && (
+        <div role="alert" data-teste="aviso-extras-pendentes" className="mb-4 flex flex-wrap items-start gap-3 rounded-cartao border border-alerta/50 bg-alerta/10 p-4 text-sm text-alerta">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <strong>
+              {extrasPendentes} extra(s) com pontuação pendente
+            </strong>
+            {nomesPendentes.length > 0 && <> ({nomesPendentes.join(', ')})</>}: os dias sem pontuação não entram no rateio e o fechamento fica bloqueado.
+            Preencha a pontuação em Extras (ou tire o extra do fechamento) e recalcule.
+          </span>
+          <BotaoLink to="/extras?pendentes=1" variante="secundario" tamanho="p">
+            Preencher pontuação
+          </BotaoLink>
+        </div>
+      )}
       {diario && diasSemPresenca > 0 && (
         <p role="status" className="mb-4 flex items-start gap-2 rounded-cartao border border-alerta/40 bg-alerta/10 p-4 text-sm text-alerta">
           <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-          {diasSemPresenca} dia(s) sem presença registrada — rateado(s) entre todos os funcionários incluídos. Confira o ponto desses dias.
+          {diasSemPresenca} dia(s) com gente sem registro de presença (sem ponto e fora da escala) — essas pessoas entraram pelo fallback. Confira o
+          ponto ou a escala desses dias.
         </p>
       )}
       {rascunho && !administrar && <p className="mb-4 text-sm text-lavanda">Somente o administrador fecha a comissão. Você pode preparar o rascunho.</p>}
@@ -617,7 +641,8 @@ function ListaParticipantes(props: PropsLista) {
     rascunho && i.tipo === 'funcionario' && i.funcionario_id ? (
       <Botao variante="fantasma" tamanho="p" aria-label={`Remover ${i.nome}`} icone={<X aria-hidden className="size-4" />} disabled={ocupado} onClick={() => props.aoRemover(i)} />
     ) : null
-  const dias = (i: ComissaoDetalheItem) => (i.tipo === 'extra' ? `${i.dias_presentes} dia(s)` : `${i.dias_presentes}/${diasPeriodo}`)
+  const diasDe = (i: ComissaoDetalheItem, k: number) => previa.itens[k]?.diasPresentes ?? i.dias_presentes
+  const dias = (i: ComissaoDetalheItem, k: number) => (i.tipo === 'extra' ? `${diasDe(i, k)} dia(s)` : `${diasDe(i, k)}/${diasPeriodo}`)
   const valor = (k: number) => {
     const p = previa.itens[k]
     return (
@@ -635,6 +660,7 @@ function ListaParticipantes(props: PropsLista) {
     <p className="flex flex-wrap items-center gap-1.5 font-semibold text-creme">
       <span>{i.nome}</span>
       {i.tipo === 'extra' && <Selo tom="info">Extra</Selo>}
+      {i.tipo === 'extra' && i.pontos_pendente && <Selo tom="alerta">Pontuação pendente</Selo>}
     </p>
   )
   const classeLinha = (i: ComissaoDetalheItem) => clsx('border-t border-borda', !incluidoDe(i) && 'opacity-60', mudou(i, edicoes[i.id]) && 'bg-ouro/5')
@@ -650,7 +676,7 @@ function ListaParticipantes(props: PropsLista) {
                 <p className="text-xs text-lavanda">
                   {[
                     i.cargo,
-                    i.tipo === 'extra' ? `${i.dias_presentes} dia(s) trabalhado(s)` : `presente ${i.dias_presentes} de ${diasPeriodo} dias`,
+                    i.tipo === 'extra' ? `${diasDe(i, k)} dia(s) trabalhado(s)` : `presente ${diasDe(i, k)} de ${diasPeriodo} dias`,
                     `${fmtPontos(previa.itens[k]?.pontosEfetivos ?? 0)} pts ${diario ? 'nos dias' : 'efetivos'}`,
                   ]
                     .filter(Boolean)
@@ -704,7 +730,7 @@ function ListaParticipantes(props: PropsLista) {
               </td>
               <td className="px-3 py-3 text-center">{ctrlIncluido(i)}</td>
               <td className="px-3 py-3 text-right">{ctrlPontos(i)}</td>
-              <td className="numero px-3 py-3 text-right text-lavanda">{dias(i)}</td>
+              <td className="numero px-3 py-3 text-right text-lavanda">{dias(i, k)}</td>
               <td className="numero px-3 py-3 text-right">{fmtPontos(previa.itens[k]?.pontosEfetivos ?? 0, 6)}</td>
               <td className="numero px-3 py-3 text-right font-semibold whitespace-nowrap text-ouro-claro">{valor(k)}</td>
               {rascunho && <td className="px-3 py-3 text-right">{ctrlRemover(i)}</td>}

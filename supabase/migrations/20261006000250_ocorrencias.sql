@@ -180,6 +180,12 @@ begin
     if v_conflito is not null then
       raise exception 'Já existe abono para o funcionário em %', to_char(v_conflito, 'DD/MM/YYYY') using errcode = '22023';
     end if;
+    -- (adendo extras v3, §E.7.2) dia com falta registrada não recebe suspensão
+    select g::date into v_conflito from generate_series(o.suspensao_inicio, o.suspensao_fim, interval '1 day') g
+     where public.ponto_falta_do_dia(o.funcionario_id, g::date) is not null order by g limit 1;
+    if v_conflito is not null then
+      raise exception 'Dia com falta em %: remova a falta antes', to_char(v_conflito, 'DD/MM/YYYY') using errcode = '22023';
+    end if;
     insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por, ocorrencia_id)
     select o.empresa_id, o.funcionario_id, g::date, 'suspensao', left('Suspensão: ' || o.motivo, 500), public.meu_perfil_id(), o.id
       from generate_series(o.suspensao_inicio, o.suspensao_fim, interval '1 day') g;

@@ -49,7 +49,8 @@ function normalizarMes(m: EscalaMes): EscalaMes {
         trabalha: num(x.trabalha),
         folgas: num(x.folgas),
         ferias: num(x.ferias),
-        dias: (x.dias ?? []).map((d) => ({ ...d, chegada: hhmm(d.chegada) })),
+        faltas: num(x.faltas),
+        dias: (x.dias ?? []).map((d) => ({ ...d, chegada: hhmm(d.chegada), falta: d.falta ?? null })),
       })),
     })),
   };
@@ -120,7 +121,9 @@ export function recontar(m: EscalaMes): EscalaMes {
       let trabalha = 0;
       let folgas = 0;
       let ferias = 0;
+      let faltas = 0;
       x.dias.forEach((d, j) => {
+        if (d.falta) faltas++;
         if (d.status === "trabalha") {
           trabalha++;
           na[j]!++;
@@ -128,7 +131,7 @@ export function recontar(m: EscalaMes): EscalaMes {
         } else if (d.status === "folga") folgas++;
         else if (d.status === "ferias") ferias++;
       });
-      return { ...x, trabalha, folgas, ferias };
+      return { ...x, trabalha, folgas, ferias, faltas };
     });
     return { ...s, membros, na_escala: na };
   });
@@ -201,6 +204,7 @@ function gravarDias(m: EscalaMes, itens: EscalaDiaFuncionario[]): EscalaMes {
             chegada: hhmm(i.chegada),
             ajustado: i.ajustado,
             motivo: i.motivo,
+            falta: "falta" in i ? (i.falta ?? null) : (d.falta ?? null),
           };
         }),
       };

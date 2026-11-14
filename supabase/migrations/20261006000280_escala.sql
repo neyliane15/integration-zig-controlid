@@ -475,7 +475,8 @@ create or replace function public.escala_dia_json(p_empresa uuid, p_funcionario 
 returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
   select jsonb_build_object('funcionario_id', c.funcionario_id, 'data', c.data, 'status', c.status, 'origem', c.origem,
                             'chegada', public.escala_hora(c.chegada), 'ajustado', c.ajustado,
-                            'motivo', case when p_motivo then c.motivo end)
+                            'motivo', case when p_motivo then c.motivo end,
+                            'falta', public.ponto_falta_do_dia(c.funcionario_id, c.data))
     from public.escala_calcular(p_empresa, p_data, p_data, p_funcionario) c
 $$;
 comment on function public.escala_dia_json(uuid, uuid, date, boolean) is '[interno] Objeto-dia da escala (adendo §S.8).';
@@ -720,6 +721,16 @@ end $$;
 comment on function public.escala_aplicar_modelo_macaw(uuid, date) is
   '[api] Monta setores, caminhos e posições do modelo Macaw (cria funcionários provisórios); idempotente.';
 
+-- (adendo extras v3, §S.11) dia com falta registrada não aceita ajuste/troca da escala
+create or replace function public.escala_checar_falta(p_funcionario uuid, p_data date)
+returns void language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+begin
+  if p_funcionario is not null and p_data is not null and public.ponto_falta_do_dia(p_funcionario, p_data) is not null then
+    raise exception 'Dia com falta em %: remova a falta antes', to_char(p_data, 'DD/MM/YYYY') using errcode = '22023';
+  end if;
+end $$;
+comment on function public.escala_checar_falta(uuid, date) is '[interno] Recusa ajuste/troca da escala em dia com falta.';
+
 -- ================================================================ RPCs de ajuste
 create or replace function public.escala_ajustar(p_funcionario uuid, p_data date, p_status text default null,
                                                  p_chegada time default null, p_motivo text default null)
@@ -727,10 +738,16 @@ returns jsonb language plpgsql security definer set search_path = public, extens
 declare m public.escala_membros; v_status text; c record;
 begin
   m := public.escala_membro_para_operar(p_funcionario);
+  -- (v3, §S.11) status de falta = atalho para falta_registrar (o ajuste do dia não muda)
+  if p_status in ('falta_justificada', 'falta_injustificada') then
+    perform public.falta_registrar(p_funcionario, p_data, substr(p_status, 7), p_motivo);
+    return public.escala_dia_json(m.empresa_id, p_funcionario, p_data, true);
+  end if;
   v_status := public.escala_status_param(p_status);
   perform public.escala_validar_data(m.empresa_id, p_data);
   select * into c from public.escala_calcular(m.empresa_id, p_data, p_data, p_funcionario) x;
   if c.status is null or c.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
+  perform public.escala_checar_falta(p_funcionario, p_data);
   perform public.escala_gravar_dia(m.id, p_data, v_status, p_chegada, p_motivo);
   perform public.escala_reapurar(m.empresa_id, array[p_funcionario], p_data, p_data);
   return public.escala_dia_json(m.empresa_id, p_funcionario, p_data, true);
@@ -747,6 +764,10 @@ begin
   perform public.ponto_validar_periodo(p_inicio, p_fim, 62);
   perform public.escala_validar_data(m.empresa_id, p_inicio);
   perform public.escala_validar_data(m.empresa_id, p_fim);
+  for c in select * from public.escala_calcular(m.empresa_id, p_inicio, p_fim, p_funcionario) x order by x.data loop
+    continue when c.status = 'fora';
+    perform public.escala_checar_falta(p_funcionario, c.data);
+  end loop;
   for c in select * from public.escala_calcular(m.empresa_id, p_inicio, p_fim, p_funcionario) x order by x.data loop
     continue when c.status = 'fora';
     perform public.escala_gravar_dia(m.id, c.data, v_status, c.ajuste_chegada, p_motivo);
@@ -784,6 +805,8 @@ begin
     select * into cb from public.escala_calcular(ma.empresa_id, p_data_b, p_data_b, p_funcionario_a) x;
     if ca.status = 'fora' or cb.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
     if 'ferias' in (ca.status, cb.status) then raise exception 'Não é possível trocar dia de férias' using errcode = '22023'; end if;
+    perform public.escala_checar_falta(p_funcionario_a, least(p_data_a, p_data_b));
+    perform public.escala_checar_falta(p_funcionario_a, greatest(p_data_a, p_data_b));
     perform public.escala_gravar_dia(ma.id, p_data_a, nullif(cb.status, ca.status_auto), ca.ajuste_chegada,
                                      case when cb.status <> ca.status_auto then v_motivo end);
     perform public.escala_gravar_dia(ma.id, p_data_b, nullif(ca.status, cb.status_auto), cb.ajuste_chegada,
@@ -803,6 +826,8 @@ begin
     select * into cb from public.escala_calcular(ma.empresa_id, v_d, v_d, p_funcionario_b) x;
     if ca.status = 'fora' or cb.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
     if 'ferias' in (ca.status, cb.status) then raise exception 'Não é possível trocar dia de férias' using errcode = '22023'; end if;
+    perform public.escala_checar_falta(p_funcionario_a, v_d);
+    perform public.escala_checar_falta(p_funcionario_b, v_d);
   end loop;
   foreach v_d in array v_datas loop
     select * into ca from public.escala_calcular(ma.empresa_id, v_d, v_d, p_funcionario_a) x;
@@ -838,6 +863,9 @@ begin
   return (
     with calc as materialized (select * from public.escala_calcular(v_empresa, v_ini, v_fim)),
     dias as (select g::date as d from generate_series(v_ini, v_fim, interval '1 day') g),
+    -- (v3, §S.11) faltas do mês (FJ/FI); tabela da …0290 (função plpgsql: resolvida na execução)
+    fal as (select fl.funcionario_id, fl.data, fl.tipo from public.funcionario_faltas fl
+             where fl.empresa_id = v_empresa and fl.data between v_ini and v_fim),
     mem as (
       select m.*, f.nome, f.cargo from public.escala_membros m join public.funcionarios f on f.id = m.funcionario_id
        where m.empresa_id = v_empresa
@@ -863,12 +891,14 @@ begin
                             'trabalha', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'trabalha'),
                             'folgas', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'folga'),
                             'ferias', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'ferias'),
+                            'faltas', (select count(*) from fal where fal.funcionario_id = m.funcionario_id),
                             'dias', coalesce((
                               select jsonb_agg(jsonb_build_object(
                                        'data', dd.d, 'status', coalesce(c.status, 'fora'), 'origem', coalesce(c.origem, 'auto'),
                                        'chegada', public.escala_hora(c.chegada), 'ajustado', coalesce(c.ajustado, false),
-                                       'motivo', case when v_motivo then c.motivo end) order by dd.d)
-                                from dias dd left join calc c on c.funcionario_id = m.funcionario_id and c.data = dd.d), '[]'))
+                                       'motivo', case when v_motivo then c.motivo end, 'falta', fal.tipo) order by dd.d)
+                                from dias dd left join calc c on c.funcionario_id = m.funcionario_id and c.data = dd.d
+                                left join fal on fal.funcionario_id = m.funcionario_id and fal.data = dd.d), '[]'))
                           order by m.ordem, m.nome collate "C", m.id)
                      from mem m where m.setor_id = s.id), '[]'),
                  'na_escala', (select jsonb_agg((select count(*) from calc c where c.setor_id = s.id and c.data = dd.d and c.status = 'trabalha')

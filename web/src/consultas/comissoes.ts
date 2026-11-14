@@ -24,6 +24,7 @@ function normalizarFechamento(f: ComissaoFechamento): ComissaoFechamento {
     modo_rateio: f.modo_rateio ?? 'periodo',
     dias_sem_presenca: num(f.dias_sem_presenca),
     dias_sem_participantes: num(f.dias_sem_participantes),
+    extras_sem_pontuacao: num(f.extras_sem_pontuacao),
   }
 }
 
@@ -112,7 +113,18 @@ export function useComissaoDetalhe(id: string | null | undefined) {
           dias_presentes: num(i.dias_presentes),
           pontos_efetivos: num(i.pontos_efetivos),
           valor_centavos: num(i.valor_centavos),
-          entrada: (i.entrada ?? []).map((l) => ({ data: l.data, presente: !!l.presente, pontos: num(l.pontos) })),
+          pontos_pendente: !!i.pontos_pendente,
+          // v3 (§E.7.7): funcionário traz fallback/bloqueado/motivo/origem; extra traz pendente
+          entrada: (i.entrada ?? []).map((l) => ({
+            data: l.data,
+            presente: !!l.presente,
+            pontos: num(l.pontos),
+            fallback: !!l.fallback,
+            bloqueado: !!l.bloqueado,
+            motivo: l.motivo ?? null,
+            origem: l.origem ?? null,
+            pendente: !!l.pendente,
+          })),
         })),
       }
     },

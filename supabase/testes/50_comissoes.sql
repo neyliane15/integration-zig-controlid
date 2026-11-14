@@ -348,7 +348,7 @@ select teste.ok('comissao_detalhe: chaves, servico_dias, dias com rateio, itens 
   and (select (j -> 'dias' -> 2 ->> 'sem_presenca')::boolean from det)
   and (select jsonb_path_query_array(j, '$.itens[*].nome') from det) = '["Ana Souza", "Bruno Lima", "Carla Dias", "Marcos Freitas"]'
   and (select jsonb_path_query_array(j, '$.itens[0].entrada[*].presente') from det) = '[true, true, false]'
-  and (select j -> 'itens' -> 3 -> 'entrada' from det) = '[{"data": "2026-09-01", "pontos": 5.00, "presente": true}, {"data": "2026-09-02", "pontos": 7.50, "presente": true}]');
+  and (select j -> 'itens' -> 3 -> 'entrada' from det) = '[{"data": "2026-09-01", "pontos": 5.00, "pendente": false, "presente": true}, {"data": "2026-09-02", "pontos": 7.50, "pendente": false, "presente": true}]');
 
 -- dia sem ninguém para ratear: fechar é recusado
 select public.comissao_definir_item((select id from fd where nome = 'v1'), f, null, false)

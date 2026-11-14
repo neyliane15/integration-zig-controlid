@@ -48,7 +48,18 @@ export type Recorrencia = 'diaria' | 'semanal' | 'mensal'
 export type Prioridade = 'baixa' | 'normal' | 'alta'
 export type StatusTarefa = 'pendente' | 'em_andamento' | 'concluida' | 'cancelada'
 export type OrigemBatida = 'controlid_acesso' | 'controlid_rep' | 'manual'
-export type SituacaoDia = 'completo' | 'incompleto' | 'ausente' | 'folga' | 'sem_escala' | 'abonado' | 'em_andamento' | 'suspenso'
+export type SituacaoDia =
+  | 'completo'
+  | 'incompleto'
+  | 'ausente'
+  | 'folga'
+  | 'sem_escala'
+  | 'abonado'
+  | 'em_andamento'
+  | 'suspenso'
+  /** adendo extras v3 (§E.7.2) */
+  | 'falta_justificada'
+  | 'falta_injustificada'
 export type TipoAlarme = 'batida_faltando' | 'batidas_impares' | 'sem_batida_dia_escalado' | 'atraso'
 export type BatidaEsperada = 'entrada' | 'saida_intervalo' | 'volta_intervalo' | 'saida'
 export type StatusAlarme = 'aberto' | 'justificado' | 'resolvido'
@@ -588,6 +599,8 @@ export interface ComissaoFechamento {
   dias_sem_presenca: number
   /** modo diário: dias com base > 0 sem ninguém para ratear (fechar é recusado) */
   dias_sem_participantes: number
+  /** v3 (§E.7.5): extras incluídos com dia de pontuação pendente — fechar é recusado */
+  extras_sem_pontuacao: number
 }
 
 export interface ComissaoItem {
@@ -702,7 +715,36 @@ export interface ComissaoDetalheItem {
   dias_presentes: number
   pontos_efetivos: number
   valor_centavos: Centavos
-  entrada: { data: DataISO; presente: boolean; pontos: number }[]
+  /** v3: extra com dia de pontuação pendente no período */
+  pontos_pendente: boolean
+  entrada: ComissaoEntradaDia[]
+}
+/** Motivo de não estar presente no dia (§E.7.1). */
+export type MotivoPresenca =
+  | 'fora_vinculo'
+  | 'falta_justificada'
+  | 'falta_injustificada'
+  | 'suspensao'
+  | 'ferias'
+  | 'atestado'
+  | 'abono'
+  | 'sem_batida'
+  | 'folga_escala'
+  | 'sem_registro'
+/** `comissao_detalhe.itens[].entrada` (v3, §E.7.7). Funcionário: um por dia; extra: um por lançamento. */
+export interface ComissaoEntradaDia {
+  data: DataISO
+  presente: boolean
+  pontos: number
+  /** funcionário: entra no rateio só se o dia tiver base > 0 (fallback individual) */
+  fallback?: boolean
+  /** funcionário: nunca entra (nem no último recurso) */
+  bloqueado?: boolean
+  motivo?: MotivoPresenca | null
+  /** de onde veio a presença */
+  origem?: 'ponto' | 'escala' | null
+  /** extra: dia sem pontuação (vale 0) */
+  pendente?: boolean
 }
 export interface ComissaoDetalhe {
   fechamento: ComissaoFechamento
@@ -722,9 +764,48 @@ export interface Extra {
   valor_diaria_centavos: Centavos | null
   ativo: boolean
   observacoes: string | null
+  /** v3 (§E.7.5): importado sem pontuação */
+  pontos_pendente: boolean
   dias_lancados: number
   ultimo_dia: DataISO | null
+  /** v3: dias lançados com pontuação pendente */
+  dias_pendentes: number
   criado_em: InstanteISO
+}
+
+/** Falta registrada (§E.7.2). */
+export type TipoFalta = 'justificada' | 'injustificada'
+export interface Falta {
+  id: Uuid
+  funcionario_id: Uuid
+  funcionario_nome: string
+  data: DataISO
+  tipo: TipoFalta
+  motivo: string | null
+  anexo_caminho: string | null
+  anexo_nome: string | null
+  criado_por_nome: string
+  criado_em: InstanteISO
+  atualizado_em: InstanteISO
+}
+
+/** Linha de `extras_importar.p_itens` (§E.7.6). */
+export interface ExtraImportacao {
+  nome: string
+  funcao?: string | null
+  telefone?: string | null
+  documento?: string | null
+  valor_diaria_centavos?: Centavos | null
+  pontos?: number | null
+  dias_trabalhados?: { data: DataISO; valor_centavos?: Centavos | null; pontos?: number | null }[]
+}
+export interface ResultadoImportacaoExtras {
+  lidos: number
+  criados: number
+  atualizados: number
+  dias_lancados: number
+  pendentes_pontuacao: number
+  erros: { linha: number; mensagem: string }[]
 }
 
 /** Linha de `diarias_listar` (E.2): dia trabalhado de um extra (com pontos) ou diária de funcionário (só custo). */
@@ -738,6 +819,8 @@ export interface Diaria {
   funcao: string | null
   /** só extra */
   pontos: number | null
+  /** v3: dia de extra sem pontuação (vale 0 até preencher) */
+  pontos_pendente: boolean
   valor_centavos: Centavos
   observacao: string | null
   pago: boolean
@@ -1032,6 +1115,8 @@ export interface EscalaDiaMembro {
   chegada: string | null
   ajustado: boolean
   motivo: string | null
+  /** v3 (§S.11): falta registrada no dia (código FJ/FI) */
+  falta?: TipoFalta | null
 }
 export interface EscalaDiaFuncionario extends EscalaDiaMembro {
   funcionario_id: Uuid
@@ -1053,6 +1138,8 @@ export interface EscalaMembroMes {
   trabalha: number
   folgas: number
   ferias: number
+  /** v3: nº de faltas no mês */
+  faltas?: number
   dias: EscalaDiaMembro[]
 }
 export interface EscalaSetorMes {
@@ -1433,9 +1520,35 @@ export interface Rpcs {
     retorno: { ancora: DataISO; setores: number; membros: number; funcionarios_criados: number }
   }
   escala_ajustar: {
-    args: { p_funcionario: Uuid; p_data: DataISO; p_status?: StatusAjusteEscala | 'auto' | null; p_chegada?: string | null; p_motivo?: string | null }
+    args: {
+      p_funcionario: Uuid
+      p_data: DataISO
+      p_status?: StatusAjusteEscala | 'falta_justificada' | 'falta_injustificada' | 'auto' | null
+      p_chegada?: string | null
+      p_motivo?: string | null
+    }
     retorno: EscalaDiaFuncionario
   }
+  // faltas, pontuação pendente e importação de extras (adendo extras v3, §E.7)
+  falta_registrar: {
+    args: {
+      p_funcionario: Uuid
+      p_data: DataISO
+      p_tipo: TipoFalta
+      p_motivo?: string | null
+      p_anexo_caminho?: string | null
+      p_anexo_nome?: string | null
+    }
+    retorno: Falta & { anexo_anterior: string | null }
+  }
+  falta_remover: { args: { p_funcionario: Uuid; p_data: DataISO }; retorno: string | null }
+  falta_definir_anexo: { args: { p_funcionario: Uuid; p_data: DataISO; p_caminho: string | null; p_nome_arquivo?: string | null }; retorno: string | null }
+  faltas_listar: {
+    args: { p_inicio: DataISO; p_fim: DataISO; p_funcionario?: Uuid | null; p_empresa?: Uuid | null }
+    retorno: Falta[]
+  }
+  extra_definir_pontuacao: { args: { p_extra: Uuid; p_pontos: number }; retorno: number }
+  extras_importar: { args: { p_itens: ExtraImportacao[]; p_empresa?: Uuid | null }; retorno: ResultadoImportacaoExtras }
   escala_ajustar_periodo: {
     args: { p_funcionario: Uuid; p_inicio: DataISO; p_fim: DataISO; p_status: StatusAjusteEscala | 'auto' | null; p_motivo?: string | null }
     retorno: number

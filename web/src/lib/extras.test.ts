@@ -10,6 +10,7 @@ const dia = (d: Partial<Diaria>): Diaria => ({
   funcionario_id: null,
   pessoa_nome: 'Marcos Freitas',
   funcao: 'Garçom',
+  pontos_pendente: false,
   pontos: 5,
   valor_centavos: 18000,
   observacao: null,

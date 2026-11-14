@@ -340,7 +340,7 @@ export function totaisDoEspelho(linhas: LinhaEspelho[]): TotaisEspelho {
     if (l.encerrado) t.saldo += l.saldo_minutos
     t.atraso += l.atraso_minutos
     if (batidasValidas(l.batidas).length > 0) t.diasTrabalhados += 1
-    if (l.situacao === 'ausente') t.faltas += 1
+    if (l.situacao === 'ausente' || l.situacao === 'falta_justificada' || l.situacao === 'falta_injustificada') t.faltas += 1
     if (l.situacao === 'incompleto') t.incompletos += 1
     t.alarmesAbertos += l.alarmes.filter((a) => a.status === 'aberto').length
   }

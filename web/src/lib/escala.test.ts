@@ -17,6 +17,8 @@ import {
   folgasDaSemana,
   semanaDaData,
   statusAutomatico,
+  codigoFalta,
+  faltaDoTexto,
 } from "./escala";
 
 describe("normT (igual ao modelo)", () => {
@@ -299,5 +301,29 @@ describe("regra do rodízio — exemplo do adendo §S.2 (Salão, âncora 2026-11
         statusAutomatico(m.funcionario_id, 0, 2, setor, 0) === "trabalha",
     ).length;
     expect(naEscala).toBe(4);
+  });
+});
+
+describe("faltas na escala (v3, §S.11)", () => {
+  it.each([
+    ["fj", "FJ"],
+    ["FJ", "FJ"],
+    ["fi", "FI"],
+    ["Falta", "FI"],
+    ["falta justificada", "FJ"],
+  ])("normT %j → %j", (e, s) => expect(normT(e)).toBe(s));
+  it("código da célula e leitura do texto", () => {
+    expect(textoCelula("trabalha", "08:00", "justificada")).toBe("FJ");
+    expect(textoCelula("trabalha", null, "injustificada")).toBe("FI");
+    expect(textoCelula("trabalha", "08:00", null)).toBe("8h");
+    expect(codigoFalta(null)).toBe("");
+    expect(faltaDoTexto(" fj ")).toBe("justificada");
+    expect(faltaDoTexto("fi")).toBe("injustificada");
+    expect(faltaDoTexto("f")).toBeNull();
+  });
+  it("TSV leva o código da falta", () => {
+    const dias = diasDoMes("2026-11").slice(0, 2);
+    const tsv = montarTsv(dias, [{ nome: "Salão", linhas: [{ nome: "Ana", celulas: ["FI", ""], chegadaPadrao: "17h", folgas: 0, ferias: 0 }] }], [1, 1]);
+    expect(tsv.split("\n")[2]).toBe("Ana\tFI\t17h\t0");
   });
 });

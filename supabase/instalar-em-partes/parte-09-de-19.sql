@@ -1,8 +1,54 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 09 DE 17.
+-- Meu Dia de Gerente — instalação do banco, PARTE 09 DE 19.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql, 20261006000210_zig.sql, 20261006000220_comissoes.sql. Não edite à mão.
 
 begin;
+create or replace function public.banco_horas_extrato(p_funcionario uuid, p_inicio date, p_fim date)
+returns table (data date, tipo text, descricao text, minutos int, saldo_acumulado bigint, referencia_id uuid)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_empresa uuid;
+  v_saldo   bigint;
+  r         record;
+  v_rotulos constant jsonb := '{"completo":"Completo","incompleto":"Incompleto","ausente":"Ausente","folga":"Folga",
+     "sem_escala":"Sem escala","abonado":"Abonado","suspenso":"Suspenso","em_andamento":"Em andamento",
+     "falta_justificada":"Falta justificada","falta_injustificada":"Falta injustificada"}'::jsonb;
+begin
+  select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
+  if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_ler(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
+
+  v_saldo := public.banco_horas_calcular_saldo(p_funcionario, p_inicio - 1);
+  data := p_inicio - 1; tipo := 'saldo_anterior'; descricao := 'Saldo anterior';
+  minutos := v_saldo::int; saldo_acumulado := v_saldo; referencia_id := null;
+  return next;
+
+  for r in
+    select x.* from (
+      select d.data, 1 as ordem, 'dia'::text as tipo,
+             (v_rotulos ->> d.situacao)
+               || case when d.abono_tipo is not null then ' (' || d.abono_tipo || ')' else '' end
+               || ' — trabalhado ' || public.ponto_fmt_minutos(d.trabalhado_minutos)
+               || case when d.previsto_minutos > 0 then ' de ' || public.ponto_fmt_minutos(d.previsto_minutos) else '' end
+               as descricao,
+             d.saldo_minutos as minutos, null::uuid as referencia_id, null::timestamptz as criado_em
+        from public.ponto_dias d
+       where d.funcionario_id = p_funcionario and d.encerrado and d.data between p_inicio and p_fim
+         and (d.saldo_minutos <> 0 or d.situacao <> 'folga')
+      union all
+      select l.data, case when l.tipo = 'saldo_inicial' then 0 else 2 end, l.tipo, l.motivo, l.minutos, l.id, l.criado_em
+        from public.banco_horas_lancamentos l
+       where l.funcionario_id = p_funcionario and l.data between p_inicio and p_fim
+    ) x
+    order by x.data, x.ordem, x.criado_em, x.referencia_id
+  loop
+    if r.tipo = 'saldo_inicial' then v_saldo := r.minutos; else v_saldo := v_saldo + r.minutos; end if;
+    data := r.data; tipo := r.tipo; descricao := r.descricao; minutos := r.minutos;
+    saldo_acumulado := v_saldo; referencia_id := r.referencia_id;
+    return next;
+  end loop;
+end $$;
 comment on function public.banco_horas_extrato(uuid, date, date) is '[api] Extrato do banco de horas (máx. 366 dias).';
 
 create or replace function public.banco_horas_lancar(p_funcionario uuid, p_data date, p_tipo text, p_minutos integer,
@@ -293,6 +339,7 @@ comment on function public.vendas_por_garcom(date, date, text, uuid) is '[api] V
 -- 20261006000220_comissoes.sql — backend-2
 -- Comissão: serviço (Tips da Zig) − retenção = base; rateio por pontos com maior resto; rascunho → fechado (imutável).
 -- Contrato: §6 (DDL), §9 (regras), §10.6 (RPCs); adendo extras v2 §E.3 (rateio diário, extras). Idempotente.
+-- (v3) comissao_calcular, comissao_fechar e comissao_detalhe foram para …0290_comissao_presenca.sql.
 -- =====================================================================================================
 
 create table if not exists public.comissao_fechamentos (
@@ -434,65 +481,5 @@ returns boolean language sql immutable set search_path = public, extensions, pg_
 $$;
 comment on function public.comissao_so_anula_fks(jsonb, jsonb, text[]) is '[interno] UPDATE só anula FKs?';
 
-create or replace function public.comissao_fechamentos_protecao()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-begin
-  if tg_op = 'INSERT' then
-    return new;
-  end if;
-  if old.status = 'fechado' then
-    if tg_op = 'DELETE' and pg_trigger_depth() > 1
-       and not exists (select 1 from public.empresas e where e.id = old.empresa_id) then
-      return old;
-    end if;
-    if tg_op = 'UPDATE' and pg_trigger_depth() > 1
-       and public.comissao_so_anula_fks(to_jsonb(old), to_jsonb(new), array['criado_por', 'fechado_por']) then
-      return new;
-    end if;
-    raise exception 'Fechamento já está fechado' using errcode = '22023';
-  end if;
-  if tg_op = 'DELETE' then return old; end if;
-  new.atualizado_em := now();
-  return new;
-end $$;
-comment on function public.comissao_fechamentos_protecao() is '[interno] Fechamento fechado é imutável (nem o master altera).';
-
-drop trigger if exists a_protecao on public.comissao_fechamentos;
-create trigger a_protecao before insert or update or delete on public.comissao_fechamentos
-  for each row execute function public.comissao_fechamentos_protecao();
-
-create or replace function public.comissao_itens_protecao()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_status text; v_empresa uuid; v_fech uuid;
-begin
-  v_fech := case when tg_op = 'DELETE' then old.fechamento_id else new.fechamento_id end;
-  select f.status, f.empresa_id into v_status, v_empresa from public.comissao_fechamentos f where f.id = v_fech;
-  if tg_op = 'INSERT' then
-    if v_empresa is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-    if v_status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
-    new.empresa_id := v_empresa;
-    return new;
-  end if;
-  if tg_op = 'UPDATE' and old.fechamento_id is distinct from new.fechamento_id then
-    raise exception 'Item não pode mudar de fechamento' using errcode = '22023';
-  end if;
-  if v_status = 'fechado' then
-    if tg_op = 'DELETE' and pg_trigger_depth() > 1
-       and not exists (select 1 from public.empresas e where e.id = old.empresa_id) then
-      return old;
-    end if;
-    if tg_op = 'UPDATE' and pg_trigger_depth() > 1
-       and public.comissao_so_anula_fks(to_jsonb(old), to_jsonb(new), array['funcionario_id', 'extra_id']) then
-      return new;
-    end if;
-    raise exception 'Fechamento já está fechado' using errcode = '22023';
-  end if;
-  -- fechamento inexistente (exclusão em cascata) ou rascunho: segue
-  if tg_op = 'DELETE' then return old; end if;
-  new.empresa_id := coalesce(v_empresa, old.empresa_id);
-  return new;
-end $$;
-comment on function public.comissao_itens_protecao() is '[interno] Itens de fechamento fechado são imutáveis; empresa_id do fechamento.';
-
 commit;
-select 'parte 09 de 17 instalada' as resultado;
+select 'parte 09 de 19 instalada' as resultado;

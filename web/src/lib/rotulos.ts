@@ -10,6 +10,8 @@ import type {
   OperacaoEnvio,
   OrigemBatida,
   ModoRateio,
+  MotivoPresenca,
+  TipoFalta,
   Papel,
   TipoParticipanteComissao,
   Prioridade,
@@ -70,6 +72,41 @@ export const rotuloSituacaoDia: Record<SituacaoDia, string> = {
   abonado: 'Abonado',
   em_andamento: 'Em andamento',
   suspenso: 'Suspenso',
+  falta_justificada: 'Falta justificada',
+  falta_injustificada: 'Falta injustificada',
+}
+
+/** Por que o funcionário não entrou na comissão do dia (adendo extras v3, §E.7.1). */
+export const rotuloMotivoPresenca: Record<MotivoPresenca, string> = {
+  fora_vinculo: 'Fora do vínculo (desligado ou não admitido)',
+  falta_justificada: 'Falta justificada',
+  falta_injustificada: 'Falta injustificada',
+  suspensao: 'Suspensão',
+  ferias: 'Férias',
+  atestado: 'Atestado',
+  abono: 'Abono sem batida',
+  sem_batida: 'Sem batida (ponto do dia)',
+  folga_escala: 'Folga na escala',
+  sem_registro: 'Sem registro (ponto e escala)',
+}
+
+/** Curto, para selos. */
+export const rotuloMotivoPresencaCurto: Record<MotivoPresenca, string> = {
+  fora_vinculo: 'Desligado',
+  falta_justificada: 'Falta justificada',
+  falta_injustificada: 'Falta injustificada',
+  suspensao: 'Suspensão',
+  ferias: 'Férias',
+  atestado: 'Atestado',
+  abono: 'Abono',
+  sem_batida: 'Sem batida',
+  folga_escala: 'Folga',
+  sem_registro: 'Sem registro',
+}
+
+export const rotuloTipoFalta: Record<TipoFalta, string> = {
+  justificada: 'Falta justificada',
+  injustificada: 'Falta injustificada',
 }
 
 export const rotuloOrigemBatida: Record<OrigemBatida, string> = {

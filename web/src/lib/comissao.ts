@@ -7,14 +7,42 @@ import { centavosCsv, dataCsv, gerarCsv, nomeArquivoCsv } from './csv'
 export type ModoRateio = 'diario' | 'periodo'
 export type TipoParticipante = 'funcionario' | 'extra'
 
-/** Linha de `comissao_detalhe.itens[].entrada`: funcionário → um por dia; extra → um por lançamento do período. */
+/** Motivo de ausência do dia (adendo extras v3, §E.7.1). */
+export type MotivoPresencaDia =
+  | 'fora_vinculo'
+  | 'falta_justificada'
+  | 'falta_injustificada'
+  | 'suspensao'
+  | 'ferias'
+  | 'atestado'
+  | 'abono'
+  | 'sem_batida'
+  | 'folga_escala'
+  | 'sem_registro'
+
+/**
+ * Linha de `comissao_detalhe.itens[].entrada`: funcionário → um por dia; extra → um por lançamento do período.
+ * v3 (§E.7.7): funcionário traz `fallback`, `bloqueado`, `motivo`, `origem`; extra traz `pendente`. Campos ausentes = false/null
+ * (formato antigo: o fallback de último recurso pega todos os incluídos).
+ */
 export interface EntradaDiaParticipante {
   /** 'AAAA-MM-DD' */
   data: string
   presente: boolean
   /** funcionário: pontos vigentes na data; extra: pontos do lançamento (numeric(8,2)) */
   pontos: number
+  /** funcionário sem registro (fora da escala, sem ponto que valha): entra só se o dia tiver base > 0 */
+  fallback?: boolean
+  /** falta, suspensão, férias, atestado, abono sem batida, fora do vínculo: nunca entra (nem no último recurso) */
+  bloqueado?: boolean
+  motivo?: MotivoPresencaDia | null
+  origem?: 'ponto' | 'escala' | null
+  /** extra: dia com pontuação pendente (vale 0, não entra) */
+  pendente?: boolean
 }
+
+/** De onde veio a participação no dia (para exibir). */
+export type OrigemRateio = 'ponto' | 'escala' | 'fallback' | 'ultimo_recurso' | 'extra' | 'presente'
 
 export interface ParticipanteComissao {
   /** id do item (último critério de desempate do banco) */
@@ -68,6 +96,13 @@ export interface RateioDiaParticipante {
   valorCentavos: number
   fallback: boolean
   centavoExtra: boolean
+  origem: OrigemRateio
+}
+
+/** Funcionário incluído que ficou de fora do dia, com o motivo (§E.7.1). */
+export interface AusenteDia {
+  indice: number
+  motivo: MotivoPresencaDia
 }
 
 export interface DiaCalculado {
@@ -82,6 +117,8 @@ export interface DiaCalculado {
   semPresenca: boolean
   semParticipantes: boolean
   rateio: RateioDiaParticipante[]
+  /** incluídos (funcionários) fora do rateio do dia, com motivo conhecido */
+  ausentes: AusenteDia[]
 }
 
 export interface ItemCalculado extends ParticipanteComissao {
@@ -94,6 +131,13 @@ export interface ItemCalculado extends ParticipanteComissao {
   centavoExtra: boolean
   /** modo diário: dias em que entrou no rateio */
   diasNoRateio: number
+  /**
+   * dias presentes calculados pela prévia (§E.7.4): diário = dias `presente`; período = `presente` ou `fallback`.
+   * Snapshot / sem entrada: `diasTrabalhados` recebido.
+   */
+  diasPresentes: number
+  /** extra incluído com dia de pontuação pendente */
+  pontosPendente: boolean
 }
 
 export interface ResultadoComissao {
@@ -117,6 +161,8 @@ export interface ResultadoComissao {
   diasSemPresenca: number
   /** > 0 → o banco recusa fechar ('Há dias com serviço sem participantes para ratear') */
   diasSemParticipantes: number
+  /** v3: extras incluídos com dia pendente → o banco recusa fechar ('Há extras sem pontuação: preencha antes de fechar') */
+  extrasSemPontuacao: number
 }
 
 const ESCALA = 1_000_000n
@@ -166,6 +212,18 @@ function compararTexto(a: string, b: string): number {
 
 const tipoDe = (p: ParticipanteComissao): TipoParticipante => p.tipo ?? 'funcionario'
 const idDe = (p: ParticipanteComissao): string | null => (tipoDe(p) === 'extra' ? (p.extraId ?? null) : p.funcionarioId)
+
+/** Funcionário com presença por dia (não snapshot, com entrada). */
+const temEntradaDiaria = (p: ParticipanteComissao) => tipoDe(p) === 'funcionario' && p.funcionarioId != null && (p.entrada?.length ?? 0) > 0
+
+/** §E.7.4: dias presentes — diário: `presente`; período: `presente` ou `fallback`. Sem entrada: o valor recebido. */
+function diasPresentesDe(p: ParticipanteComissao, modo: ModoRateio): number {
+  if (!temEntradaDiaria(p)) return Math.trunc(p.diasTrabalhados)
+  return p.entrada!.filter((l) => l.presente || (modo === 'periodo' && !!l.fallback)).length
+}
+
+/** extra incluído com algum dia de pontuação pendente */
+const extraPendente = (p: ParticipanteComissao) => tipoDe(p) === 'extra' && p.incluido && (p.entrada ?? []).some((l) => !!l.pendente)
 
 /**
  * Desempate depois do resto (E.3.2 passo 6 / §9 passo 9): pontos desc, nome `collate "C"`, tipo (funcionário antes de extra),
@@ -227,13 +285,15 @@ function calcularPeriodo(e: EntradaComissao): ResultadoComissao {
   const efetivos = e.participantes.map((p) => {
     if (!p.incluido) return 0n
     if (tipoDe(p) === 'extra') {
-      const soma6 = (p.entrada ?? []).reduce((s, l) => s + escalar(l.pontos, 2) * 10_000n, 0n)
+      const soma6 = (p.entrada ?? []).reduce((s, l) => s + (l.pendente ? 0n : escalar(l.pontos, 2) * 10_000n), 0n)
       return diasPeriodo > 0 ? dividirArredondando(soma6, BigInt(diasPeriodo)) : 0n
     }
+    // §E.7.4: todos os dias bloqueados (desligado, férias/suspensão o período inteiro…) → 0
+    if (temEntradaDiaria(p) && p.entrada!.every((l) => !!l.bloqueado)) return 0n
     const pontos6 = escalar(p.pontos, 2) * 10_000n
     if (!e.proporcionalDias) return pontos6
     if (diasPeriodo <= 0) return 0n
-    return dividirArredondando(pontos6 * BigInt(Math.trunc(p.diasTrabalhados)), BigInt(diasPeriodo))
+    return dividirArredondando(pontos6 * BigInt(diasPresentesDe(p, 'periodo')), BigInt(diasPeriodo))
   })
   // 7. soma
   const soma = efetivos.reduce((s, v) => s + v, 0n)
@@ -249,6 +309,7 @@ function calcularPeriodo(e: EntradaComissao): ResultadoComissao {
     dias: [],
     diasSemPresenca: 0,
     diasSemParticipantes: 0,
+    extrasSemPontuacao: e.participantes.filter(extraPendente).length,
   }
 
   if (soma === 0n) {
@@ -259,6 +320,8 @@ function calcularPeriodo(e: EntradaComissao): ResultadoComissao {
       valorCentavos: 0,
       centavoExtra: false,
       diasNoRateio: 0,
+      diasPresentes: diasPresentesDe(p, 'periodo'),
+      pontosPendente: extraPendente(p),
     }))
     return { ...comum, somaPontosEfetivos: 0, valorPontoCentavos: null, itens, totalDistribuidoCentavos: 0, semParticipantes: true }
   }
@@ -282,6 +345,8 @@ function calcularPeriodo(e: EntradaComissao): ResultadoComissao {
       valorCentavos: r ? Number(r.valor) : 0,
       centavoExtra: r?.extra ?? false,
       diasNoRateio: 0,
+      diasPresentes: diasPresentesDe(p, 'periodo'),
+      pontosPendente: extraPendente(p),
     }
   })
 
@@ -349,32 +414,53 @@ function calcularDiario(e: EntradaComissao): ResultadoComissao {
     retencao += retencaoD
     base += baseD
 
-    // 4. presentes do dia
-    let presentes: { i: number; p: bigint; fallback: boolean }[] = []
+    // 4. presentes do dia (§E.7.7): `presente` + fallback individual (só com base > 0) + extras com pontuação
+    type Presente = { i: number; p: bigint; fallback: boolean; origem: OrigemRateio }
+    let presentes: Presente[] = []
+    const ausentes: AusenteDia[] = []
+    const pontosDoDia = (p: ParticipanteComissao, i: number, l: EntradaDiaParticipante | undefined) =>
+      p.pontosManual || p.funcionarioId == null ? pontosFixos[i]! : escalar(l?.pontos ?? 0, 2)
     e.participantes.forEach((p, i) => {
       if (!p.incluido) return
       const l = porData[i]!.get(data)
-      if (!l || !l.presente) return
-      const pts = tipoDe(p) === 'extra' ? escalar(l.pontos, 2) : p.pontosManual || p.funcionarioId == null ? pontosFixos[i]! : escalar(l.pontos, 2)
-      if (pts > 0n) presentes.push({ i, p: pts, fallback: false })
+      if (tipoDe(p) === 'extra') {
+        if (!l || !l.presente || l.pendente) return
+        const pts = escalar(l.pontos, 2)
+        if (pts > 0n) presentes.push({ i, p: pts, fallback: false, origem: 'extra' })
+        return
+      }
+      if (!l) return
+      if (l.presente) {
+        const pts = pontosDoDia(p, i, l)
+        if (pts > 0n) presentes.push({ i, p: pts, fallback: false, origem: l.origem ?? 'presente' })
+      } else if (l.fallback && baseD > 0n) {
+        const pts = pontosDoDia(p, i, l)
+        if (pts > 0n) presentes.push({ i, p: pts, fallback: true, origem: 'fallback' })
+      }
     })
-    // 5. fallback: dia com base > 0 e ninguém presente → todos os funcionários incluídos
-    let semPresenca = false
+    // 5. último recurso: dia com base > 0 e ninguém → funcionários incluídos não bloqueados (e snapshots)
+    let semPresenca = presentes.some((x) => x.fallback)
     let semParticipantes = false
     if (presentes.length === 0 && baseD > 0n) {
       e.participantes.forEach((p, i) => {
         if (!p.incluido || tipoDe(p) !== 'funcionario') return
-        const pts = p.pontosManual || p.funcionarioId == null ? pontosFixos[i]! : escalar(porData[i]!.get(data)?.pontos ?? 0, 2)
-        if (pts > 0n) presentes.push({ i, p: pts, fallback: true })
+        const l = porData[i]!.get(data)
+        if (l?.bloqueado) return
+        const pts = pontosDoDia(p, i, l)
+        if (pts > 0n) presentes.push({ i, p: pts, fallback: true, origem: 'ultimo_recurso' })
       })
-      if (presentes.length > 0) {
-        semPresenca = true
-        diasSemPresenca += 1
-      } else {
-        semParticipantes = true
-        diasSemParticipantes += 1
-      }
+      if (presentes.length > 0) semPresenca = true
+      else semParticipantes = true
     }
+    if (semPresenca) diasSemPresenca += 1
+    if (semParticipantes) diasSemParticipantes += 1
+    // quem ficou de fora (para exibir o motivo)
+    const noDia = new Set(presentes.map((x) => x.i))
+    e.participantes.forEach((p, i) => {
+      if (!p.incluido || tipoDe(p) !== 'funcionario' || noDia.has(i)) return
+      const m = porData[i]!.get(data)?.motivo
+      if (m) ausentes.push({ indice: i, motivo: m })
+    })
     // 6. rateio do dia
     const somaP = presentes.reduce((a, x) => a + x.p, 0n)
     somaTotal += somaP
@@ -392,11 +478,19 @@ function calcularDiario(e: EntradaComissao): ResultadoComissao {
         a.dias += 1
         a.extra ||= r[j]!.extra
         a.exato += Number(baseD * x.p) / Number(somaP)
-        return { indice: x.i, pontos: paraNumero(x.p, 100n), valorCentavos: Number(r[j]!.valor), fallback: x.fallback, centavoExtra: r[j]!.extra }
+        return {
+          indice: x.i,
+          pontos: paraNumero(x.p, 100n),
+          valorCentavos: Number(r[j]!.valor),
+          fallback: x.fallback,
+          centavoExtra: r[j]!.extra,
+          origem: x.origem,
+        }
       })
       // ordem de exibição do banco: nome collate "C", tipo, id
       rateio.sort((a, b) => desempate(0n, e.participantes[a.indice]!, 0n, e.participantes[b.indice]!))
     }
+    ausentes.sort((a, b) => desempate(0n, e.participantes[a.indice]!, 0n, e.participantes[b.indice]!))
     presentes = []
     return {
       data,
@@ -410,6 +504,7 @@ function calcularDiario(e: EntradaComissao): ResultadoComissao {
       semPresenca,
       semParticipantes,
       rateio,
+      ausentes,
     }
   })
 
@@ -422,6 +517,8 @@ function calcularDiario(e: EntradaComissao): ResultadoComissao {
       valorCentavos: Number(a.valor),
       centavoExtra: a.extra,
       diasNoRateio: a.dias,
+      diasPresentes: diasPresentesDe(p, 'diario'),
+      pontosPendente: extraPendente(p),
     }
   })
 
@@ -443,6 +540,7 @@ function calcularDiario(e: EntradaComissao): ResultadoComissao {
     dias,
     diasSemPresenca,
     diasSemParticipantes,
+    extrasSemPontuacao: e.participantes.filter(extraPendente).length,
   }
 }
 

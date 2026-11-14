@@ -1,8 +1,228 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 16 DE 17.
+-- Meu Dia de Gerente — instalação do banco, PARTE 15 DE 19.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000280_escala.sql. Não edite à mão.
 
 begin;
+create or replace function public.escala_membros_antes()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  select s.empresa_id into v_empresa from public.escala_setores s where s.id = new.setor_id;
+  if v_empresa is null then raise exception 'Setor não encontrado' using errcode = 'P0002'; end if;
+  new.empresa_id := v_empresa;
+  if not exists (select 1 from public.funcionarios f where f.id = new.funcionario_id and f.empresa_id = v_empresa) then
+    raise exception 'Funcionário de outra empresa' using errcode = '22023';
+  end if;
+  return new;
+end $$;
+comment on function public.escala_membros_antes() is '[interno] Gatilho: empresa do membro = do setor; funcionário da mesma empresa.';
+drop trigger if exists a_antes on public.escala_membros;
+create trigger a_antes before insert or update on public.escala_membros
+  for each row execute function public.escala_membros_antes();
+
+create or replace function public.escala_ajustes_antes()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare m record;
+begin
+  select x.empresa_id, x.funcionario_id into m from public.escala_membros x where x.id = new.membro_id;
+  if m.empresa_id is null then raise exception 'Funcionário fora da escala' using errcode = '22023'; end if;
+  new.empresa_id := m.empresa_id;
+  new.funcionario_id := m.funcionario_id;
+  return new;
+end $$;
+comment on function public.escala_ajustes_antes() is '[interno] Gatilho: empresa/funcionário do ajuste = do membro.';
+drop trigger if exists a_antes on public.escala_ajustes;
+create trigger a_antes before insert or update on public.escala_ajustes
+  for each row execute function public.escala_ajustes_antes();
+
+drop trigger if exists tocar_atualizado_em on public.escala_config;
+create trigger tocar_atualizado_em before update on public.escala_config
+  for each row execute function public.tocar_atualizado_em();
+drop trigger if exists tocar_atualizado_em on public.escala_setores;
+create trigger tocar_atualizado_em before update on public.escala_setores
+  for each row execute function public.tocar_atualizado_em();
+drop trigger if exists tocar_atualizado_em on public.escala_membros;
+create trigger tocar_atualizado_em before update on public.escala_membros
+  for each row execute function public.tocar_atualizado_em();
+drop trigger if exists tocar_atualizado_em on public.escala_ajustes;
+create trigger tocar_atualizado_em before update on public.escala_ajustes
+  for each row execute function public.tocar_atualizado_em();
+
+-- ================================================================ regra do rodízio (§S.2)
+-- Membros com a posição k (0-based) e o tamanho n do caminho; p_setor restringe a um setor (usado pelo ponto).
+create or replace function public.escala_membros_rodizio(p_empresa uuid, p_setor uuid default null)
+returns table (id uuid, funcionario_id uuid, setor_id uuid, caminho smallint, posicao smallint, k int, n int,
+               folgas_base smallint[], chegada_padrao time, fase_setor int, data_admissao date, data_desligamento date)
+language sql stable security definer rows 40 set search_path = public, extensions, pg_temp set jit = off as $$
+  select m.id, m.funcionario_id, m.setor_id, m.caminho, m.posicao,
+         (row_number() over (partition by m.setor_id, m.caminho order by m.posicao, m.id) - 1)::int,
+         (count(*) over (partition by m.setor_id, m.caminho))::int,
+         m.folgas_base, m.chegada_padrao, s.fase, f.data_admissao, f.data_desligamento
+    from public.escala_membros m
+    join public.escala_setores s on s.id = m.setor_id
+    join public.funcionarios f on f.id = m.funcionario_id
+   where m.empresa_id = p_empresa and (p_setor is null or m.setor_id = p_setor)
+$$;
+comment on function public.escala_membros_rodizio(uuid, uuid) is '[interno] Membros com posição (k) e tamanho (n) do caminho.';
+
+-- Número da semana (w) do dia em relação à âncora.
+create or replace function public.escala_semana_num(p_data date, p_ancora date)
+returns int language sql immutable set search_path = public, extensions, pg_temp as $$
+  select ((p_data - (extract(isodow from p_data)::int - 1)) - p_ancora) / 7
+$$;
+comment on function public.escala_semana_num(date, date) is '[interno] Semana do dia contada a partir da âncora (semana 0).';
+
+-- Escala calculada (regra + ajustes) para o período; p_funcionario restringe a um funcionário.
+create or replace function public.escala_calcular(p_empresa uuid, p_inicio date, p_fim date, p_funcionario uuid default null)
+returns table (funcionario_id uuid, membro_id uuid, setor_id uuid, data date, status text, status_auto text, origem text,
+               chegada time, ajustado boolean, ajuste_status text, ajuste_chegada time, motivo text)
+language sql stable security definer rows 40 set search_path = public, extensions, pg_temp set jit = off as $$
+  with cfg as (select c.ancora, c.fase from public.escala_config c where c.empresa_id = p_empresa),
+  mem as materialized (
+    select r.* from public.escala_membros_rodizio(p_empresa,
+             case when p_funcionario is not null
+                  then (select x.setor_id from public.escala_membros x where x.funcionario_id = p_funcionario) end) r
+     where p_funcionario is null
+        or exists (select 1 from public.escala_membros x where x.funcionario_id = p_funcionario)
+  ),
+  base as (
+    select b.*, g::date as d, cfg.ancora, cfg.fase as fase_emp
+      from mem b cross join cfg cross join generate_series(p_inicio, p_fim, interval '1 day') g
+     where p_funcionario is null or b.funcionario_id = p_funcionario
+  ),
+  calc as (
+    select b.*,
+           case when b.d < b.ancora or not public.ponto_no_vinculo(b.data_admissao, b.data_desligamento, b.d) then 'fora'
+                when (extract(isodow from b.d)::int - 1)::smallint = any (alvo.folgas_base) then 'folga'
+                else 'trabalha' end as st_auto
+      from base b
+      left join lateral (
+        select a.folgas_base from mem a
+         where (b.caminho is null and a.id = b.id)
+            or (b.caminho is not null and a.setor_id = b.setor_id and a.caminho = b.caminho
+                and a.k = (((b.k + public.escala_semana_num(b.d, b.ancora) + b.fase_emp + b.fase_setor) % b.n) + b.n) % b.n)
+        limit 1
+      ) alvo on true
+  )
+  select c.funcionario_id, c.id, c.setor_id, c.d,
+         case when c.st_auto = 'fora' then 'fora' else coalesce(aj.status, c.st_auto) end,
+         c.st_auto,
+         case when c.st_auto <> 'fora' and aj.status is not null then 'ajuste' else 'auto' end,
+         case when c.st_auto <> 'fora' and coalesce(aj.status, c.st_auto) = 'trabalha' then coalesce(aj.chegada, c.chegada_padrao) end,
+         c.st_auto <> 'fora' and aj.id is not null,
+         aj.status, aj.chegada, aj.motivo
+    from calc c
+    left join public.escala_ajustes aj on aj.funcionario_id = c.funcionario_id and aj.data = c.d
+$$;
+comment on function public.escala_calcular(uuid, date, date, uuid) is '[interno] Escala calculada (rodízio + ajustes) por funcionário × dia (§S.2).';
+
+-- Usada por ponto_calcular_dia (…0200): status da escala no dia (null = fora da escala) e chegada.
+create or replace function public.escala_status_ponto(p_funcionario uuid, p_data date, out status text, out chegada time)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp set jit = off as $$
+declare v_empresa uuid; c record;
+begin
+  select m.empresa_id into v_empresa from public.escala_membros m where m.funcionario_id = p_funcionario;
+  if v_empresa is null then return; end if;
+  select * into c from public.escala_calcular(v_empresa, p_data, p_data, p_funcionario) x;
+  if c.status is null or c.status = 'fora' then return; end if;
+  status := c.status;
+  chegada := c.chegada;
+end $$;
+comment on function public.escala_status_ponto(uuid, date) is '[interno] Status da escala no dia para a apuração (adendo escala §S.5).';
+
+-- ================================================================ auxiliares
+create or replace function public.escala_hoje(p_empresa uuid)
+returns date language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  select public.dia_de_trabalho(public.agora(), p_empresa)
+$$;
+comment on function public.escala_hoje(uuid) is '[interno] Dia de trabalho atual da empresa.';
+
+-- Reapura os funcionários no período, limitado a [hoje − 61, hoje] (adendo §S.5).
+create or replace function public.escala_reapurar(p_empresa uuid, p_funcionarios uuid[], p_inicio date default null,
+                                                  p_fim date default null)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_hoje date; v_ini date; v_fim date; v_f uuid;
+begin
+  if p_funcionarios is null then return; end if;
+  v_hoje := public.escala_hoje(p_empresa);
+  v_ini := greatest(coalesce(p_inicio, v_hoje - 61), v_hoje - 61);
+  v_fim := least(coalesce(p_fim, v_hoje), v_hoje);
+  if v_ini > v_fim then return; end if;
+  for v_f in select distinct x from unnest(p_funcionarios) x where x is not null order by 1 loop
+    perform public.ponto_apurar(v_f, v_ini, v_fim);
+  end loop;
+end $$;
+comment on function public.escala_reapurar(uuid, uuid[], date, date) is '[interno] Reapura funcionários afetados pela escala (máx. 62 dias).';
+
+create or replace function public.escala_funcionarios_dos_setores(p_setores uuid[])
+returns uuid[] language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  select coalesce(array_agg(m.funcionario_id), '{}') from public.escala_membros m where m.setor_id = any (p_setores)
+$$;
+comment on function public.escala_funcionarios_dos_setores(uuid[]) is '[interno] Funcionários dos setores.';
+
+-- Configuração da empresa (cria com âncora = segunda da semana atual, se não existir).
+create or replace function public.escala_garantir_config(p_empresa uuid)
+returns public.escala_config language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare c public.escala_config; v_hoje date;
+begin
+  select * into c from public.escala_config where empresa_id = p_empresa;
+  if found then return c; end if;
+  v_hoje := public.escala_hoje(p_empresa);
+  insert into public.escala_config (empresa_id, ancora, fase)
+  values (p_empresa, v_hoje - (extract(isodow from v_hoje)::int - 1), 0)
+  on conflict (empresa_id) do nothing;
+  select * into c from public.escala_config where empresa_id = p_empresa;
+  return c;
+end $$;
+comment on function public.escala_garantir_config(uuid) is '[interno] Garante a configuração da escala (âncora padrão = segunda atual).';
+
+create or replace function public.escala_validar_fase(p_fase int)
+returns int language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+begin
+  if p_fase is null then return 0; end if;
+  if p_fase < -1000 or p_fase > 1000 then raise exception 'Fase inválida' using errcode = '22023'; end if;
+  return p_fase;
+end $$;
+comment on function public.escala_validar_fase(int) is '[interno] Valida a fase (−1000..1000).';
+
+create or replace function public.escala_validar_folgas(p_folgas smallint[])
+returns smallint[] language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+declare v smallint[];
+begin
+  if p_folgas is null then return '{}'; end if;
+  if exists (select 1 from unnest(p_folgas) x where x is null or x < 0 or x > 6) then
+    raise exception 'Folgas inválidas' using errcode = '22023';
+  end if;
+  select coalesce(array_agg(distinct x order by x), '{}') into v from unnest(p_folgas) x;
+  if coalesce(array_length(v, 1), 0) > 6 or coalesce(array_length(v, 1), 0) <> coalesce(array_length(p_folgas, 1), 0) then
+    raise exception 'Folgas inválidas' using errcode = '22023';
+  end if;
+  return v;
+end $$;
+comment on function public.escala_validar_folgas(smallint[]) is '[interno] Folgas da semana base: 0..6 sem repetição, até 6 dias; ordena.';
+
+create or replace function public.escala_status_param(p_status text)
+returns text language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+begin
+  if p_status is null or p_status in ('auto', 'automatico') then return null; end if;
+  if p_status not in ('trabalha', 'folga', 'ferias') then
+    raise exception 'Status inválido' using errcode = '22023';
+  end if;
+  return p_status;
+end $$;
+comment on function public.escala_status_param(text) is '[interno] Status do ajuste: trabalha/folga/ferias; null ou auto = automático.';
+
+create or replace function public.escala_setor_para_operar(p_setor uuid)
+returns public.escala_setores language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare s public.escala_setores;
+begin
+  select * into s from public.escala_setores where id = p_setor;
+  if not found then raise exception 'Setor não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(s.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  return s;
+end $$;
+comment on function public.escala_setor_para_operar(uuid) is '[interno] Setor existente e operável (G A M).';
+
 create or replace function public.escala_membro_para_operar(p_funcionario uuid)
 returns public.escala_membros language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid; m public.escala_membros;
@@ -137,7 +357,8 @@ create or replace function public.escala_dia_json(p_empresa uuid, p_funcionario 
 returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
   select jsonb_build_object('funcionario_id', c.funcionario_id, 'data', c.data, 'status', c.status, 'origem', c.origem,
                             'chegada', public.escala_hora(c.chegada), 'ajustado', c.ajustado,
-                            'motivo', case when p_motivo then c.motivo end)
+                            'motivo', case when p_motivo then c.motivo end,
+                            'falta', public.ponto_falta_do_dia(c.funcionario_id, c.data))
     from public.escala_calcular(p_empresa, p_data, p_data, p_funcionario) c
 $$;
 comment on function public.escala_dia_json(uuid, uuid, date, boolean) is '[interno] Objeto-dia da escala (adendo §S.8).';
@@ -229,196 +450,5 @@ end $$;
 comment on function public.escala_salvar_membro(uuid, uuid, smallint[], time, smallint, smallint, int) is
   '[api] Põe/atualiza um funcionário num setor da escala (upsert por funcionário) e reapura.';
 
-create or replace function public.escala_definir_membros(p_setor uuid, p_membros jsonb)
-returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  s public.escala_setores; v_afetados uuid[]; v_lista uuid[]; x jsonb; i int := 0;
-  v_func uuid; v_folgas smallint[]; v_cheg time; v_cam smallint; v_pos smallint;
-begin
-  s := public.escala_setor_para_operar(p_setor);
-  if p_membros is null or jsonb_typeof(p_membros) <> 'array' then
-    raise exception 'Lista de membros inválida' using errcode = '22023';
-  end if;
-  begin
-    select coalesce(array_agg((e ->> 'funcionario_id')::uuid), '{}') into v_lista from jsonb_array_elements(p_membros) e;
-  exception when others then
-    raise exception 'Lista de membros inválida' using errcode = '22023';
-  end;
-  if exists (select 1 from unnest(v_lista) u where u is null) then
-    raise exception 'Lista de membros inválida' using errcode = '22023';
-  end if;
-  if (select count(distinct u) from unnest(v_lista) u) <> coalesce(array_length(v_lista, 1), 0) then
-    raise exception 'Funcionário repetido na lista' using errcode = '22023';
-  end if;
-  v_afetados := public.escala_funcionarios_dos_setores(array[p_setor])
-             || public.escala_funcionarios_dos_setores(
-                  (select coalesce(array_agg(distinct m.setor_id), '{}') from public.escala_membros m where m.funcionario_id = any (v_lista)))
-             || v_lista;
-  delete from public.escala_membros where setor_id = p_setor and not (funcionario_id = any (v_lista));
-  update public.escala_membros set caminho = null, posicao = null where setor_id = p_setor;
-  for x in select * from jsonb_array_elements(p_membros) loop
-    i := i + 1;
-    begin
-      v_func := (x ->> 'funcionario_id')::uuid;
-      v_folgas := case when jsonb_typeof(x -> 'folgas_base') = 'array'
-                       then array(select jsonb_array_elements_text(x -> 'folgas_base')::smallint) else '{}'::smallint[] end;
-      v_cheg := nullif(x ->> 'chegada_padrao', '')::time;
-      v_cam := (x ->> 'caminho')::smallint;
-      v_pos := (x ->> 'posicao')::smallint;
-    exception when others then
-      raise exception 'Lista de membros inválida' using errcode = '22023';
-    end;
-    perform public.escala_gravar_membro(p_setor, v_func, v_folgas, v_cheg, v_cam, v_pos, i);
-  end loop;
-  perform public.escala_reapurar(s.empresa_id, v_afetados, (select c.ancora from public.escala_config c where c.empresa_id = s.empresa_id));
-  return i;
-end $$;
-comment on function public.escala_definir_membros(uuid, jsonb) is '[api] Substitui a lista de membros do setor (ordem e caminhos) e reapura.';
-
-create or replace function public.escala_remover_membro(p_funcionario uuid)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare m public.escala_membros; v_func uuid[];
-begin
-  m := public.escala_membro_para_operar(p_funcionario);
-  v_func := public.escala_funcionarios_dos_setores(array[m.setor_id]);
-  delete from public.escala_membros where id = m.id;
-  perform public.escala_reapurar(m.empresa_id, v_func, (select c.ancora from public.escala_config c where c.empresa_id = m.empresa_id));
-end $$;
-comment on function public.escala_remover_membro(uuid) is '[api] Tira o funcionário da escala (apaga seus ajustes) e reapura.';
-
-create or replace function public.escala_adicionar_funcionario(p_setor uuid, p_nome text, p_cargo text default null,
-                                                               p_folgas_base smallint[] default '{}', p_chegada_padrao time default null,
-                                                               p_caminho smallint default null, p_posicao smallint default null)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare s public.escala_setores; v_nome text; v_func uuid;
-begin
-  s := public.escala_setor_para_operar(p_setor);
-  v_nome := nullif(btrim(coalesce(p_nome, '')), '');
-  if v_nome is null then raise exception 'Informe o nome' using errcode = '22023'; end if;
-  insert into public.funcionarios (empresa_id, nome, cargo, pontos_comissao)
-  values (s.empresa_id, v_nome, nullif(btrim(coalesce(p_cargo, '')), ''), 0)
-  returning id into v_func;
-  perform public.escala_gravar_membro(p_setor, v_func, p_folgas_base, p_chegada_padrao, p_caminho, p_posicao, null);
-  perform public.escala_reapurar(s.empresa_id, public.escala_funcionarios_dos_setores(array[p_setor]),
-                                 (select c.ancora from public.escala_config c where c.empresa_id = s.empresa_id));
-  return v_func;
-end $$;
-comment on function public.escala_adicionar_funcionario(uuid, text, text, smallint[], time, smallint, smallint) is
-  '[api] Cadastra um funcionário e o põe num setor da escala; retorna o id do funcionário.';
-
--- Modelo do cliente (docs/referencias/escala-macaw-v3.html), §S.7.8.
-create or replace function public.escala_aplicar_modelo_macaw(p_empresa uuid default null, p_ancora date default null)
-returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_empresa uuid; v_cfg public.escala_config; r record; v_setor uuid; v_func uuid; v_membro uuid;
-  v_setores int := 0; v_membros int := 0; v_criados int := 0; v_pos smallint; v_chave text; v_setores_ids uuid[] := '{}';
-begin
-  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
-  if p_ancora is not null then
-    perform public.escala_configurar(p_ancora, coalesce((select c.fase from public.escala_config c where c.empresa_id = v_empresa), 0),
-                                     v_empresa);
-  end if;
-  v_cfg := public.escala_garantir_config(v_empresa);
-
-  for r in
-    select * from (values
-      ('Salão', 1, 1, 'Garçom 1', 'Garçom', '{2,3}', 1, 1), ('Salão', 1, 2, 'Garçom 2', 'Garçom', '{2,3}', 1, 2),
-      ('Salão', 1, 3, 'Garçom 3', 'Garçom', '{2,3}', 1, 3), ('Salão', 1, 4, 'Cumim 2', 'Cumim', '{2,6}', 1, 4),
-      ('Salão', 1, 5, 'Garçom 4', 'Garçom', '{0,1}', 2, 1), ('Salão', 1, 6, 'Garçom 5', 'Garçom', '{0,1}', 2, 2),
-      ('Salão', 1, 7, 'Garçom 6', 'Garçom', '{0,1}', 2, 3), ('Salão', 1, 8, 'Cumim 1', 'Cumim', '{1,6}', 2, 4),
-      ('Maître', 2, 1, 'Maître 1', 'Maître', '{0,1}', 1, 2), ('Maître', 2, 2, 'Maître 2', 'Maître', '{1,3}', 1, 1),
-      ('Maître', 2, 3, 'Maître 3', 'Maître', '{2,3}', 1, 4), ('Maître', 2, 4, 'Gerente', 'Gerente', '{2}', null, null),
-      ('Maître', 2, 5, 'Recepção', 'Recepção', '{0,6}', 1, 3),
-      ('Areia', 3, 1, 'Areia 1', 'Areia', '{0,6}', 1, 2), ('Areia', 3, 2, 'Areia 2', 'Areia', '{0,1}', 1, 1),
-      ('Areia', 3, 3, 'Areia 3', 'Areia', '{2,3}', 1, 3), ('Areia', 3, 4, 'Areia 4', 'Areia', '{2,3}', 1, 4),
-      ('Areia', 3, 5, 'Areia 5', 'Areia', '{1,4}', 1, 5),
-      ('Bar', 4, 1, 'Bar 1', 'Bar', '{0,6}', 1, 1), ('Bar', 4, 2, 'Bar 2', 'Bar', '{0,1}', 1, 4),
-      ('Bar', 4, 3, 'Bar 3', 'Bar', '{2,3}', 1, 3), ('Bar', 4, 4, 'Bar 4', 'Bar', '{2,3}', 1, 2),
-      ('ASG', 5, 1, 'ASG 1', 'ASG', '{0,6}', 1, 1), ('ASG', 5, 2, 'ASG 2', 'ASG', '{1,2}', 1, 2),
-      ('ASG', 5, 3, 'ASG 3', 'ASG', '{3,4}', 1, 3),
-      ('Cozinha', 6, 1, 'Chef', 'Chef', '{3}', null, null), ('Cozinha', 6, 2, 'Cozinha 1', 'Cozinha', '{0,1}', 1, 3),
-      ('Cozinha', 6, 3, 'Cozinha 2', 'Cozinha', '{0,1}', 1, 2), ('Cozinha', 6, 4, 'Cozinha 3', 'Cozinha', '{0,6}', 1, 1),
-      ('Cozinha', 6, 5, 'Cozinha 4', 'Cozinha', '{1,2}', 2, 1), ('Cozinha', 6, 6, 'Cozinha 5', 'Cozinha', '{2,3}', 2, 2),
-      ('Cozinha', 6, 7, 'Cozinha 6', 'Cozinha', '{3,6}', 2, 3), ('Cozinha', 6, 8, 'Cozinha 7', 'Cozinha', '{2,4}', 2, 4)
-    ) as t(setor, ordem_setor, ordem, nome, cargo, folgas, caminho, posicao)
-    order by ordem_setor, ordem
-  loop
-    select x.id into v_setor from public.escala_setores x where x.empresa_id = v_empresa and lower(btrim(x.nome)) = lower(r.setor);
-    if v_setor is null then
-      insert into public.escala_setores (empresa_id, nome, ordem) values (v_empresa, r.setor, r.ordem_setor) returning id into v_setor;
-      v_setores := v_setores + 1;
-    end if;
-    if not (v_setor = any (v_setores_ids)) then v_setores_ids := v_setores_ids || v_setor; end if;
-    v_chave := r.setor || '|' || r.nome;
-    continue when exists (select 1 from public.escala_membros m where m.empresa_id = v_empresa and m.modelo_posicao = v_chave);
-    -- funcionário de mesmo nome: já na escala → só marca a posição do modelo; fora da escala → entra nela
-    select f.id, m.id into v_func, v_membro
-      from public.funcionarios f left join public.escala_membros m on m.funcionario_id = f.id
-     where f.empresa_id = v_empresa and lower(btrim(f.nome)) = lower(r.nome)
-     order by (m.id is null) desc, f.criado_em, f.id
-     limit 1;
-    if v_membro is not null then
-      update public.escala_membros set modelo_posicao = v_chave where id = v_membro and modelo_posicao is null;
-      continue;
-    end if;
-    if v_func is null then
-      insert into public.funcionarios (empresa_id, nome, cargo, pontos_comissao) values (v_empresa, r.nome, r.cargo, 0)
-      returning id into v_func;
-      v_criados := v_criados + 1;
-    end if;
-    v_pos := r.posicao;
-    if r.caminho is not null and exists (select 1 from public.escala_membros m
-                                          where m.setor_id = v_setor and m.caminho = r.caminho and m.posicao = v_pos) then
-      v_pos := null;    -- posição ocupada → próxima livre do caminho
-    end if;
-    perform public.escala_gravar_membro(v_setor, v_func, r.folgas::smallint[], null, r.caminho::smallint, v_pos, r.ordem, v_chave);
-    v_membros := v_membros + 1;
-  end loop;
-
-  perform public.escala_reapurar(v_empresa, public.escala_funcionarios_dos_setores(v_setores_ids), v_cfg.ancora);
-  return jsonb_build_object('ancora', (select c.ancora from public.escala_config c where c.empresa_id = v_empresa),
-                            'setores', v_setores, 'membros', v_membros, 'funcionarios_criados', v_criados);
-end $$;
-comment on function public.escala_aplicar_modelo_macaw(uuid, date) is
-  '[api] Monta setores, caminhos e posições do modelo Macaw (cria funcionários provisórios); idempotente.';
-
--- ================================================================ RPCs de ajuste
-create or replace function public.escala_ajustar(p_funcionario uuid, p_data date, p_status text default null,
-                                                 p_chegada time default null, p_motivo text default null)
-returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare m public.escala_membros; v_status text; c record;
-begin
-  m := public.escala_membro_para_operar(p_funcionario);
-  v_status := public.escala_status_param(p_status);
-  perform public.escala_validar_data(m.empresa_id, p_data);
-  select * into c from public.escala_calcular(m.empresa_id, p_data, p_data, p_funcionario) x;
-  if c.status is null or c.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
-  perform public.escala_gravar_dia(m.id, p_data, v_status, p_chegada, p_motivo);
-  perform public.escala_reapurar(m.empresa_id, array[p_funcionario], p_data, p_data);
-  return public.escala_dia_json(m.empresa_id, p_funcionario, p_data, true);
-end $$;
-comment on function public.escala_ajustar(uuid, date, text, time, text) is '[api] Define o estado de um dia da escala (status/chegada) e reapura.';
-
-create or replace function public.escala_ajustar_periodo(p_funcionario uuid, p_inicio date, p_fim date, p_status text,
-                                                         p_motivo text default null)
-returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare m public.escala_membros; v_status text; c record; v_n int := 0;
-begin
-  m := public.escala_membro_para_operar(p_funcionario);
-  v_status := public.escala_status_param(p_status);
-  perform public.ponto_validar_periodo(p_inicio, p_fim, 62);
-  perform public.escala_validar_data(m.empresa_id, p_inicio);
-  perform public.escala_validar_data(m.empresa_id, p_fim);
-  for c in select * from public.escala_calcular(m.empresa_id, p_inicio, p_fim, p_funcionario) x order by x.data loop
-    continue when c.status = 'fora';
-    perform public.escala_gravar_dia(m.id, c.data, v_status, c.ajuste_chegada, p_motivo);
-    v_n := v_n + 1;
-  end loop;
-  perform public.escala_reapurar(m.empresa_id, array[p_funcionario], p_inicio, p_fim);
-  return v_n;
-end $$;
-comment on function public.escala_ajustar_periodo(uuid, date, date, text, text) is
-  '[api] Mesmo status em vários dias (ex.: férias), mantendo a chegada ajustada; reapura.';
-
 commit;
-select 'parte 16 de 17 instalada' as resultado;
+select 'parte 15 de 19 instalada' as resultado;
