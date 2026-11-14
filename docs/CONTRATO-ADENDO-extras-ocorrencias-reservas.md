@@ -1,6 +1,10 @@
 # Adendo ao contrato — Ocorrências disciplinares, Extras (freelas, dias trabalhados, rateio diário, gastos) e Reservas (Tagme)
 
 > **Versão 2** — seção E reescrita (extras = freelas/diaristas; comissão com rateio diário). Seções O e R sem mudança.
+>
+> **Versão 3** — §E.7 (novo, pedido do cliente): **presença do dia** da comissão (ponto, escala, fallback individual),
+> **faltas** (justificada/injustificada), desligamento, **extras com pontuação pendente** e **importação de extras** em lote.
+> Onde E.3 e E.7 divergirem, **E.7 vale**. Migração nova `…0290_comissao_presenca.sql`; teste `58_comissao_presenca.sql`.
 
 Dono: **backend** (banco). Implementam contra este adendo: **frontend** (`web/`) e **N8N** (`n8n/`).
 Complementa `docs/CONTRATO.md`; onde houver conflito, **este adendo vale**. Convenções de sempre (§2): etiquetas no
@@ -19,7 +23,9 @@ Migrações:
 | `…0260_extras.sql` (nova) | cadastro `extras`, `diarias` (extra ou funcionário), valor padrão de diária, `gastos_periodo`, RPCs (§E) |
 | `…0270_reservas.sql` (nova) | `reservas`, RPCs, importação CSV, `ingestao_reservas` |
 
-Testes: `supabase/testes/70_ocorrencias.sql`, `72_extras.sql`, `74_reservas.sql`. Carga demo: `supabase/seed/30_demo_extras.sql`.
+| `…0290_comissao_presenca.sql` (nova, v3) | `funcionario_faltas` + RPCs, presença do dia (`comissao_presenca`), `comissao_calcular`/`comissao_detalhe`/`comissao_fechar` (movidas da …0220), extras pendentes, `extras_importar`, recálculo de rascunhos (§E.7) |
+
+Testes: `supabase/testes/70_ocorrencias.sql`, `72_extras.sql`, `74_reservas.sql`, `58_comissao_presenca.sql` (v3). Carga demo: `supabase/seed/30_demo_extras.sql`.
 
 ---
 
@@ -294,12 +300,13 @@ Período `[data_inicio, data_fim]` com `D = dias_periodo` dias, loja opcional, `
    porque a parte do ajuste nunca passa do serviço do dia quando `A ≥ −servico_zig`), **`retencao = Σ retencao_d`** (pode diferir em centavos de `round(bruto × pct/100)` do
    modo período — é a regra), `base_distribuivel = Σ base_d`.
 4. **Participantes do dia** (só itens `incluido = true`):
-   - funcionário com `ponto_dias.batidas_validas > 0` no dia `d`, com `pontos_d` = `item.pontos` se `pontos_manual`, senão
-     `pontos_vigentes(funcionário, d)`; suspensão/abono/falta = sem presença;
+   - *(v3)* funcionário **presente no dia** pela regra do §E.7.1 (ponto → escala → fallback individual; falta, suspensão, férias,
+     atestado, abono individual e fora do vínculo nunca), com `pontos_d` = `item.pontos` se `pontos_manual`, senão
+     `pontos_vigentes(funcionário, d)`;
    - extra com lançamento (`diarias.tipo = 'extra'`) no dia `d`, com `pontos_d` = `diarias.pontos` do lançamento;
    - só entra quem tem `pontos_d > 0`.
-5. **Fallback** (dia com `base_d > 0` e **ninguém** presente — ex.: ponto ainda não integrado): participam **todos os funcionários
-   incluídos** com `pontos_d > 0` (`item.pontos` se `pontos_manual` ou se o funcionário foi excluído — snapshot sem id —, senão os
+5. **Fallback** *(v3: só como último recurso — o fallback normal agora é individual, §E.7.1)* (dia com `base_d > 0` e **ninguém**
+   presente nem no fallback individual): participam **todos os funcionários incluídos não bloqueados** (§E.7.1) com `pontos_d > 0` (`item.pontos` se `pontos_manual` ou se o funcionário foi excluído — snapshot sem id —, senão os
    vigentes do dia); o dia fica `sem_presenca = true` e o item `fallback = true` (o front avisa "dia sem presença registrada").
    Extras nunca entram por fallback. Se nem assim houver alguém: `sem_participantes = true`, nada é rateado no dia e
    **fechar é recusado** com `Há dias com serviço sem participantes para ratear` (22023).
