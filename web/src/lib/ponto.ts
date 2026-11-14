@@ -147,6 +147,11 @@ export function instanteDoHorario(data: string, hora: string, fuso: string = FUS
 }
 
 /** Instantes previstos E1..Ek do dia (mesmo formato de `ponto_espelho.esperadas`). */
+/**
+ * Instantes esperados pela JORNADA. Atenção (adendo escala §S.5): para funcionário que está na escala, as esperadas do dia
+ * dependem da escala (folga = nenhuma; trabalha = jornada deslocada para a chegada da escala). Nas telas use sempre as
+ * `esperadas` devolvidas pelo banco (`ponto_espelho` / `ponto_dia_empresa`) — esta função serve só para prévias e testes.
+ */
 export function instantesEsperados(data: string, jd: HorariosDia, fuso: string = FUSO_PADRAO, virada = '05:00'): EsperadaEspelho[] {
   return slotsDoDia(jd).map((s) => ({ batida: s.batida, instante: instanteDoHorario(data, s.hora, fuso, virada).toISOString() }))
 }

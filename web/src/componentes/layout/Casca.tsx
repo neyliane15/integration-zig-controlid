@@ -2,27 +2,41 @@
  * Casca do app logado: barra lateral fixa (≥1024px), barra superior + menu inferior + gaveta (celular).
  * Dono: frontend-1.
  */
-import { Suspense, useEffect, useState } from 'react'
-import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
-import clsx from 'clsx'
-import { Building2, LogOut, Menu as IconeMenu, Monitor, Moon, MoreHorizontal, Sun, X } from 'lucide-react'
-import { useSessao, useEmpresaAtual, usePerfil } from '@/lib/sessao'
-import { rotuloPapel } from '@/lib/rotulos'
-import { ehMaster } from '@/lib/permissoes'
-import { useTema, type Tema } from '@/lib/tema'
-import { Carregando, FOCO, Vazio } from '../ui'
-import { Marca } from './Marca'
-import { MenuLateral, itensDoPapel } from './Menu'
-import { SeletorEmpresa } from './SeletorEmpresa'
+import { Suspense, useEffect, useState } from "react";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import clsx from "clsx";
+import {
+  Building2,
+  LogOut,
+  Menu as IconeMenu,
+  Monitor,
+  Moon,
+  MoreHorizontal,
+  Sun,
+  X,
+} from "lucide-react";
+import { useSessao, useEmpresaAtual, usePerfil } from "@/lib/sessao";
+import { rotuloPapel } from "@/lib/rotulos";
+import { ehMaster } from "@/lib/permissoes";
+import { useTema, type Tema } from "@/lib/tema";
+import { Carregando, FOCO, Vazio } from "../ui";
+import { Marca } from "./Marca";
+import { MenuLateral, itensDoPapel } from "./Menu";
+import { SeletorEmpresa } from "./SeletorEmpresa";
 
 function iniciais(nome: string): string {
-  const partes = nome.trim().split(/\s+/)
-  return ((partes[0]?.[0] ?? '') + (partes.length > 1 ? (partes[partes.length - 1]?.[0] ?? '') : '')).toUpperCase() || '?'
+  const partes = nome.trim().split(/\s+/);
+  return (
+    (
+      (partes[0]?.[0] ?? "") +
+      (partes.length > 1 ? (partes[partes.length - 1]?.[0] ?? "") : "")
+    ).toUpperCase() || "?"
+  );
 }
 
 function BlocoUsuario() {
-  const perfil = usePerfil()
-  const { sair } = useSessao()
+  const perfil = usePerfil();
+  const { sair } = useSessao();
   return (
     <div className="flex items-center gap-3 rounded-entrada border border-borda bg-cartao/60 p-2.5">
       <span
@@ -32,32 +46,53 @@ function BlocoUsuario() {
         {iniciais(perfil.nome)}
       </span>
       <div className="min-w-0 flex-1 leading-tight">
-        <p className="truncate text-sm font-semibold text-creme">{perfil.nome}</p>
-        <p className="truncate text-xs text-lavanda">{rotuloPapel[perfil.papel]}</p>
+        <p className="truncate text-sm font-semibold text-creme">
+          {perfil.nome}
+        </p>
+        <p className="truncate text-xs text-lavanda">
+          {rotuloPapel[perfil.papel]}
+        </p>
       </div>
       <button
         type="button"
         onClick={() => void sair()}
         aria-label="Sair"
         title="Sair"
-        className={clsx('rounded-lg p-2 text-lavanda transition-colors hover:bg-cartao-2 hover:text-creme', FOCO)}
+        className={clsx(
+          "rounded-lg p-2 text-lavanda transition-colors hover:bg-cartao-2 hover:text-creme",
+          FOCO,
+        )}
       >
         <LogOut aria-hidden className="size-4" />
       </button>
     </div>
-  )
+  );
 }
 
-const OPCOES_TEMA: { id: Tema; rotulo: string; curto: string; icone: typeof Sun }[] = [
-  { id: 'claro', rotulo: 'Claro', curto: 'Claro', icone: Sun },
-  { id: 'escuro', rotulo: 'Escuro', curto: 'Escuro', icone: Moon },
-  { id: 'auto', rotulo: 'Automático (do sistema)', curto: 'Auto', icone: Monitor },
-]
+const OPCOES_TEMA: {
+  id: Tema;
+  rotulo: string;
+  curto: string;
+  icone: typeof Sun;
+}[] = [
+  { id: "claro", rotulo: "Claro", curto: "Claro", icone: Sun },
+  { id: "escuro", rotulo: "Escuro", curto: "Escuro", icone: Moon },
+  {
+    id: "auto",
+    rotulo: "Automático (do sistema)",
+    curto: "Auto",
+    icone: Monitor,
+  },
+];
 
 function AlternadorTema() {
-  const [tema, definir] = useTema()
+  const [tema, definir] = useTema();
   return (
-    <div role="radiogroup" aria-label="Tema" className="flex gap-1 rounded-entrada border border-borda bg-cartao/60 p-1">
+    <div
+      role="radiogroup"
+      aria-label="Tema"
+      className="flex gap-1 rounded-entrada border border-borda bg-cartao/60 p-1"
+    >
       {OPCOES_TEMA.map((o) => (
         <button
           key={o.id}
@@ -68,8 +103,10 @@ function AlternadorTema() {
           title={`Tema ${o.rotulo.toLowerCase()}`}
           onClick={() => definir(o.id)}
           className={clsx(
-            'flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors',
-            tema === o.id ? 'bg-ouro text-tinta-ouro' : 'text-lavanda hover:bg-cartao-2 hover:text-creme',
+            "flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition-colors",
+            tema === o.id
+              ? "bg-ouro text-tinta-ouro"
+              : "text-lavanda hover:bg-cartao-2 hover:text-creme",
             FOCO,
           )}
         >
@@ -78,25 +115,31 @@ function AlternadorTema() {
         </button>
       ))}
     </div>
-  )
+  );
 }
 
 function NomeEmpresa() {
-  const { empresa } = useEmpresaAtual()
-  if (!empresa) return null
+  const { empresa } = useEmpresaAtual();
+  if (!empresa) return null;
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-entrada border border-borda bg-cartao/50 px-3 py-2">
       <Building2 aria-hidden className="size-4 shrink-0 text-ouro" />
-      <span className="truncate text-sm font-semibold text-creme">{empresa.nome}</span>
+      <span className="truncate text-sm font-semibold text-creme">
+        {empresa.nome}
+      </span>
     </div>
-  )
+  );
 }
 
 function ConteudoLateral({ aoNavegar }: { aoNavegar?(): void }) {
-  const perfil = usePerfil()
+  const perfil = usePerfil();
   return (
     <div className="flex h-full flex-col gap-6">
-      {ehMaster(perfil.papel) ? <SeletorEmpresa aoTrocar={aoNavegar} /> : <NomeEmpresa />}
+      {ehMaster(perfil.papel) ? (
+        <SeletorEmpresa aoTrocar={aoNavegar} />
+      ) : (
+        <NomeEmpresa />
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-width:thin]">
         <MenuLateral papel={perfil.papel} aoNavegar={aoNavegar} />
       </div>
@@ -105,30 +148,35 @@ function ConteudoLateral({ aoNavegar }: { aoNavegar?(): void }) {
         <BlocoUsuario />
       </div>
     </div>
-  )
+  );
 }
 
 export function Casca() {
-  const perfil = usePerfil()
-  const { empresaId, empresa } = useEmpresaAtual()
-  const [gaveta, setGaveta] = useState(false)
-  const local = useLocation()
+  const perfil = usePerfil();
+  const { empresaId, empresa } = useEmpresaAtual();
+  const [gaveta, setGaveta] = useState(false);
+  const local = useLocation();
 
-  useEffect(() => setGaveta(false), [local.pathname])
+  useEffect(() => setGaveta(false), [local.pathname]);
   useEffect(() => {
-    if (!gaveta) return
-    const tecla = (e: KeyboardEvent) => e.key === 'Escape' && setGaveta(false)
-    document.addEventListener('keydown', tecla)
-    const overflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    if (!gaveta) return;
+    const tecla = (e: KeyboardEvent) => e.key === "Escape" && setGaveta(false);
+    document.addEventListener("keydown", tecla);
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     return () => {
-      document.removeEventListener('keydown', tecla)
-      document.body.style.overflow = overflow
-    }
-  }, [gaveta])
+      document.removeEventListener("keydown", tecla);
+      document.body.style.overflow = overflow;
+    };
+  }, [gaveta]);
 
-  const atalhos = itensDoPapel(perfil.papel).filter((i) => i.atalho).slice(0, 4)
-  const masterSemEmpresa = ehMaster(perfil.papel) && !empresaId && !local.pathname.startsWith('/master')
+  const atalhos = itensDoPapel(perfil.papel)
+    .filter((i) => i.atalho)
+    .slice(0, 4);
+  const masterSemEmpresa =
+    ehMaster(perfil.papel) &&
+    !empresaId &&
+    !local.pathname.startsWith("/master");
 
   return (
     <div className="min-h-dvh bg-noite lg:flex">
@@ -141,9 +189,16 @@ export function Casca() {
 
       {/* barra lateral — desktop. A coluna (fundo + borda) estica até o fim do conteúdo, por mais longo que seja;
           o miolo fica "grudado" no topo da janela com a altura da tela (sticky), então o menu continua sempre visível. */}
-      <aside data-teste="barra-lateral" className="relative z-30 hidden w-[260px] shrink-0 self-stretch border-r border-borda bg-noite-2 lg:block">
+      <aside
+        data-teste="barra-lateral"
+        className="relative z-30 hidden w-[260px] shrink-0 self-stretch border-r border-borda bg-noite-2 lg:block"
+      >
         <div className="sticky top-0 flex h-dvh flex-col gap-7 px-4 pt-6 pb-4">
-          <Link to="/" className={clsx('self-start rounded-lg px-1', FOCO)} aria-label="Ir para o painel">
+          <Link
+            to="/"
+            className={clsx("self-start rounded-lg px-1", FOCO)}
+            aria-label="Ir para o painel"
+          >
             <Marca />
           </Link>
           <div className="min-h-0 flex-1">
@@ -154,18 +209,29 @@ export function Casca() {
 
       {/* barra superior — celular/tablet */}
       <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-borda bg-noite-2/95 px-4 pt-[env(safe-area-inset-top)] backdrop-blur lg:hidden">
-        <Link to="/" className={clsx('rounded-lg', FOCO)} aria-label="Ir para o painel">
+        <Link
+          to="/"
+          className={clsx("rounded-lg", FOCO)}
+          aria-label="Ir para o painel"
+        >
           <Marca />
         </Link>
         <div className="flex min-w-0 items-center gap-2">
-          {empresa && <span className="hidden max-w-[40vw] truncate text-xs font-semibold text-lavanda sm:block">{empresa.nome}</span>}
+          {empresa && (
+            <span className="hidden max-w-[40vw] truncate text-xs font-semibold text-lavanda sm:block">
+              {empresa.nome}
+            </span>
+          )}
           <button
             type="button"
             onClick={() => setGaveta(true)}
             aria-label="Abrir menu"
             aria-expanded={gaveta}
             aria-controls="gaveta-menu"
-            className={clsx('grid size-10 place-items-center rounded-entrada border border-borda bg-cartao text-creme', FOCO)}
+            className={clsx(
+              "grid size-10 place-items-center rounded-entrada border border-borda bg-cartao text-creme",
+              FOCO,
+            )}
           >
             <IconeMenu aria-hidden className="size-5" />
           </button>
@@ -175,7 +241,11 @@ export function Casca() {
       {/* gaveta — celular */}
       {gaveta && (
         <div className="fixed inset-0 z-50 lg:hidden">
-          <div aria-hidden className="modal-fundo absolute inset-0 bg-veu/60" onClick={() => setGaveta(false)} />
+          <div
+            aria-hidden
+            className="modal-fundo absolute inset-0 bg-veu/60"
+            onClick={() => setGaveta(false)}
+          />
           <div
             id="gaveta-menu"
             role="dialog"
@@ -189,7 +259,10 @@ export function Casca() {
                 type="button"
                 onClick={() => setGaveta(false)}
                 aria-label="Fechar menu"
-                className={clsx('grid size-10 place-items-center rounded-entrada text-lavanda hover:text-creme', FOCO)}
+                className={clsx(
+                  "grid size-10 place-items-center rounded-entrada text-lavanda hover:text-creme",
+                  FOCO,
+                )}
                 autoFocus
               >
                 <X aria-hidden className="size-5" />
@@ -202,7 +275,11 @@ export function Casca() {
         </div>
       )}
 
-      <main id="conteudo" tabIndex={-1} className="min-w-0 focus:outline-none lg:flex-1">
+      <main
+        id="conteudo"
+        tabIndex={-1}
+        className="min-w-0 focus:outline-none lg:flex-1"
+      >
         <div className="mx-auto w-full max-w-[1180px] px-4 pt-6 pb-[calc(env(safe-area-inset-bottom)+96px)] sm:px-6 lg:px-10 lg:pt-10 lg:pb-16">
           {masterSemEmpresa ? (
             <div className="mx-auto max-w-lg pt-8">
@@ -215,7 +292,10 @@ export function Casca() {
                     <div className="w-64 text-left">
                       <SeletorEmpresa />
                     </div>
-                    <Link to="/master/empresas" className="text-sm font-semibold text-ouro hover:underline">
+                    <Link
+                      to="/master/empresas"
+                      className="text-sm font-semibold text-ouro hover:underline"
+                    >
                       Gerenciar empresas
                     </Link>
                   </div>
@@ -240,18 +320,23 @@ export function Casca() {
             <li key={i.para} className="flex-1">
               <NavLink
                 to={i.para}
-                end={i.para === '/'}
+                end={i.para === "/"}
                 className={({ isActive }) =>
                   clsx(
-                    'flex h-16 flex-col items-center justify-center gap-1 text-[11px] font-semibold transition-colors',
-                    'focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-ouro',
-                    isActive ? 'text-ouro-claro' : 'text-lavanda hover:text-creme',
+                    "flex h-16 flex-col items-center justify-center gap-1 text-[11px] font-semibold transition-colors",
+                    "focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-ouro",
+                    isActive
+                      ? "text-ouro-claro"
+                      : "text-lavanda hover:text-creme",
                   )
                 }
               >
                 {({ isActive }) => (
                   <>
-                    <i.icone aria-hidden className={clsx('size-5', isActive ? 'text-ouro' : '')} />
+                    <i.icone
+                      aria-hidden
+                      className={clsx("size-5", isActive ? "text-ouro" : "")}
+                    />
                     {i.rotulo}
                   </>
                 )}
@@ -271,5 +356,5 @@ export function Casca() {
         </ul>
       </nav>
     </div>
-  )
+  );
 }
