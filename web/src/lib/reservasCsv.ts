@@ -74,8 +74,8 @@ export function detectarSeparador(texto: string): ';' | ',' | '\t' {
   return conta[';'] >= conta[','] && conta[';'] > 0 ? ';' : ','
 }
 
-/** CSV → matriz de textos (linhas totalmente vazias são descartadas). */
-export function lerCsv(texto: string, separador = detectarSeparador(texto)): string[][] {
+/** CSV → matriz de textos (linhas totalmente vazias são descartadas, salvo `manterVazias`, que preserva a numeração do arquivo). */
+export function lerCsv(texto: string, separador = detectarSeparador(texto), manterVazias = false): string[][] {
   const t = texto.replace(/^﻿/, '')
   const linhas: string[][] = []
   let linha: string[] = []
@@ -108,7 +108,7 @@ export function lerCsv(texto: string, separador = detectarSeparador(texto)): str
     linha.push(campo)
     linhas.push(linha)
   }
-  return linhas.filter((l) => l.some((c) => c.trim() !== ''))
+  return manterVazias ? linhas : linhas.filter((l) => l.some((c) => c.trim() !== ''))
 }
 
 // -------------------------------------------------------------- mapeamento

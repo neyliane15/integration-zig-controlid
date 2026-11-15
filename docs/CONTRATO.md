@@ -228,6 +228,7 @@ Nas tabelas `[api:crud]`, quem não tem política para a operação recebe 0 lin
 | `20261006000250_ocorrencias.sql` | backend | ocorrências disciplinares, anexos (bucket `funcionarios-documentos`), suspensão → abono (`docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md`) |
 | `20261006000260_extras.sql` | backend | pontos extras (RPCs), diárias, `gastos_periodo` (adendo) |
 | `20261006000270_reservas.sql` | backend | reservas, importação CSV, `ingestao_reservas` (Tagme) (adendo) |
+| `20261006000280_escala.sql` | backend | escala rotativa (setores, membros, caminhos, ajustes, troca, férias → abono, integração com a apuração; `docs/CONTRATO-ADENDO-escala.md`) |
 | `20261006000900_permissoes.sql` | backend-1 | varredura de privilégios por etiqueta (§2.2). **Sempre a última.** |
 
 O backend-2 escreve contra o DDL do §5 **exatamente** como está aqui (nomes, tipos, nulidade).
@@ -967,6 +968,13 @@ Funcionário inativo (`ativo = false`) **continua** sendo apurado dentro do vín
 > o ajuste manual é repartido entre os dias pelo maior resto; valor do participante = soma dos dias; detalhe por dia em
 > `comissao_rateio_dias`/`comissao_rateio_itens_dia` e na RPC `comissao_detalhe`. **`'periodo'`** — a regra abaixo (passos 1–9),
 > mantida para quem não tem ponto integrado e para os fechamentos existentes. Os "pontos extras" da v1 foram removidos.
+>
+> *(Adendo extras v3 — §E.7, vale para os dois modos)* **Presença do dia** = batida válida; nos dias **sem ponto** na empresa (nenhuma
+> batida de ninguém) ou para quem não está no relógio, vem da **escala** (`trabalha`); fora da escala e sem ponto = **fallback individual**.
+> **Nunca** presente: falta (justificada/injustificada, tabela `funcionario_faltas`), suspensão, férias, atestado, outro abono individual
+> sem batida, fora do vínculo (antes da admissão / depois do desligamento). Extra com **pontuação pendente** (importação) não entra e
+> **impede fechar** (`Há extras sem pontuação: preencha antes de fechar`). Modo período: `dias_trabalhados` pela mesma regra; todos os
+> dias bloqueados → `pontos_efetivos = 0`. Vetores V7/V8 no adendo. Fechamento fechado nunca muda.
 
 Para um fechamento de `[data_inicio, data_fim]` (loja opcional) no **modo período**:
 1. `servico_zig = Σ valor_total` dos itens `Tip` no período (e loja, se definida).
@@ -1105,6 +1113,8 @@ Todas `[api]` L G A M, período máx. 366 dias, `p_loja text default null` (null
 | `comissao_fechar(p_fechamento uuid) returns void` | A M | recalcula e fecha |
 | `comissao_excluir_rascunho(p_fechamento uuid) returns void` | G A M | |
 Leitura: `comissao_fechamentos` e `comissao_itens` direto (RLS G A M).
+*(Adendo extras v3, §E.7)* novas: `falta_registrar`, `falta_remover`, `falta_definir_anexo`, `faltas_listar`,
+`extra_definir_pontuacao`, `extras_importar` (assinaturas e retornos no adendo); `comissao_fechar` recusa extras sem pontuação.
 
 ### 10.7 Painel (backend-2)
 `painel_do_dia(p_empresa uuid default null) returns jsonb` — `[api]` L G A M. Formato exato (TS `PainelDoDia`, §14.6):
@@ -1365,41 +1375,54 @@ O N8N (`exportar-fechamento.json`) gera o CSV de comissão com `n8n/comum/lib/cs
 ## 14. Front-end
 
 ### 14.1 Identidade visual — tokens (em `web/src/estilos.css`, bloco `@theme` do Tailwind v4)
-Tema **escuro único** (`color-scheme: dark`). Os nomes abaixo são a API: o Tailwind gera `bg-noite`, `text-creme`, `border-borda`,
-`rounded-cartao`, `font-display` etc. Nenhuma tela usa cor hexadecimal solta.
+**Paleta do cliente (v4, a mesma do modelo da escala `docs/referencias/escala-macaw-v3.html`)**: creme + verde-oliva + terracota,
+com modo **claro** (padrão) e **escuro**. O modo segue o sistema operacional (`prefers-color-scheme`); o alternador
+Claro · Escuro · Automático da casca grava `localStorage['mdg:tema']` (`claro`/`escuro`; ausente = automático) e põe
+`data-theme="light|dark"` no `<html>` (o `index.html` aplica antes do CSS). O `@theme` traz os valores do claro; o escuro redefine as
+mesmas variáveis em `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) }` e em `:root[data-theme="dark"]`.
+Os **nomes** dos tokens continuam sendo a API (por compatibilidade, os nomes antigos ficaram e ganharam papel semântico):
+o Tailwind gera `bg-noite`, `text-creme`, `border-borda`, `rounded-cartao`, `font-display` etc. Nenhuma tela usa cor hexadecimal solta
+(exceções: ícone do Google; fundo branco do JPEG gerado em `lib/imagem.ts`).
 
-| token | valor | uso |
-|---|---|---|
-| `--color-noite` | `#060A17` | fundo da página |
-| `--color-noite-2` | `#0A1022` | barra lateral, rodapés fixos |
-| `--color-cartao` | `#121A30` | cartões, modais |
-| `--color-cartao-2` | `#18223D` | hover de linha, cabeçalho de tabela |
-| `--color-entrada` | `#0C1326` | fundo de inputs |
-| `--color-borda` | `#232C47` | bordas sutis |
-| `--color-borda-forte` | `#34406A` | foco/hover de inputs |
-| `--color-ouro` | `#C9A23D` | acento, botão primário, item ativo |
-| `--color-ouro-claro` | `#E8C878` | 2ª linha do título em itálico, destaques |
-| `--color-ouro-escuro` | `#9E7C27` | hover/pressionado do botão primário |
-| `--color-tinta-ouro` | `#1A1405` | texto sobre o dourado |
-| `--color-creme` | `#F4EEDC` | texto principal |
-| `--color-lavanda` | `#8D93B8` | texto secundário, rótulos |
-| `--color-lavanda-escuro` | `#848AB0` | texto desabilitado, placeholders, rótulos secundários (revisão 2: era `#5E6488`, contraste < 4,5:1) |
-| `--color-sucesso` | `#4FB286` | |
-| `--color-alerta` | `#E8873A` | alarmes abertos, atraso |
-| `--color-perigo` | `#E5604F` | erros, saldo negativo |
-| `--color-info` | `#6FA8DC` | |
-| `--font-display` | `'Fraunces Variable', Georgia, serif` | títulos (com itálico) |
-| `--font-sans` | `'Manrope Variable', system-ui, sans-serif` | corpo |
-| `--font-mono` | `'JetBrains Mono Variable', ui-monospace, monospace` | números tabulares (horários, valores) |
-| `--radius-cartao` | `20px` | cartões, modais |
-| `--radius-entrada` | `12px` | inputs, botões |
-| `--radius-pilula` | `999px` | selos |
-| `--shadow-cartao` | `0 1px 0 rgb(255 255 255 / 0.03) inset, 0 24px 48px -24px rgb(0 0 0 / 0.6)` | |
+| token | papel | claro | escuro | variável do modelo |
+|---|---|---|---|---|
+| `--color-noite` | fundo da página | `#F6F1E4` | `#1C1F14` | `--bg` |
+| `--color-noite-2` | barra lateral, rodapés fixos | `#EFE8D6` | `#181B11` | |
+| `--color-cartao` | cartões, modais | `#FFFDF7` | `#262A1B` | `--card` |
+| `--color-cartao-2` | hover de linha, cabeçalho de tabela | `#F1ECDF` | `#2E3322` | |
+| `--color-entrada` | fundo de inputs | `#FAF7EE` | `#1F2316` | |
+| `--color-borda` | bordas sutis | `#E3DCC8` | `#3A3F2A` | `--ln` |
+| `--color-borda-forte` | foco/hover de inputs | `#CBC2A6` | `#4D5438` | |
+| `--color-ouro` | **acento verde-oliva**: botão primário, item ativo, foco | `#5F6B3A` | `#A9BB6C` | `--ac` |
+| `--color-ouro-claro` | destaque em texto (itálico do título), hover do primário | `#4D5730` | `#BCCB86` | |
+| `--color-ouro-escuro` | pressionado do primário | `#434C29` | `#93A65A` | |
+| `--color-tinta-ouro` | texto sobre o acento | `#F6F1E4` | `#1C1F14` | `--bg` |
+| `--color-creme` | texto principal | `#2B2F1E` | `#F1EDDC` | `--ink` |
+| `--color-lavanda` | texto secundário, rótulos | `#5F634D` | `#A9AD98` | `--mut` (claro escurecido p/ AA) |
+| `--color-lavanda-escuro` | placeholders, rótulos secundários | `#636753` | `#9A9E88` | |
+| `--color-sucesso` | sucesso (= acento) | `#5F6B3A` | `#A9BB6C` | `--ac` |
+| `--color-alerta` | aviso (âmbar suave): alarmes abertos, atraso | `#8A5A0C` | `#E0B45A` | |
+| `--color-perigo` | erro, saldo negativo, folga em texto (terracota) | `#A8432F` | `#EE8A72` | `--off` (claro escurecido p/ AA) |
+| `--color-info` | | `#3F6A8A` | `#8FB4D6` | |
+| `--color-acento-suave` | fundo de chips/linhas destacadas | `#E4E8D2` | `#363D22` | `--acs` |
+| `--color-folga` | preenchimento/contorno de folga e alerta | `#C8553D` | `#EE8A72` | `--off` |
+| `--color-folga-suave` | fundo de chips/células de folga | `#F7DDD5` | `#4A2A22` | `--offs` |
+| `--color-veu` | fundo escurecido de modais/gaveta (com `/60`) | `#2B2F1E` | `#0B0D07` | |
+| `--font-display` | títulos (com itálico) | `'Fraunces Variable', Georgia, serif` | | |
+| `--font-sans` | corpo | `'Manrope Variable', system-ui, sans-serif` | | |
+| `--font-mono` | números tabulares (horários, valores) | `'JetBrains Mono Variable', ui-monospace, monospace` | | |
+| `--radius-cartao` / `--radius-entrada` / `--radius-pilula` | | `20px` / `12px` / `999px` | | |
+| `--shadow-cartao` | | sombra suave oliva | sombra escura | |
+
+Contraste (WCAG AA ≥ 4,5:1 para texto): texto, secundário, acento, perigo, alerta e info conferidos sobre `noite`, `cartao` e `cartao-2`
+nos dois modos; botão primário: `tinta-ouro` sobre `ouro` 5,1:1 (claro) e 8,0:1 (escuro). Por isso `--mut` e `--off` do modelo foram
+levemente escurecidos no claro quando usados como **texto** (`lavanda`, `perigo`); `folga` mantém o `--off` original para preenchimentos.
+`<meta name="theme-color">` por esquema (`#F6F1E4` / `#1C1F14`); o favicon troca de cor com o esquema.
 
 Classes utilitárias (em `estilos.css`, camada `components`): `.sobrancelha` (caixa alta, `letter-spacing: .24em`, 11px, `text-ouro`, peso 700),
-`.titulo-display` (Fraunces 400, 32–44px, `text-creme`), `.titulo-italico` (Fraunces itálico, `text-ouro-claro`), `.numero` (mono, `tabular-nums`).
-Tela de login: cartão centralizado de 420px; sobrancelha "MEU DIA DE GERENTE"; título em duas linhas ("Organize seu dia." / *"Não esqueça nada."* em itálico dourado-claro, subtítulo lavanda "Seu assistente diário de rotina na loja.", fiel à referência do cliente);
-campos E-mail e Senha; caixa "Manter-me conectado"; botão **Entrar** (dourado, texto `tinta-ouro`); divisor "ou"; botão secundário
+`.titulo-display` (Fraunces 400, 32–44px, `text-creme`), `.titulo-italico` (Fraunces itálico, `text-ouro-claro` = oliva), `.numero` (mono, `tabular-nums`).
+Tela de login: cartão centralizado de 420px; sobrancelha "MEU DIA DE GERENTE"; título em duas linhas ("Organize seu dia." / *"Não esqueça nada."* em itálico oliva (`ouro-claro`), subtítulo em texto secundário "Seu assistente diário de rotina na loja.", fiel à referência do cliente);
+campos E-mail e Senha; caixa "Manter-me conectado"; botão **Entrar** (verde-oliva `ouro`, texto `tinta-ouro`); divisor "ou"; botão secundário
 **Entrar com Google** (contorno `borda`, ícone G); links "Recuperar senha" e "Criar conta".
 Responsivo: 390 px (celular: barra lateral vira menu inferior/gaveta, tabelas viram cartões) e 1440 px (barra lateral fixa 260 px).
 Sem rolagem horizontal da página.

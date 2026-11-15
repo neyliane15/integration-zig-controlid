@@ -2,15 +2,24 @@
  * Aba "Extras" — cadastro de freelas/diaristas (adendo E.1): nome, função, contato, pontuação padrão e valor da diária.
  */
 import { useEffect, useId, useState } from 'react'
-import { CalendarPlus, Pencil, Plus, Power, Search, Trash2, UserRoundPlus } from 'lucide-react'
+import { AlertTriangle, CalendarPlus, Check, FileUp, Pencil, Plus, Power, Search, Trash2, UserRoundPlus } from 'lucide-react'
 import type { Extra } from '@/tipos/banco'
 import { AreaTexto, Botao, Campo, Cartao, Entrada, EntradaMoeda, ErroCarga, Interruptor, Modal, Selo, Tabela, Vazio, type Coluna } from '@/componentes/ui'
 import { useAvisos } from '@/componentes/avisos'
-import { useAtivarExtra, useExcluirExtra, useExtras, useSalvarExtra } from '@/consultas/extras'
+import { useAtivarExtra, useDefinirPontuacao, useExcluirExtra, useExtras, useSalvarExtra } from '@/consultas/extras'
+import { ImportarExtras } from './ImportarExtras'
 import { filtrarExtras, formatarTelefone, lerPontos, pontosTexto } from '@/lib/extras'
 import { formatarCentavos, formatarData } from '@/lib/formato'
 
-export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void }) {
+export function AbaExtras({
+  aoLancarDia,
+  soPendentes = false,
+  aoMudarPendentes,
+}: {
+  aoLancarDia(extraId: string): void
+  soPendentes?: boolean
+  aoMudarPendentes?(v: boolean): void
+}) {
   const avisos = useAvisos()
   const [inativos, setInativos] = useState(false)
   const [busca, setBusca] = useState('')
@@ -18,7 +27,9 @@ export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void 
   const ativar = useAtivarExtra()
   const excluir = useExcluirExtra()
   const [modal, setModal] = useState<{ extra: Extra | null } | null>(null)
-  const linhas = filtrarExtras(lista.data ?? [], busca)
+  const [importando, setImportando] = useState(false)
+  const pendentes = (lista.data ?? []).filter((x) => x.pontos_pendente)
+  const linhas = filtrarExtras(soPendentes ? pendentes : (lista.data ?? []), busca)
   const idBusca = useId()
 
   const alternarAtivo = async (x: Extra) => {
@@ -57,12 +68,18 @@ export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void 
           <p className="flex flex-wrap items-center gap-2 font-semibold text-creme">
             <span className="truncate">{x.nome}</span>
             {!x.ativo && <Selo>Inativo</Selo>}
+            {x.pontos_pendente && <Selo tom="alerta">Pontuação pendente</Selo>}
           </p>
           <p className="text-xs text-lavanda">{[x.funcao, formatarTelefone(x.telefone)].filter(Boolean).join(' · ') || '—'}</p>
         </div>
       ),
     },
-    { id: 'pontos', titulo: 'Pontos', alinhar: 'direita', render: (x) => <span className="numero">{pontosTexto(x.pontos_padrao)}</span> },
+    {
+      id: 'pontos',
+      titulo: 'Pontos',
+      alinhar: 'direita',
+      render: (x) => (x.pontos_pendente ? <PontuacaoRapida extra={x} /> : <span className="numero">{pontosTexto(x.pontos_padrao)}</span>),
+    },
     {
       id: 'diaria',
       titulo: 'Diária',
@@ -115,11 +132,29 @@ export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void 
       titulo="Cadastro de extras"
       sobrancelha={`${(lista.data ?? []).filter((x) => x.ativo).length} ativo(s)`}
       acoes={
-        <Botao tamanho="p" icone={<Plus aria-hidden />} onClick={() => setModal({ extra: null })}>
-          Novo extra
-        </Botao>
+        <>
+          <Botao variante="secundario" tamanho="p" icone={<FileUp aria-hidden />} onClick={() => setImportando(true)}>
+            Importar extras
+          </Botao>
+          <Botao tamanho="p" icone={<Plus aria-hidden />} onClick={() => setModal({ extra: null })}>
+            Novo extra
+          </Botao>
+        </>
       }
     >
+      {pendentes.length > 0 && (
+        <div role="status" data-teste="aviso-pontuacao-pendente" className="mb-4 flex flex-wrap items-center gap-3 rounded-entrada border border-alerta/50 bg-alerta/10 p-3 text-sm text-alerta">
+          <AlertTriangle aria-hidden className="size-4 shrink-0" />
+          <span className="min-w-0 flex-1 basis-56">
+            <strong>{pendentes.length} extra(s) com pontuação pendente.</strong> Não entram na comissão e bloqueiam o fechamento até você preencher os pontos.
+          </span>
+          {!soPendentes && aoMudarPendentes && (
+            <Botao variante="secundario" tamanho="p" onClick={() => aoMudarPendentes(true)}>
+              Ver só os pendentes
+            </Botao>
+          )}
+        </div>
+      )}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative min-w-0 flex-1 basis-56">
           <Search aria-hidden className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-lavanda" />
@@ -129,6 +164,9 @@ export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void 
           <Entrada id={idBusca} className="pl-10" placeholder="Buscar por nome, função, telefone ou documento" value={busca} onChange={(e) => setBusca(e.target.value)} />
         </div>
         <Interruptor rotulo="Mostrar inativos" marcado={inativos} aoMudar={setInativos} />
+        {aoMudarPendentes && (
+          <Interruptor rotulo={`Só pontuação pendente (${pendentes.length})`} marcado={soPendentes} aoMudar={aoMudarPendentes} />
+        )}
       </div>
       {lista.error ? (
         <ErroCarga erro={lista.error} aoTentar={() => lista.refetch()} />
@@ -139,7 +177,9 @@ export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void 
           chave={(x) => x.id}
           carregando={lista.isLoading}
           vazio={
-            busca.trim() ? (
+            soPendentes ? (
+              <Vazio titulo="Nenhum extra com pontuação pendente" descricao="Tudo preenchido: os extras entram na comissão normalmente." />
+            ) : busca.trim() ? (
               <Vazio titulo="Nenhum extra encontrado" descricao="Confira a busca ou mostre os inativos." />
             ) : (
               <Vazio
@@ -157,7 +197,49 @@ export function AbaExtras({ aoLancarDia }: { aoLancarDia(extraId: string): void 
         />
       )}
       <ModalExtra aberto={!!modal} extra={modal?.extra ?? null} aoFechar={() => setModal(null)} />
+      <ImportarExtras aberto={importando} aoFechar={() => setImportando(false)} aoVerPendentes={() => aoMudarPendentes?.(true)} />
     </Cartao>
+  )
+}
+
+/** Edição rápida da pontuação de um extra pendente (direto na lista): grava no cadastro e nos dias pendentes. */
+function PontuacaoRapida({ extra }: { extra: Extra }) {
+  const avisos = useAvisos()
+  const definir = useDefinirPontuacao()
+  const [texto, setTexto] = useState('')
+  const salvar = async () => {
+    const n = lerPontos(texto)
+    if (n == null) return avisos.erro('Pontos inválidos (0 a 9999,99)')
+    try {
+      const dias = await definir.mutateAsync({ extraId: extra.id, pontos: n })
+      avisos.sucesso(`Pontuação de ${extra.nome} definida${dias ? ` (${dias} dia(s) atualizado(s))` : ''}`)
+    } catch (e) {
+      avisos.erro(e)
+    }
+  }
+  return (
+    <span className="flex items-center justify-end gap-1">
+      {extra.dias_pendentes > 0 && <span className="hidden text-[11px] text-alerta lg:inline">{extra.dias_pendentes} dia(s)</span>}
+      <Entrada
+        aria-label={`Pontos de ${extra.nome}`}
+        className="numero h-9! w-20! px-2! text-right"
+        inputMode="decimal"
+        placeholder="—"
+        value={texto}
+        invalido={texto.trim() !== '' && lerPontos(texto) == null}
+        onChange={(e) => setTexto(e.target.value.replace(/[^\d,.]/g, ''))}
+        onKeyDown={(e) => e.key === 'Enter' && void salvar()}
+      />
+      <Botao
+        tamanho="p"
+        variante="secundario"
+        icone={<Check aria-hidden />}
+        aria-label={`Salvar pontos de ${extra.nome}`}
+        carregando={definir.isPending}
+        disabled={texto.trim() === ''}
+        onClick={() => void salvar()}
+      />
+    </span>
   )
 }
 
@@ -194,17 +276,19 @@ export function ModalExtra({
     setFuncao(extra?.funcao ?? '')
     setTelefone(extra?.telefone ?? '')
     setDocumento(extra?.documento ?? '')
-    setPontos(extra ? pontosTexto(extra.pontos_padrao) : '')
+    setPontos(extra && !extra.pontos_pendente ? pontosTexto(extra.pontos_padrao) : '')
     setValor(extra?.valor_diaria_centavos ?? null)
     setObservacoes(extra?.observacoes ?? '')
     setAtivo(extra?.ativo ?? true)
     setTentou(false)
   }, [aberto, extra, nomeInicial])
 
-  const pontosLidos = pontos.trim() === '' ? 0 : lerPontos(pontos)
+  const pendente = !!extra?.pontos_pendente
+  const pontosVazio = pontos.trim() === ''
+  const pontosLidos = pontosVazio ? (pendente ? null : 0) : lerPontos(pontos)
   const erros = {
     nome: !nome.trim() ? 'Informe o nome' : null,
-    pontos: pontosLidos == null ? 'Pontos inválidos (0 a 9999,99)' : null,
+    pontos: !pontosVazio && pontosLidos == null ? 'Pontos inválidos (0 a 9999,99)' : null,
     valor: valor != null && (valor < 0 || valor > 100_000_000) ? 'Valor inválido' : null,
   }
 
@@ -218,7 +302,7 @@ export function ModalExtra({
         dados: {
           nome: nome.trim(),
           funcao: funcao.trim() || null,
-          pontosPadrao: pontosLidos ?? 0,
+          pontosPadrao: pontosLidos,
           valorDiariaCentavos: valor,
           telefone: telefone.trim() || null,
           documento: documento.trim() || null,
@@ -262,7 +346,12 @@ export function ModalExtra({
         <Campo rotulo="Telefone" htmlFor={`${id}-t`}>
           <Entrada id={`${id}-t`} type="tel" inputMode="tel" value={telefone} maxLength={40} autoComplete="off" onChange={(e) => setTelefone(e.target.value)} />
         </Campo>
-        <Campo rotulo="Pontuação padrão" htmlFor={`${id}-p`} erro={tentou ? erros.pontos : null} ajuda="Pontos de comissão em cada dia trabalhado.">
+        <Campo
+          rotulo="Pontuação padrão"
+          htmlFor={`${id}-p`}
+          erro={tentou ? erros.pontos : null}
+          ajuda={pendente ? 'Pontuação pendente: preencha para o extra entrar na comissão (vale também para os dias já lançados).' : 'Pontos de comissão em cada dia trabalhado.'}
+        >
           <Entrada
             id={`${id}-p`}
             className="numero"

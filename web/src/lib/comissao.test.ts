@@ -517,3 +517,144 @@ describe('calcularComissao — desempate igual ao banco', () => {
     ])
   })
 })
+
+// ------------------------------------------------------------- adendo extras v3 (§E.7.8): presença, faltas, pendentes
+describe('calcularComissao — presença v3 (vetores V7, V7b, V8, V8b)', () => {
+  type L = NonNullable<ParticipanteComissao['entrada']>[number]
+  const DIAS = ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04']
+  const ponto = (pontos: number): Partial<L> => ({ presente: true, origem: 'ponto', pontos })
+  const escala = (pontos: number): Partial<L> => ({ presente: true, origem: 'escala', pontos })
+  const bloq = (motivo: L['motivo']): Partial<L> => ({ presente: false, bloqueado: true, motivo })
+  const fb = (): Partial<L> => ({ presente: false, fallback: true, motivo: 'sem_registro' })
+  const nada = (motivo: L['motivo']): Partial<L> => ({ presente: false, motivo })
+  const func = (nome: string, n: number, pontos: number, dias: Partial<L>[]): ParticipanteComissao => ({
+    itemId: `b0000000-0000-4000-8000-00000000000${n}`,
+    tipo: 'funcionario',
+    funcionarioId: `a0000000-0000-4000-8000-00000000030${n}`,
+    nome,
+    incluido: true,
+    pontos,
+    pontosManual: false,
+    diasTrabalhados: 0,
+    entrada: dias.map((d, k) => ({ data: DIAS[k]!, presente: false, fallback: false, bloqueado: false, motivo: null, origem: null, pontos, ...d })),
+  })
+  const extra = (nome: string, n: number, pontos: number, pendente: boolean): ParticipanteComissao => ({
+    itemId: `b0000000-0000-4000-8000-00000000001${n}`,
+    tipo: 'extra',
+    funcionarioId: null,
+    extraId: `c0000000-0000-4000-8000-00000000000${n}`,
+    nome,
+    incluido: true,
+    pontos,
+    diasTrabalhados: 1,
+    entrada: [{ data: '2026-09-03', presente: true, pontos: pendente ? 0 : pontos, pendente }],
+  })
+  const equipe = (zePontos: number | null): ParticipanteComissao[] => [
+    func('Ana Souza', 1, 10, [ponto(10), escala(10), bloq('ferias'), escala(10)]),
+    func('Bruno Lima', 2, 10, [ponto(10), nada('folga_escala'), escala(10), escala(10)]),
+    func('Carla Dias', 3, 6, [ponto(6), bloq('falta_justificada'), escala(6), bloq('atestado')]),
+    func('Davi Rocha', 4, 8, [bloq('falta_injustificada'), bloq('suspensao'), bloq('fora_vinculo'), bloq('fora_vinculo')]),
+    func('Eva Martins', 5, 4, [nada('sem_batida'), fb(), fb(), fb()]),
+    extra('Marcos Freitas', 1, 5, false),
+    extra('Zé Pereira', 2, zePontos ?? 0, zePontos == null),
+  ]
+  const entrada = (modo: 'diario' | 'periodo', zePontos: number | null, proporcional = false): EntradaComissao => ({
+    modoRateio: modo,
+    servicoZigCentavos: 200_001,
+    servicoAjusteCentavos: 0,
+    percentualRetencao: 20,
+    proporcionalDias: proporcional,
+    dataInicio: '2026-09-01',
+    dataFim: '2026-09-04',
+    servicoDias: [100_000, 50_000, 30_000, 20_001].map((v, k) => ({ data: DIAS[k]!, servicoZigCentavos: v })),
+    participantes: equipe(zePontos),
+  })
+
+  it('V7 — diário: faltas, suspensão, férias, atestado e desligado ficam de fora; escala e fallback individual', () => {
+    const r = calcularComissao(entrada('diario', null))
+    expect(r.dias.map((d) => d.baseCentavos)).toEqual([80_000, 40_000, 24_000, 16_001])
+    expect(r.dias.map((d) => d.rateio.map((x) => [r.itens[x.indice]!.nome.split(' ')[0], x.valorCentavos]))).toEqual([
+      [['Ana', 30_769], ['Bruno', 30_769], ['Carla', 18_462]],
+      [['Ana', 28_571], ['Eva', 11_429]],
+      [['Bruno', 9_600], ['Carla', 5_760], ['Eva', 3_840], ['Marcos', 4_800]],
+      [['Ana', 6_667], ['Bruno', 6_667], ['Eva', 2_667]],
+    ])
+    expect(valores(r)).toEqual({
+      'Ana Souza': 66_007,
+      'Bruno Lima': 47_036,
+      'Carla Dias': 24_222,
+      'Davi Rocha': 0,
+      'Eva Martins': 17_936,
+      'Marcos Freitas': 4_800,
+      'Zé Pereira': 0,
+    })
+    expect(r.totalDistribuidoCentavos).toBe(160_001)
+    expect(r.diasSemPresenca).toBe(3)
+    expect(r.diasSemParticipantes).toBe(0)
+    expect(r.extrasSemPontuacao).toBe(1)
+    expect(r.itens.map((i) => i.diasPresentes)).toEqual([3, 3, 2, 0, 0, 1, 1])
+    expect(r.itens.find((i) => i.nome === 'Zé Pereira')!.pontosPendente).toBe(true)
+    // detalhe: origem e ausentes com motivo
+    expect(r.dias[0]!.rateio.map((x) => x.origem)).toEqual(['ponto', 'ponto', 'ponto'])
+    expect(r.dias[1]!.rateio.map((x) => [x.origem, x.fallback])).toEqual([['escala', false], ['fallback', true]])
+    expect(r.dias[0]!.ausentes.map((a) => [r.itens[a.indice]!.nome, a.motivo])).toEqual([
+      ['Davi Rocha', 'falta_injustificada'],
+      ['Eva Martins', 'sem_batida'],
+    ])
+    expect(r.dias[2]!.ausentes.map((a) => a.motivo)).toEqual(['ferias', 'fora_vinculo'])
+  })
+
+  it('V7b — Zé com 3 pontos entra em 03/09 e o fechamento é liberado', () => {
+    const r = calcularComissao(entrada('diario', 3))
+    expect(r.dias[2]!.rateio.map((x) => x.valorCentavos)).toEqual([8_571, 5_143, 3_429, 4_286, 2_571])
+    expect(valores(r)).toEqual({
+      'Ana Souza': 66_007,
+      'Bruno Lima': 46_007,
+      'Carla Dias': 23_605,
+      'Davi Rocha': 0,
+      'Eva Martins': 17_525,
+      'Marcos Freitas': 4_286,
+      'Zé Pereira': 2_571,
+    })
+    expect(r.extrasSemPontuacao).toBe(0)
+  })
+
+  it('V8 — período proporcional: dias = presente ou fallback; Davi (todos bloqueados) 0', () => {
+    const r = calcularComissao(entrada('periodo', 3, true))
+    expect(r.baseCentavos).toBe(160_001)
+    expect(r.itens.map((i) => i.diasPresentes)).toEqual([3, 3, 2, 0, 3, 1, 1])
+    expect(valores(r)).toEqual({
+      'Ana Souza': 52_174,
+      'Bruno Lima': 52_174,
+      'Carla Dias': 20_870,
+      'Davi Rocha': 0,
+      'Eva Martins': 20_870,
+      'Marcos Freitas': 8_696,
+      'Zé Pereira': 5_217,
+    })
+  })
+
+  it('V8b — período não proporcional', () => {
+    const r = calcularComissao(entrada('periodo', 3))
+    expect(valores(r)).toEqual({
+      'Ana Souza': 50_001,
+      'Bruno Lima': 50_000,
+      'Carla Dias': 30_000,
+      'Davi Rocha': 0,
+      'Eva Martins': 20_000,
+      'Marcos Freitas': 6_250,
+      'Zé Pereira': 3_750,
+    })
+  })
+
+  it('último recurso: sem ninguém, entram os incluídos não bloqueados', () => {
+    const e = entrada('diario', 3)
+    e.servicoDias = [{ data: '2026-09-02', servicoZigCentavos: 1_000 }]
+    // 02/09 sem Ana (tirada) e sem Eva (tirada): sobra Bruno (folga na escala, não bloqueado) pelo último recurso
+    e.participantes = e.participantes.map((p) => (p.nome === 'Ana Souza' || p.nome === 'Eva Martins' ? { ...p, incluido: false } : p))
+    const r = calcularComissao(e)
+    expect(r.dias[1]!.rateio.map((x) => [r.itens[x.indice]!.nome, x.valorCentavos, x.origem])).toEqual([['Bruno Lima', 800, 'ultimo_recurso']])
+    expect(r.dias[1]!.semPresenca).toBe(true)
+    expect(r.diasSemParticipantes).toBe(0)
+  })
+})

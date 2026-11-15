@@ -41,6 +41,9 @@ create index if not exists extras_empresa_idx on public.extras (empresa_id, lowe
 create index if not exists extras_criado_por_idx on public.extras (criado_por);
 comment on table public.extras is '[api:leitura] Extras (freelas/diaristas): pontuação e diária padrão, contato. Só G A M.';
 
+-- (adendo extras v3, §E.7.5) pontuação pendente (extra importado sem pontos)
+alter table public.extras add column if not exists pontos_pendente boolean not null default false;
+
 alter table public.extras enable row level security;
 drop policy if exists extras_ler on public.extras;
 create policy extras_ler on public.extras for select to authenticated
@@ -134,6 +137,10 @@ alter table public.diarias drop constraint if exists diarias_participante;
 alter table public.diarias add constraint diarias_participante check (
   (tipo = 'extra' and extra_id is not null and funcionario_id is null and pontos is not null)
   or (tipo = 'funcionario' and extra_id is null and pontos is null));
+-- (adendo extras v3, §E.7.5) dia de extra sem pontuação: vale 0 e não entra no rateio até a pontuação ser preenchida
+alter table public.diarias add column if not exists pontos_pendente boolean not null default false;
+alter table public.diarias drop constraint if exists diarias_pontos_pendente;
+alter table public.diarias add constraint diarias_pontos_pendente check (not pontos_pendente or (tipo = 'extra' and pontos = 0));
 create index if not exists diarias_empresa_idx on public.diarias (empresa_id, data);
 create index if not exists diarias_funcionario_idx on public.diarias (funcionario_id, data);
 create unique index if not exists diarias_extra_dia_uidx on public.diarias (extra_id, data) where extra_id is not null;
@@ -238,10 +245,16 @@ begin
   perform public.extra_validar(p_nome, coalesce(p_pontos_padrao, 0), p_valor_diaria_centavos);
   update public.extras
      set nome = btrim(p_nome), funcao = nullif(btrim(p_funcao), ''), telefone = nullif(btrim(p_telefone), ''),
-         documento = nullif(btrim(p_documento), ''), pontos_padrao = coalesce(p_pontos_padrao, 0),
+         documento = nullif(btrim(p_documento), ''),
+         pontos_padrao = case when x.pontos_pendente and p_pontos_padrao is null then x.pontos_padrao
+                              else coalesce(p_pontos_padrao, 0) end,
          valor_diaria_centavos = p_valor_diaria_centavos, ativo = coalesce(p_ativo, true),
          observacoes = nullif(btrim(p_observacoes), '')
    where id = x.id;
+  -- (v3, §E.7.5) extra pendente: pontos informados = preencher a pontuação (cadastro e dias pendentes)
+  if x.pontos_pendente and p_pontos_padrao is not null then
+    perform public.extra_definir_pontuacao(x.id, p_pontos_padrao);
+  end if;
 end $$;
 comment on function public.extra_atualizar(uuid, text, text, numeric, bigint, text, text, boolean, text) is
   '[api] Substitui os dados do cadastro de um extra (G A M).';
@@ -258,18 +271,35 @@ begin
 end $$;
 comment on function public.extra_excluir(uuid) is '[api] Exclui um extra sem dias lançados (G A M).';
 
+-- (v3) retorno ganhou pontos_pendente/dias_pendentes: mudança de tipo de retorno exige drop (privilégios voltam na …0900)
+do $$
+begin
+  if exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+              where n.nspname = 'public' and p.proname = 'extras_listar'
+                and pg_get_function_result(p.oid) not like '%dias_pendentes%') then
+    drop function public.extras_listar(boolean, uuid);
+  end if;
+  if exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+              where n.nspname = 'public' and p.proname = 'diarias_listar'
+                and pg_get_function_result(p.oid) not like '%pontos_pendente%') then
+    drop function public.diarias_listar(date, date, text, uuid, uuid, boolean, uuid);
+  end if;
+end $$;
+
 create or replace function public.extras_listar(p_incluir_inativos boolean default false, p_empresa uuid default null)
 returns table (id uuid, nome text, funcao text, telefone text, documento text, pontos_padrao numeric, valor_diaria_centavos bigint,
-               ativo boolean, observacoes text, dias_lancados int, ultimo_dia date, criado_em timestamptz)
+               ativo boolean, observacoes text, pontos_pendente boolean, dias_lancados int, ultimo_dia date, dias_pendentes int,
+               criado_em timestamptz)
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid;
 begin
   v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
   return query
   select x.id, x.nome, x.funcao, x.telefone, x.documento, x.pontos_padrao, x.valor_diaria_centavos, x.ativo, x.observacoes,
-         coalesce(l.qtd, 0)::int, l.ultimo, x.criado_em
+         x.pontos_pendente, coalesce(l.qtd, 0)::int, l.ultimo, coalesce(l.pend, 0)::int, x.criado_em
     from public.extras x
-    left join lateral (select count(*) as qtd, max(d.data) as ultimo from public.diarias d where d.extra_id = x.id) l on true
+    left join lateral (select count(*) as qtd, max(d.data) as ultimo, count(*) filter (where d.pontos_pendente) as pend
+                         from public.diarias d where d.extra_id = x.id) l on true
    where x.empresa_id = v_empresa and (coalesce(p_incluir_inativos, false) or x.ativo)
    order by lower(x.nome), x.id;
 end $$;
@@ -348,7 +378,7 @@ create or replace function public.diaria_lancar(p_data date, p_extra uuid defaul
                                                 p_pago boolean default false, p_pago_em date default null)
 returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare x public.extras; f public.funcionarios; v_empresa uuid; v_pontos numeric; v_valor bigint; v_funcao text;
-        v_nome text; v_pago boolean; v_id uuid;
+        v_nome text; v_pago boolean; v_id uuid; v_pend boolean := false;
 begin
   if (p_extra is null) = (p_funcionario is null) then
     raise exception 'Informe o extra ou o funcionário' using errcode = '22023';
@@ -358,6 +388,8 @@ begin
     if not x.ativo then raise exception 'Extra inativo' using errcode = '22023'; end if;
     v_empresa := x.empresa_id; v_nome := x.nome;
     v_pontos := coalesce(p_pontos, x.pontos_padrao);
+    v_pend := x.pontos_pendente and p_pontos is null;     -- (v3) extra sem pontuação: dia pendente (vale 0)
+    if v_pend then v_pontos := 0; end if;
     v_valor := coalesce(p_valor_centavos, x.valor_diaria_centavos);
     v_funcao := coalesce(nullif(btrim(p_funcao), ''), x.funcao);
   else
@@ -374,10 +406,10 @@ begin
     perform public.diaria_checar_duplicada(x.id, p_data);
   end if;
   v_pago := coalesce(p_pago, false);
-  insert into public.diarias (empresa_id, tipo, extra_id, funcionario_id, pessoa_nome, data, funcao, pontos, valor_centavos,
-                              observacao, pago, pago_em, criado_por, criado_por_nome)
+  insert into public.diarias (empresa_id, tipo, extra_id, funcionario_id, pessoa_nome, data, funcao, pontos, pontos_pendente,
+                              valor_centavos, observacao, pago, pago_em, criado_por, criado_por_nome)
   values (v_empresa, case when p_extra is not null then 'extra' else 'funcionario' end, x.id, f.id, v_nome, p_data, v_funcao,
-          v_pontos, v_valor, nullif(btrim(p_observacao), ''), v_pago,
+          v_pontos, v_pend, v_valor, nullif(btrim(p_observacao), ''), v_pago,
           case when v_pago then coalesce(p_pago_em, public.dia_de_trabalho(public.agora(), v_empresa)) end,
           public.meu_perfil_id(), public.ponto_nome_autor())
   returning id into v_id;
@@ -418,7 +450,7 @@ begin
     end if;
     if v_valor < 0 or v_valor > 100000000 then raise exception 'Valor inválido' using errcode = '22023'; end if;
   end if;
-  if d.tipo = 'extra' and (v_data <> d.data or v_pontos <> d.pontos) then
+  if d.tipo = 'extra' and (v_data <> d.data or v_pontos <> d.pontos or (d.pontos_pendente and p_pontos is not null)) then
     perform public.diaria_checar_trava(d.empresa_id, d.data);
     perform public.diaria_checar_trava(d.empresa_id, v_data);
     if v_data <> d.data then perform public.diaria_checar_duplicada(d.extra_id, v_data, d.id); end if;
@@ -427,6 +459,7 @@ begin
                   (select f.cargo from public.funcionarios f where f.id = d.funcionario_id)) into v_funcao_padrao;
   update public.diarias
      set data = v_data, pontos = v_pontos, valor_centavos = v_valor,
+         pontos_pendente = pontos_pendente and p_pontos is null,     -- (v3) pontos informados tiram a pendência
          funcao = coalesce(nullif(btrim(p_funcao), ''), v_funcao_padrao),
          observacao = nullif(btrim(p_observacao), ''),
          pago = coalesce(p_pago, pago),
@@ -464,7 +497,7 @@ create or replace function public.diarias_listar(p_inicio date, p_fim date, p_ti
                                                  p_funcionario uuid default null, p_pago boolean default null,
                                                  p_empresa uuid default null)
 returns table (id uuid, data date, tipo text, extra_id uuid, funcionario_id uuid, pessoa_nome text, funcao text, pontos numeric,
-               valor_centavos bigint, observacao text, pago boolean, pago_em date, fechado boolean, criado_por_nome text,
+               pontos_pendente boolean, valor_centavos bigint, observacao text, pago boolean, pago_em date, fechado boolean, criado_por_nome text,
                criado_em timestamptz)
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid;
@@ -480,7 +513,7 @@ begin
   perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
   return query
   select d.id, d.data, d.tipo, d.extra_id, d.funcionario_id, coalesce(x.nome, f.nome, d.pessoa_nome), d.funcao, d.pontos,
-         d.valor_centavos, d.observacao, d.pago, d.pago_em,
+         d.pontos_pendente, d.valor_centavos, d.observacao, d.pago, d.pago_em,
          d.tipo = 'extra' and public.comissao_periodo_fechado(d.empresa_id, d.data), d.criado_por_nome, d.criado_em
     from public.diarias d
     left join public.extras x on x.id = d.extra_id

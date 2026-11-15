@@ -1,8 +1,74 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 08 DE 15.
+-- Meu Dia de Gerente — instalação do banco, PARTE 08 DE 19.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql. Não edite à mão.
 
 begin;
+-- ======================================================= gatilhos em tabelas do backend-1 (§7.8)
+create or replace function public.ponto_gatilho_controlid_usuario()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_antigo uuid := case when tg_op = 'UPDATE' then old.funcionario_id end;
+  v_datas  date[];
+  v_dia    date;
+begin
+  with alt as (
+    update public.ponto_batidas b
+       set funcionario_id = new.funcionario_id
+     where b.integracao_id = new.integracao_id
+       and b.pessoa_externa = new.user_id_externo
+       and b.origem = 'controlid_acesso'
+       and (b.funcionario_id is null or b.funcionario_id = v_antigo)
+       and b.funcionario_id is distinct from new.funcionario_id
+    returning b.data_trabalho)
+  select array_agg(distinct alt.data_trabalho) into v_datas from alt;
+
+  if v_datas is not null then
+    foreach v_dia in array v_datas loop
+      perform public.ponto_apurar(v_antigo, v_dia, v_dia);
+      perform public.ponto_apurar(new.funcionario_id, v_dia, v_dia);
+    end loop;
+  end if;
+  return null;
+end $$;
+comment on function public.ponto_gatilho_controlid_usuario() is '[interno] §7.8: vínculo Control iD → batidas de acesso e reapuração.';
+
+drop trigger if exists ponto_vinculo_batidas on public.controlid_usuarios;
+create trigger ponto_vinculo_batidas after update of funcionario_id on public.controlid_usuarios
+  for each row when (old.funcionario_id is distinct from new.funcionario_id)
+  execute function public.ponto_gatilho_controlid_usuario();
+drop trigger if exists ponto_vinculo_batidas_ins on public.controlid_usuarios;
+create trigger ponto_vinculo_batidas_ins after insert on public.controlid_usuarios
+  for each row when (new.funcionario_id is not null)
+  execute function public.ponto_gatilho_controlid_usuario();
+
+create or replace function public.ponto_gatilho_funcionario_documentos()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_datas date[]; v_dia date;
+begin
+  if new.cpf is null and new.pis is null then return null; end if;
+  with alt as (
+    update public.ponto_batidas b
+       set funcionario_id = new.id
+     where b.empresa_id = new.empresa_id
+       and b.origem = 'controlid_rep'
+       and b.funcionario_id is null
+       and b.pessoa_externa is not null
+       and b.pessoa_externa in (new.cpf, new.pis)
+    returning b.data_trabalho)
+  select array_agg(distinct alt.data_trabalho) into v_datas from alt;
+  if v_datas is not null then
+    foreach v_dia in array v_datas loop
+      perform public.ponto_apurar(new.id, v_dia, v_dia);
+    end loop;
+  end if;
+  return null;
+end $$;
+comment on function public.ponto_gatilho_funcionario_documentos() is '[interno] §7.8: CPF/PIS do funcionário → batidas REP sem vínculo.';
+
+drop trigger if exists ponto_documentos on public.funcionarios;
+create trigger ponto_documentos after insert or update of cpf, pis on public.funcionarios
+  for each row execute function public.ponto_gatilho_funcionario_documentos();
+
 create or replace function public.ponto_gatilho_funcionario_vinculo()
 returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare v_atual date;
@@ -320,7 +386,7 @@ comment on function public.ponto_reabrir_alarme(uuid) is '[api] Reabre um alarme
 create or replace function public.ponto_abonar(p_inicio date, p_fim date, p_tipo text, p_motivo text default null,
                                                p_funcionario uuid default null, p_empresa uuid default null)
 returns integer language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid; v_dias int;
+declare v_empresa uuid; v_dias int; v_falta date;
 begin
   if p_funcionario is not null then
     select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
@@ -340,6 +406,18 @@ begin
        select 1 from public.ponto_abonos a
         where a.funcionario_id = p_funcionario and a.data between p_inicio and p_fim and a.ocorrencia_id is not null) then
     raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
+  if p_funcionario is not null and exists (
+       select 1 from public.ponto_abonos a
+        where a.funcionario_id = p_funcionario and a.data between p_inicio and p_fim and a.escala_ajuste_id is not null) then
+    raise exception 'Dia com férias na escala: altere pela escala' using errcode = '22023';
+  end if;
+  if p_funcionario is not null then
+    select g::date into v_falta from generate_series(p_inicio, p_fim, interval '1 day') g
+     where public.ponto_falta_do_dia(p_funcionario, g::date) is not null order by g limit 1;
+    if v_falta is not null then
+      raise exception 'Dia com falta em %: remova a falta antes', to_char(v_falta, 'DD/MM/YYYY') using errcode = '22023';
+    end if;
   end if;
 
   insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por)
@@ -367,6 +445,9 @@ begin
   if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   if a.ocorrencia_id is not null then
     raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
+  if a.escala_ajuste_id is not null then
+    raise exception 'Dia com férias na escala: altere pela escala' using errcode = '22023';
   end if;
   delete from public.ponto_abonos where id = p_abono;
   if a.funcionario_id is not null then
@@ -435,85 +516,5 @@ begin
 end $$;
 comment on function public.banco_horas_resumo(date, uuid) is '[api] Saldo do banco de horas por funcionário ativo.';
 
-create or replace function public.banco_horas_extrato(p_funcionario uuid, p_inicio date, p_fim date)
-returns table (data date, tipo text, descricao text, minutos int, saldo_acumulado bigint, referencia_id uuid)
-language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_empresa uuid;
-  v_saldo   bigint;
-  r         record;
-  v_rotulos constant jsonb := '{"completo":"Completo","incompleto":"Incompleto","ausente":"Ausente","folga":"Folga",
-     "sem_escala":"Sem escala","abonado":"Abonado","suspenso":"Suspenso","em_andamento":"Em andamento"}'::jsonb;
-begin
-  select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
-  if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if public.pode_ler(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
-
-  v_saldo := public.banco_horas_calcular_saldo(p_funcionario, p_inicio - 1);
-  data := p_inicio - 1; tipo := 'saldo_anterior'; descricao := 'Saldo anterior';
-  minutos := v_saldo::int; saldo_acumulado := v_saldo; referencia_id := null;
-  return next;
-
-  for r in
-    select x.* from (
-      select d.data, 1 as ordem, 'dia'::text as tipo,
-             (v_rotulos ->> d.situacao)
-               || case when d.abono_tipo is not null then ' (' || d.abono_tipo || ')' else '' end
-               || ' — trabalhado ' || public.ponto_fmt_minutos(d.trabalhado_minutos)
-               || case when d.previsto_minutos > 0 then ' de ' || public.ponto_fmt_minutos(d.previsto_minutos) else '' end
-               as descricao,
-             d.saldo_minutos as minutos, null::uuid as referencia_id, null::timestamptz as criado_em
-        from public.ponto_dias d
-       where d.funcionario_id = p_funcionario and d.encerrado and d.data between p_inicio and p_fim
-         and (d.saldo_minutos <> 0 or d.situacao <> 'folga')
-      union all
-      select l.data, case when l.tipo = 'saldo_inicial' then 0 else 2 end, l.tipo, l.motivo, l.minutos, l.id, l.criado_em
-        from public.banco_horas_lancamentos l
-       where l.funcionario_id = p_funcionario and l.data between p_inicio and p_fim
-    ) x
-    order by x.data, x.ordem, x.criado_em, x.referencia_id
-  loop
-    if r.tipo = 'saldo_inicial' then v_saldo := r.minutos; else v_saldo := v_saldo + r.minutos; end if;
-    data := r.data; tipo := r.tipo; descricao := r.descricao; minutos := r.minutos;
-    saldo_acumulado := v_saldo; referencia_id := r.referencia_id;
-    return next;
-  end loop;
-end $$;
-comment on function public.banco_horas_extrato(uuid, date, date) is '[api] Extrato do banco de horas (máx. 366 dias).';
-
-create or replace function public.banco_horas_lancar(p_funcionario uuid, p_data date, p_tipo text, p_minutos integer,
-                                                     p_motivo text)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid; v_id uuid;
-begin
-  select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
-  if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if public.pode_operar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  if p_tipo is null or p_tipo not in ('saldo_inicial', 'ajuste', 'compensacao', 'pagamento') then
-    raise exception 'Tipo de lançamento inválido' using errcode = '22023';
-  end if;
-  if p_tipo = 'saldo_inicial' and not public.pode_administrar(v_empresa) then
-    raise exception 'Sem permissão' using errcode = '42501';
-  end if;
-  if p_motivo is null or btrim(p_motivo) = '' then raise exception 'Informe o motivo' using errcode = '22023'; end if;
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  if p_minutos is null then raise exception 'Informe os minutos' using errcode = '22023'; end if;
-  -- (revisão 2) limite de sanidade: ±100.000 min (≈ 1.666 h); 2.147.483.647 min era aceito e distorcia o saldo
-  if abs(p_minutos::bigint) > 100000 then
-    raise exception 'Minutos fora do limite (máximo 100.000)' using errcode = '22023';
-  end if;
-  if p_tipo = 'saldo_inicial'
-     and exists (select 1 from public.banco_horas_lancamentos
-                  where funcionario_id = p_funcionario and data = p_data and tipo = 'saldo_inicial') then
-    raise exception 'Já existe saldo inicial nesta data' using errcode = '23505';
-  end if;
-
-  insert into public.banco_horas_lancamentos (empresa_id, funcionario_id, data, tipo, minutos, motivo, criado_por, criado_por_nome)
-  values (v_empresa, p_funcionario, p_data, p_tipo, p_minutos, btrim(p_motivo), auth.uid(), public.ponto_nome_autor())
-  returning id into v_id;
-  return v_id;
-end $$;
-
 commit;
-select 'parte 08 de 15 instalada' as resultado;
+select 'parte 08 de 19 instalada' as resultado;

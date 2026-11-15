@@ -118,7 +118,12 @@ export function AbaDias({
       id: 'pontos',
       titulo: 'Pontos',
       alinhar: 'direita',
-      render: (d) => <span className="numero">{d.tipo === 'extra' ? pontosTexto(d.pontos) : <span className="text-lavanda-escuro">—</span>}</span>,
+      render: (d) =>
+        d.pontos_pendente ? (
+          <Selo tom="alerta">Pontuação pendente</Selo>
+        ) : (
+          <span className="numero">{d.tipo === 'extra' ? pontosTexto(d.pontos) : <span className="text-lavanda-escuro">—</span>}</span>
+        ),
     },
     { id: 'valor', titulo: 'Valor', alinhar: 'direita', render: (d) => <span className="numero font-semibold whitespace-nowrap">{formatarCentavos(d.valor_centavos)}</span> },
     {
@@ -265,7 +270,7 @@ export function ModalDia({
   const ativos = useMemo(() => (extras.data ?? []).filter((x) => x.ativo), [extras.data])
 
   const aplicarExtra = (x: Extra | undefined) => {
-    setPontos(x ? pontosTexto(x.pontos_padrao) : '')
+    setPontos(x && !x.pontos_pendente ? pontosTexto(x.pontos_padrao) : '')
     setValor(x?.valor_diaria_centavos ?? null)
     setFuncao(x?.funcao ?? '')
   }
@@ -277,7 +282,7 @@ export function ModalDia({
     setFuncionario(diaria?.funcionario_id ?? null)
     setFuncao(diaria?.funcao ?? '')
     setData(diaria?.data ?? hoje)
-    setPontos(diaria?.pontos != null ? pontosTexto(diaria.pontos) : '')
+    setPontos(diaria?.pontos != null && !diaria.pontos_pendente ? pontosTexto(diaria.pontos) : '')
     setValor(diaria?.valor_centavos ?? null)
     setObservacao(diaria?.observacao ?? '')
     setPago(diaria?.pago ?? false)
@@ -309,7 +314,11 @@ export function ModalDia({
   const erros = {
     pessoa: tipo === 'extra' ? (!extraId ? 'Escolha o extra' : null) : !funcionario ? 'Escolha o funcionário' : null,
     data: !data ? 'Informe a data' : !travado && (data < somarDias(hoje, -366) || data > somarDias(hoje, 62)) ? 'Data fora do limite' : null,
-    pontos: tipo === 'extra' && (pontos.trim() === '' || pontosLidos == null) ? 'Pontos inválidos (0 a 9999,99)' : null,
+    // extra/dia com pontuação pendente: vazio = continua pendente (vale 0 na comissão até preencher)
+    pontos:
+      tipo === 'extra' && (pontos.trim() === '' ? !(extraEscolhido?.pontos_pendente || diaria?.pontos_pendente) : pontosLidos == null)
+        ? 'Pontos inválidos (0 a 9999,99)'
+        : null,
     valor: valor == null ? 'Informe o valor da diária' : valor < 0 || valor > 100_000_000 ? 'Valor inválido' : null,
   }
 
@@ -418,7 +427,13 @@ export function ModalDia({
               htmlFor={`${id}-p`}
               obrigatorio
               erro={tentou ? erros.pontos : null}
-              ajuda={extraEscolhido ? `Padrão do cadastro: ${pontosTexto(extraEscolhido.pontos_padrao)}` : 'Entram no rateio da comissão deste dia.'}
+              ajuda={
+                extraEscolhido?.pontos_pendente || diaria?.pontos_pendente
+                  ? 'Pontuação pendente: em branco o dia vale 0 e o fechamento fica bloqueado até preencher.'
+                  : extraEscolhido
+                    ? `Padrão do cadastro: ${pontosTexto(extraEscolhido.pontos_padrao)}`
+                    : 'Entram no rateio da comissão deste dia.'
+              }
             >
               <Entrada
                 id={`${id}-p`}

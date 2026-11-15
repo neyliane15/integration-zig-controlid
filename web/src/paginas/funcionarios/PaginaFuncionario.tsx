@@ -46,7 +46,9 @@ import {
 } from '@/consultas/funcionarios'
 import { usePerfil } from '@/lib/sessao'
 import { podeAdministrar, podeOperar } from '@/lib/permissoes'
-import { formatarData, formatarDataHora, normalizar } from '@/lib/formato'
+import { formatarData, formatarDataHora, normalizar, somarDias } from '@/lib/formato'
+import { useFaltas, useRemoverFalta } from '@/consultas/faltas'
+import { rotuloTipoFalta } from '@/lib/rotulos'
 import { descreverFaixasHorario } from './horariosAcesso'
 
 type Aba = 'dados' | 'vinculos' | 'comissao' | 'jornada' | 'ocorrencias' | 'controlid'
@@ -239,6 +241,10 @@ function Ficha({ funcionario }: { funcionario: Funcionario | null }) {
         <>
           A data de desligamento será <strong>{formatarData(hoje)}</strong> e o cadastro ficará inativo. Nos equipamentos Control iD com envio
           ligado, o usuário será removido (ou bloqueado, conforme a configuração do equipamento). O histórico de ponto é mantido.
+          <span className="mt-2 block" data-teste="aviso-desligamento-comissao">
+            <strong>Comissão:</strong> {funcionario.nome.split(' ')[0]} sai do rateio a partir de <strong>{formatarData(somarDias(hoje, 1))}</strong>{' '}
+            (os dias até {formatarData(hoje)} continuam valendo). Os rascunhos de comissão são recalculados; fechamentos já fechados não mudam.
+          </span>
         </>
       ),
       textoConfirmar: 'Desligar',
@@ -471,7 +477,12 @@ function AbaDados({
         <Campo rotulo="Admissão" htmlFor={`${id}-adm`}>
           <EntradaData id={`${id}-adm`} valor={form.data_admissao} aoMudar={(v) => mudar('data_admissao', v)} />
         </Campo>
-        <Campo rotulo="Desligamento" htmlFor={`${id}-desl`} erro={erros.data_desligamento}>
+        <Campo
+          rotulo="Desligamento"
+          htmlFor={`${id}-desl`}
+          erro={erros.data_desligamento}
+          ajuda={form.data_desligamento ? `Sai da comissão a partir de ${formatarData(somarDias(form.data_desligamento, 1))}.` : undefined}
+        >
           <EntradaData id={`${id}-desl`} valor={form.data_desligamento} min={form.data_admissao ?? undefined} aoMudar={(v) => mudar('data_desligamento', v)} />
         </Campo>
         <div className="sm:col-span-2">
@@ -596,6 +607,7 @@ function AbaComissao({
           </Campo>
         </Cartao>
       )}
+      {funcionarioId && operar && <FaltasRecentes funcionarioId={funcionarioId} />}
       {funcionarioId && operar && (
         <Cartao titulo="Histórico de pontos" sobrancelha="Vigências">
           {historico.error ? (
@@ -616,6 +628,69 @@ function AbaComissao({
         </Cartao>
       )}
     </div>
+  )
+}
+
+/** Faltas dos últimos 60 dias (adendo extras v3): cada uma tira a comissão do dia. Registrar: pela Escala do mês. */
+function FaltasRecentes({ funcionarioId }: { funcionarioId: string }) {
+  const { hoje } = useContextoEmpresa()
+  const avisos = useAvisos()
+  const inicio = somarDias(hoje, -59)
+  const faltas = useFaltas(inicio, hoje, funcionarioId)
+  const remover = useRemoverFalta()
+  const lista = faltas.data ?? []
+  return (
+    <Cartao titulo="Faltas" sobrancelha={`Últimos 60 dias · ${lista.length}`}>
+      <p className="-mt-2 mb-3 text-xs text-lavanda">
+        Falta justificada ou injustificada tira a pessoa da comissão do dia. Registre pela Escala → Escala do mês (códigos FJ / FI).
+      </p>
+      {faltas.error ? (
+        <ErroCarga erro={faltas.error} aoTentar={() => faltas.refetch()} />
+      ) : (
+        <Tabela
+          colunas={[
+            { id: 'data', titulo: 'Dia', render: (f) => <span className="numero">{formatarData(f.data)}</span> },
+            {
+              id: 'tipo',
+              titulo: 'Tipo',
+              render: (f) => (
+                <span className="flex flex-col">
+                  <Selo tom={f.tipo === 'injustificada' ? 'perigo' : 'alerta'}>{rotuloTipoFalta[f.tipo]}</Selo>
+                  {f.motivo && <span className="mt-0.5 text-xs text-lavanda">{f.motivo}</span>}
+                </span>
+              ),
+            },
+            {
+              id: 'acoes',
+              titulo: '',
+              alinhar: 'direita',
+              render: (f) => (
+                <Botao
+                  variante="fantasma"
+                  tamanho="p"
+                  icone={<Trash2 aria-hidden />}
+                  aria-label={`Remover falta de ${formatarData(f.data)}`}
+                  disabled={remover.isPending}
+                  onClick={async () => {
+                    if (!(await avisos.confirmar({ titulo: `Remover a falta de ${formatarData(f.data)}?`, textoConfirmar: 'Remover' }))) return
+                    try {
+                      await remover.mutateAsync({ funcionarioId, data: f.data })
+                      avisos.sucesso('Falta removida')
+                    } catch (e) {
+                      avisos.erro(e)
+                    }
+                  }}
+                />
+              ),
+            },
+          ]}
+          linhas={lista}
+          chave={(f) => f.id}
+          carregando={faltas.isLoading}
+          vazio={<Vazio titulo="Nenhuma falta registrada" />}
+        />
+      )}
+    </Cartao>
   )
 }
 

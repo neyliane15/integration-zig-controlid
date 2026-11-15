@@ -65,6 +65,11 @@ begin
   insert into public.jornadas (empresa_id, nome) values (b, 'Iso B') returning id into h;
   insert into public.jornada_dias (jornada_id, dia_semana, entrada, saida) values (h, 1, '08:00', '17:00');
   insert into public.funcionario_jornadas (funcionario_id, jornada_id, vigente_desde) values (paolo, h, '2025-01-02');
+  -- faltas (adendo extras v3): direto na tabela (o isolamento é o que se testa aqui)
+  insert into public.funcionario_faltas (empresa_id, funcionario_id, data, tipo, motivo, criado_por_nome) values
+    (a, ana, public.dia_de_trabalho_atual(a) - 45, 'injustificada', null, 'Iso'),
+    (b, paolo, public.dia_de_trabalho_atual(b) - 45, 'justificada', 'Atestado', 'Iso')
+  on conflict (funcionario_id, data) do nothing;
 end $$;
 
 -- ------------------------------------------------------------------ catálogo: tabelas com empresa_id (+ empresas)

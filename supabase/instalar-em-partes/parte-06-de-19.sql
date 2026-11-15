@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 06 DE 15.
+-- Meu Dia de Gerente — instalação do banco, PARTE 06 DE 19.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000140_envio_controlid.sql, 20261006000200_ponto.sql. Não edite à mão.
 
@@ -422,7 +422,8 @@ create table if not exists public.ponto_dias (
   primeira_batida     timestamptz,
   ultima_batida       timestamptz,
   situacao            text not null check (situacao in ('completo', 'incompleto', 'ausente', 'folga',
-                                                        'sem_escala', 'abonado', 'suspenso', 'em_andamento')),
+                                                        'sem_escala', 'abonado', 'suspenso', 'em_andamento',
+                                                        'falta_justificada', 'falta_injustificada')),
   encerrado           boolean not null,
   alarmes_abertos     smallint not null default 0,
   apurado_em          timestamptz not null default now(),
@@ -501,9 +502,13 @@ create index if not exists ponto_abonos_ocorrencia_idx on public.ponto_abonos (o
 alter table public.ponto_abonos drop constraint if exists ponto_abonos_tipo_check;
 alter table public.ponto_abonos add constraint ponto_abonos_tipo_check
   check (tipo in ('folga', 'feriado', 'ferias', 'atestado', 'compensacao', 'outro', 'suspensao'));
+-- (adendo escala) abono 'ferias' gerado por ajuste de férias da escala (FK para escala_ajustes criada em …0280)
+alter table public.ponto_abonos add column if not exists escala_ajuste_id uuid;
+create index if not exists ponto_abonos_escala_ajuste_idx on public.ponto_abonos (escala_ajuste_id);
 alter table public.ponto_dias drop constraint if exists ponto_dias_situacao_check;
 alter table public.ponto_dias add constraint ponto_dias_situacao_check
-  check (situacao in ('completo', 'incompleto', 'ausente', 'folga', 'sem_escala', 'abonado', 'suspenso', 'em_andamento'));
+  check (situacao in ('completo', 'incompleto', 'ausente', 'folga', 'sem_escala', 'abonado', 'suspenso', 'em_andamento',
+                      'falta_justificada', 'falta_injustificada'));
 
 -- ======================================================= banco_horas_lancamentos
 create table if not exists public.banco_horas_lancamentos (
@@ -521,9 +526,6 @@ create table if not exists public.banco_horas_lancamentos (
 create unique index if not exists banco_horas_saldo_inicial_uk on public.banco_horas_lancamentos (funcionario_id, data)
   where tipo = 'saldo_inicial';
 create index if not exists banco_horas_empresa_idx on public.banco_horas_lancamentos (empresa_id, data);
-create index if not exists banco_horas_funcionario_idx on public.banco_horas_lancamentos (funcionario_id, data);
-create index if not exists banco_horas_criado_por_idx on public.banco_horas_lancamentos (criado_por);
-comment on table public.banco_horas_lancamentos is '[api:leitura] Lançamentos manuais do banco de horas (saldo inicial, ajustes, compensações, pagamentos).';
 
 commit;
-select 'parte 06 de 15 instalada' as resultado;
+select 'parte 06 de 19 instalada' as resultado;

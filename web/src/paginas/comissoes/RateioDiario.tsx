@@ -1,15 +1,28 @@
 /**
  * Detalhe do rateio diário (adendo E.3): uma linha por dia com serviço, retenção, base e participantes; expande para ver quanto
- * coube a cada um. Dias "sem presença registrada" foram rateados entre todos os funcionários incluídos (fallback).
+ * coube a cada um, de onde veio a presença (ponto, escala, fallback) e quem ficou de fora e por quê (falta, suspensão, férias,
+ * desligamento… — adendo extras v3, §E.7.1).
  */
 import { useState } from 'react'
 import clsx from 'clsx'
 import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
 import { Botao, Cartao, FOCO, Selo } from '@/componentes/ui'
-import type { DiaCalculado, ItemCalculado } from '@/lib/comissao'
+import type { DiaCalculado, ItemCalculado, OrigemRateio } from '@/lib/comissao'
+import type { Tom } from '@/componentes/ui'
+import { rotuloMotivoPresencaCurto } from '@/lib/rotulos'
 import { diaSemanaCurto, formatarCentavos, formatarData } from '@/lib/formato'
 
 const fmtPontos = (n: number) => n.toLocaleString('pt-BR', { maximumFractionDigits: 2 })
+
+const ORIGEM: Record<OrigemRateio, { rotulo: string; titulo: string } | null> = {
+  ponto: { rotulo: 'Ponto', titulo: 'Bateu o ponto no dia' },
+  escala: { rotulo: 'Escala', titulo: 'Sem ponto no dia: escalado para trabalhar' },
+  fallback: { rotulo: 'Sem registro', titulo: 'Sem ponto e fora da escala: entrou pelo fallback' },
+  ultimo_recurso: { rotulo: 'Último recurso', titulo: 'Ninguém presente no dia: rateado entre os incluídos sem bloqueio' },
+  presente: { rotulo: 'Presente', titulo: 'Presente no dia' },
+  extra: null,
+}
+const TOM_MOTIVO = (m: string): Tom => (m === 'falta_injustificada' || m === 'suspensao' || m === 'fora_vinculo' ? 'perigo' : m === 'sem_batida' || m === 'sem_registro' ? 'neutro' : 'alerta')
 
 export function RateioDiario({ dias, itens, previa }: { dias: DiaCalculado[]; itens: ItemCalculado[]; previa: boolean }) {
   const [abertos, setAbertos] = useState<Set<string>>(() => new Set())
@@ -74,7 +87,10 @@ export function RateioDiario({ dias, itens, previa }: { dias: DiaCalculado[]; it
                     {aberto ? <ChevronDown aria-hidden className="size-4 shrink-0 text-lavanda" /> : <ChevronRight aria-hidden className="size-4 shrink-0 text-lavanda" />}
                     <span className="numero font-semibold text-creme">{formatarData(d.data)}</span>
                     <span className="text-xs text-lavanda">{diaSemanaCurto(d.data)}</span>
-                    {d.semPresenca && <Selo tom="alerta">Sem presença</Selo>}
+                    {d.semPresenca && <Selo tom="alerta">Fallback</Selo>}
+                    {d.ausentes.some((a) => a.motivo !== 'sem_batida' && a.motivo !== 'folga_escala' && a.motivo !== 'sem_registro') && (
+                      <Selo tom="perigo">{d.ausentes.filter((a) => a.motivo !== 'sem_batida' && a.motivo !== 'folga_escala' && a.motivo !== 'sem_registro').length} ausente(s)</Selo>
+                    )}
                     {d.semParticipantes && <Selo tom="perigo">Sem participantes</Selo>}
                   </span>
                   <span className="numero hidden text-right md:block">{formatarCentavos(d.servicoBrutoCentavos)}</span>
@@ -93,7 +109,7 @@ export function RateioDiario({ dias, itens, previa }: { dias: DiaCalculado[]; it
                     {d.semPresenca && (
                       <p className="mb-3 flex items-start gap-2 rounded-entrada border border-alerta/40 bg-alerta/10 p-3 text-sm text-alerta">
                         <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-                        Dia sem presença registrada — rateado entre todos os funcionários incluídos.
+                        Dia com gente sem registro de presença (sem ponto e fora da escala) — entrou pelo fallback.
                       </p>
                     )}
                     {d.semParticipantes && (
@@ -126,6 +142,17 @@ export function RateioDiario({ dias, itens, previa }: { dias: DiaCalculado[]; it
                                   <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-creme">
                                     <span className="truncate">{it?.nome}</span>
                                     {it?.tipo === 'extra' && <Selo tom="info">Extra</Selo>}
+                                    {ORIGEM[r.origem] && (
+                                      <span
+                                        className={clsx(
+                                          'rounded-pilula border px-1.5 text-[10px] font-semibold',
+                                          r.fallback ? 'border-alerta/50 text-alerta' : 'border-borda text-lavanda',
+                                        )}
+                                        title={ORIGEM[r.origem]!.titulo}
+                                      >
+                                        {ORIGEM[r.origem]!.rotulo}
+                                      </span>
+                                    )}
                                   </span>
                                 </td>
                                 <td className="numero py-2 text-right">{fmtPontos(r.pontos)}</td>
@@ -142,6 +169,19 @@ export function RateioDiario({ dias, itens, previa }: { dias: DiaCalculado[]; it
                           })}
                         </tbody>
                       </table>
+                    )}
+                    {d.ausentes.length > 0 && (
+                      <div className="mt-3" data-teste="ausentes-dia">
+                        <p className="mb-1.5 text-[11px] font-bold tracking-[0.12em] text-lavanda uppercase">Fora do rateio do dia</p>
+                        <ul className="flex flex-wrap gap-1.5">
+                          {d.ausentes.map((a) => (
+                            <li key={a.indice} className="flex items-center gap-1.5 rounded-pilula border border-borda bg-cartao-2/60 py-0.5 pr-1 pl-2.5 text-xs text-creme">
+                              {itens[a.indice]?.nome}
+                              <Selo tom={TOM_MOTIVO(a.motivo)}>{rotuloMotivoPresencaCurto[a.motivo]}</Selo>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     )}
                   </div>
                 )}

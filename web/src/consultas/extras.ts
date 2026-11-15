@@ -3,7 +3,7 @@
  * valor padrão de diária do funcionário e gastos do período. Tudo por RPC (G A M).
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { Diaria, Extra, GastosPeriodo, TipoDiaria } from '@/tipos/banco'
+import type { Diaria, Extra, ExtraImportacao, GastosPeriodo, TipoDiaria } from '@/tipos/banco'
 import { chamarRpc } from '@/lib/supabase'
 import { chaves, invalidar } from '@/lib/consultas'
 import { useEmpresaAtual } from '@/lib/sessao'
@@ -24,7 +24,9 @@ export function useExtras(incluirInativos = false) {
         ...x,
         pontos_padrao: num(x.pontos_padrao),
         valor_diaria_centavos: numOuNull(x.valor_diaria_centavos),
+        pontos_pendente: !!x.pontos_pendente,
         dias_lancados: num(x.dias_lancados),
+        dias_pendentes: num(x.dias_pendentes),
       })),
   })
 }
@@ -32,7 +34,8 @@ export function useExtras(incluirInativos = false) {
 export interface DadosExtra {
   nome: string
   funcao: string | null
-  pontosPadrao: number
+  /** null = mantém a pontuação pendente (só extra pendente; §E.7.5) */
+  pontosPadrao: number | null
   valorDiariaCentavos: number | null
   telefone: string | null
   documento: string | null
@@ -67,7 +70,7 @@ export function useSalvarExtra() {
     return chamarRpc('extra_criar', {
       p_nome: d.nome,
       p_funcao: d.funcao,
-      p_pontos_padrao: d.pontosPadrao,
+      p_pontos_padrao: d.pontosPadrao ?? 0,
       p_valor_diaria_centavos: d.valorDiariaCentavos,
       p_telefone: d.telefone,
       p_documento: d.documento,
@@ -84,7 +87,8 @@ export function useAtivarExtra() {
       p_extra: x.extra.id,
       p_nome: x.extra.nome,
       p_funcao: x.extra.funcao,
-      p_pontos_padrao: x.extra.pontos_padrao,
+      // pendente: null mantém a pendência (0 definiria a pontuação como zero)
+      p_pontos_padrao: x.extra.pontos_pendente ? null : x.extra.pontos_padrao,
       p_valor_diaria_centavos: x.extra.valor_diaria_centavos,
       p_telefone: x.extra.telefone,
       p_documento: x.extra.documento,
@@ -92,6 +96,35 @@ export function useAtivarExtra() {
       p_observacoes: x.extra.observacoes,
     }),
   )
+}
+
+/** Preenche a pontuação de um extra pendente: grava no cadastro e nos dias pendentes (fora de fechamento fechado). Retorna nº de dias. */
+export function useDefinirPontuacao() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (a: { extraId: string; pontos: number }) => chamarRpc('extra_definir_pontuacao', { p_extra: a.extraId, p_pontos: a.pontos }),
+    onSuccess: () => invalidar(qc, 'extras', 'diarias', 'gastos', 'comissoes', 'fechamento'),
+  })
+}
+
+/** Importação em lote (§E.7.6): cada linha é atômica; o retorno traz os erros por linha (índice do item, 1-based). */
+export function useImportarExtras() {
+  const qc = useQueryClient()
+  const { empresaId } = useEmpresaAtual()
+  return useMutation({
+    mutationFn: async (itens: ExtraImportacao[]) => {
+      const r = await chamarRpc('extras_importar', { p_itens: itens, p_empresa: empresaId })
+      return {
+        lidos: num(r.lidos),
+        criados: num(r.criados),
+        atualizados: num(r.atualizados),
+        dias_lancados: num(r.dias_lancados),
+        pendentes_pontuacao: num(r.pendentes_pontuacao),
+        erros: (r.erros ?? []).map((e) => ({ linha: num(e.linha), mensagem: String(e.mensagem) })),
+      }
+    },
+    onSuccess: () => invalidar(qc, 'extras', 'diarias', 'gastos'),
+  })
 }
 
 export function useExcluirExtra() {
@@ -129,6 +162,7 @@ export function useDiarias(inicio: string, fim: string, tipo: TipoDiaria | null 
       ((await chamarRpc('diarias_listar', { p_inicio: inicio, p_fim: fim, p_tipo: tipo, p_empresa: empresaId })) ?? []).map<Diaria>((d) => ({
         ...d,
         pontos: numOuNull(d.pontos),
+        pontos_pendente: !!d.pontos_pendente,
         valor_centavos: num(d.valor_centavos),
       })),
   })

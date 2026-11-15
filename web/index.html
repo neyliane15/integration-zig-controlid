@@ -3,8 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#060A17" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#f6f1e4" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1c1f14" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // tema escolhido na casca (claro/escuro); sem escolha segue o sistema. Antes do CSS para não piscar.
+      try {
+        var t = localStorage.getItem('mdg:tema')
+        if (t === 'claro' || t === 'escuro') document.documentElement.dataset.theme = t === 'claro' ? 'light' : 'dark'
+      } catch (e) {}
+    </script>
     <meta name="description" content="Meu Dia de Gerente — ponto, vendas, comissões e tarefas do seu bar ou restaurante num só lugar." />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Meu Dia de Gerente</title>

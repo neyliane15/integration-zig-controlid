@@ -117,7 +117,9 @@ describe('ponta a ponta contra o mock do n2', { skip: !temMock && 'n8n/mocks/ser
     const maxNsr = Math.max(...leitura.marcacoes.map((m) => m.nsr))
     const r2 = await L.buscarBatidas({ http: httpFetch, config: config('controlid_rep', { cursor: { ultimo_nsr: maxNsr - 3 } }), entrada: {} })
     assert.deepEqual(r2.detalhes.afd_pedido, { initial_nsr: maxNsr - 2 })
-    assert.deepEqual(lerAfd(r2.afd).marcacoes.map((m) => m.nsr), [maxNsr - 2, maxNsr - 1, maxNsr])
+    // NSR do mock = dia*100 + sequência (não é contínuo entre dias): o esperado sai da 1ª leitura, não de maxNsr-2..maxNsr.
+    const esperados = leitura.marcacoes.map((m) => m.nsr).filter((n) => n >= maxNsr - 2).sort((a, b) => a - b)
+    assert.deepEqual(lerAfd(r2.afd).marcacoes.map((m) => m.nsr), esperados)
   })
 
   it('envio acesso: horários, criar/alterar/bloquear/remover, senha, cartões, regras e foto — idempotente', async () => {
