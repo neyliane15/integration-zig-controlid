@@ -188,9 +188,11 @@ test("faltas: FI digitada, FJ pelo painel (motivo), legenda, bloqueios e remover
   const trabalham = grade.locator(
     `td[data-data="${hoje}"][data-status="trabalha"]:not([data-falta]) input`,
   );
-  const rotulos = await trabalham.evaluateAll((els) =>
-    els.map((e) => e.getAttribute("aria-label")!),
-  );
+  // A carga demo (seed 30) suspende a Eva Martins a partir de hoje: suspensão é abono no ponto (não aparece na
+  // grade da escala) e falta nesse dia é recusada com "Já existe abono" — fica fora dos candidatos.
+  const rotulos = (
+    await trabalham.evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")!))
+  ).filter((r) => !r.startsWith("Eva Martins,"));
   const rotulo = rotulos[info.project.name === "celular" ? 1 : 0]!;
   expect(rotulo).toBeTruthy();
   const nome = rotulo.split(",")[0]!;

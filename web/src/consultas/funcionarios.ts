@@ -317,11 +317,12 @@ export function useRemoverJornadaFuncionario() {
 // ------------------------------------------------------------ Control iD
 export type EquipamentoControlId = Pick<Integracao, 'id' | 'nome' | 'tipo' | 'ativa' | 'parametros'>
 
-/** Equipamentos Control iD da empresa (G A M). */
-export function useEquipamentosControlId() {
+/** Equipamentos Control iD da empresa (G A M). `comRhid`: inclui a integração RHiD (pessoas por CPF, só para o vínculo). */
+export function useEquipamentosControlId(opcoes?: { comRhid?: boolean }) {
   const { empresaId } = useEmpresaAtual()
+  const tipos = opcoes?.comRhid ? ['controlid_acesso', 'controlid_rep', 'rhid'] : ['controlid_acesso', 'controlid_rep']
   return useQuery({
-    queryKey: ['integracoes', empresaId ?? null, 'controlid-equipamentos'],
+    queryKey: ['integracoes', empresaId ?? null, 'controlid-equipamentos', tipos.length],
     enabled: !!empresaId,
     queryFn: async () =>
       exigir(
@@ -329,7 +330,7 @@ export function useEquipamentosControlId() {
           .from('integracoes')
           .select('id, nome, tipo, ativa, parametros')
           .eq('empresa_id', empresaId as string)
-          .in('tipo', ['controlid_acesso', 'controlid_rep'])
+          .in('tipo', tipos)
           .order('nome'),
       ) as EquipamentoControlId[],
   })

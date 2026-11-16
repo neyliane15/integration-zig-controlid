@@ -31,7 +31,7 @@ function VinculosDoFuncionario({ funcionarioId }: { funcionarioId: string }) {
   const perfil = usePerfil()
   const editavel = podeOperar(perfil.papel)
   const avisos = useAvisos()
-  const equipamentos = useEquipamentosControlId()
+  const equipamentos = useEquipamentosControlId({ comRhid: true })
   const usuarios = useControlIdUsuarios()
   const vincular = useVincularControlId()
   const idBase = useId()

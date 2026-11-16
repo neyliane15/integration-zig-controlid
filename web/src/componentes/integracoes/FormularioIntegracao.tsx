@@ -11,6 +11,7 @@ import type {
   ParametrosControlIdRep,
   ParametrosEnvioControlId,
   ParametrosIntegracao,
+  ParametrosRhid,
   ParametrosTagme,
   ParametrosZig,
   TipoIntegracao,
@@ -117,6 +118,8 @@ export function FormularioIntegracao({
   const definirEnvio = (k: keyof ParametrosEnvioControlId, v: unknown) => setParametros((a) => ({ ...a, envio: { ...(a.envio as object), [k]: v } }))
   const ehControlId = tipo === 'controlid_acesso' || tipo === 'controlid_rep'
   const ehTagme = tipo === 'tagme'
+  const ehRhid = tipo === 'rhid'
+  const pr = parametros as ParametrosRhid
   const ehAcesso = tipo === 'controlid_acesso'
   const ehFace = ehAcesso && /idface/i.test(p.modelo ?? '')
   // relógio por arquivo (RHiD): sem rede, sem segredos, sem envio — as marcações chegam por "Importar AFD"
@@ -128,8 +131,11 @@ export function FormularioIntegracao({
     e.preventDefault()
     setErro(null)
     if (!nome.trim()) return setErro('Informe o nome')
-    const dias = Number(p.dias_retroativos ?? 2)
-    if (!Number.isInteger(dias) || dias < 0 || dias > 31) return setErro('Dias retroativos: de 0 a 31.')
+    const dias = Number(p.dias_retroativos ?? (ehRhid ? 7 : 2))
+    const maxDias = ehRhid ? 88 : 31 // RHiD: o AFD aceita no máximo 90 dias por consulta
+    if (!Number.isInteger(dias) || dias < 0 || dias > maxDias) return setErro(`Dias retroativos: de 0 a ${maxDias}.`)
+    if (ehRhid && (pr.equipamentos ?? []).some((x) => !/^[0-9]{1,12}$/.test(String(x))))
+      return setErro('Equipamentos: só ids numéricos do RHiD, separados por vírgula (ou deixe vazio).')
     if (tipo === 'zig' && !String(p.rede ?? '').trim()) return setErro('Informe o id da rede na Zig.')
     if (ehTagme) {
       const frente = Number((parametros as ParametrosTagme).dias_a_frente ?? 7)
@@ -176,6 +182,18 @@ export function FormularioIntegracao({
             restaurante e as credenciais abaixo; a configuração do N8N está em <span className="numero text-creme">docs/IMPLANTACAO-N8N-HOSTINGER.md</span>.
             Enquanto isso, exporte as reservas no painel <span className="numero text-creme">waitlist.tagme.com.br</span> (Reservas → exportar) e
             importe o CSV em <strong className="text-creme">Reservas → Importar CSV</strong>, ou lance as reservas à mão.
+          </p>
+        </div>
+      )}
+
+      {ehRhid && (
+        <div className="rounded-entrada border border-info/35 bg-info/5 px-4 py-3 text-sm leading-relaxed text-creme">
+          <p className="font-semibold">Relógio na nuvem RHiD: o N8N busca as pessoas e as marcações pela API oficial do RHiD.</p>
+          <p className="mt-1 text-lavanda">
+            Crie no RHiD um <strong className="text-creme">usuário próprio para a integração</strong> (Cadastros/Configurações → Usuários),
+            com permissão de <strong className="text-creme">leitura de pessoas e de relatórios</strong> (AFD), e use o e-mail e a senha dele
+            aqui — não use o login de uma pessoa. O relógio não precisa estar na mesma rede: basta ele sincronizar com o RHiD. Sem
+            equipamentos informados, entram todos os REPs da conta e o REP-P (marcações por app/web).
           </p>
         </div>
       )}
@@ -262,13 +280,41 @@ export function FormularioIntegracao({
               <Entrada id={`${id}-rede`} value={p.rede ?? ''} onChange={(e) => definir('rede', e.target.value)} disabled={ro} />
             </Campo>
           )}
+          {ehRhid && (
+            <Campo
+              rotulo="Equipamentos (opcional)"
+              htmlFor={`${id}-equip`}
+              ajuda="Ids dos REPs no RHiD, separados por vírgula. Vazio = todos os REPs da conta (+ REP-P)."
+            >
+              <Entrada
+                id={`${id}-equip`}
+                className="numero"
+                inputMode="numeric"
+                placeholder="todos"
+                value={(pr.equipamentos ?? []).join(', ')}
+                onChange={(e) =>
+                  definir(
+                    'equipamentos',
+                    e.target.value
+                      .split(/[,\s;]+/)
+                      .filter(Boolean),
+                  )
+                }
+                disabled={ro}
+              />
+            </Campo>
+          )}
           {!porArquivo && (
-          <Campo rotulo="Dias retroativos" htmlFor={`${id}-dias`} ajuda="Quantos dias para trás cada sincronização relê.">
+          <Campo
+            rotulo="Dias retroativos"
+            htmlFor={`${id}-dias`}
+            ajuda={ehRhid ? 'Na 1ª sincronização de cada relógio (depois segue pelo último NSR). 0 a 88.' : 'Quantos dias para trás cada sincronização relê.'}
+          >
             <Entrada
               id={`${id}-dias`}
               type="number"
               min={0}
-              max={31}
+              max={ehRhid ? 88 : 31}
               inputMode="numeric"
               className="numero"
               value={String(p.dias_retroativos ?? 2)}
@@ -309,6 +355,22 @@ export function FormularioIntegracao({
         </div>
         <div className="flex flex-col gap-3">
           <Interruptor rotulo="Integração ativa" marcado={ativa} aoMudar={setAtiva} desabilitado={ro} />
+          {ehRhid && (
+            <>
+              <Interruptor
+                rotulo="Importar pessoas do RHiD (vínculo automático por CPF)"
+                marcado={pr.importar_pessoas !== false}
+                aoMudar={(v) => definir('importar_pessoas', v)}
+                desabilitado={ro}
+              />
+              <Interruptor
+                rotulo="Incluir o REP-P (marcações por app/web)"
+                marcado={pr.incluir_rep_p !== false}
+                aoMudar={(v) => definir('incluir_rep_p', v)}
+                desabilitado={ro}
+              />
+            </>
+          )}
           {ehAcesso && (
             <Interruptor
               rotulo="Relógio do equipamento em hora local"
