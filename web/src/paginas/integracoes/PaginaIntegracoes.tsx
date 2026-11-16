@@ -161,6 +161,20 @@ export function PaginaIntegracoes() {
             </li>
           </ul>
         ) : novoTipo && empresaId ? (
+          <>
+          {novoTipo === 'rhid' &&
+            lista
+              .filter((x) => x.tipo === 'controlid_rep' && x.ativa)
+              .slice(0, 1)
+              .map((x) => (
+                <p key={x.id} className="mb-5 rounded-entrada border border-ouro/40 bg-ouro/5 px-4 py-3 text-sm text-creme">
+                  Já existe o relógio <strong>{x.nome}</strong> (Control iD REP). Para manter os vínculos de CPF com os funcionários,{' '}
+                  <Link to={`/integracoes/${x.id}`} onClick={() => setNovoTipo(null)} className="font-semibold text-ouro underline hover:text-ouro-claro">
+                    abra-o e use “Trocar para RHiD”
+                  </Link>
+                  . Ou crie uma nova abaixo.
+                </p>
+              ))}
           <FormularioIntegracao
             empresaId={empresaId}
             tipo={novoTipo}
@@ -170,6 +184,7 @@ export function PaginaIntegracoes() {
               navegar(`/integracoes/${id}`)
             }}
           />
+          </>
         ) : null}
       </Modal>
     </div>

@@ -193,6 +193,7 @@ as $$
     when 'controlid_acesso' then array['url', 'login', 'senha']
     when 'controlid_rep' then array['url', 'login', 'senha']
     when 'tagme' then array['token', 'cliente_id', 'cliente_segredo']
+    when 'rhid' then array['email', 'senha', 'dominio']
     else array[]::text[]
   end
 $$;
@@ -267,9 +268,9 @@ language sql immutable
 set search_path = public, extensions, pg_temp
 as $$
   select case p_escopo
-    when 'tudo' then p_tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')
-    when 'funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep')
-    when 'batidas' then p_tipo in ('controlid_acesso', 'controlid_rep')
+    when 'tudo' then p_tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme', 'rhid')
+    when 'funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep', 'rhid')
+    when 'batidas' then p_tipo in ('controlid_acesso', 'controlid_rep', 'rhid')
     when 'vendas' then p_tipo = 'zig'
     when 'reservas' then p_tipo = 'tagme'
     when 'exportar_funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep')
@@ -391,7 +392,7 @@ language plpgsql volatile security definer
 set search_path = public, extensions, pg_temp
 as $$
 declare
-  v public.integracoes := public.integracao_validar(p_integracao, array['controlid_acesso', 'controlid_rep']);
+  v public.integracoes := public.integracao_validar(p_integracao, array['controlid_acesso', 'controlid_rep', 'rhid']);
   v_rep boolean;
   v_ident text;
   v_item jsonb;
@@ -408,7 +409,7 @@ begin
   if p_usuarios is null or jsonb_typeof(p_usuarios) <> 'array' then
     raise exception 'Lista de usuários inválida' using errcode = '22023';
   end if;
-  v_rep := v.tipo = 'controlid_rep';
+  v_rep := v.tipo in ('controlid_rep', 'rhid');   -- rhid: pessoas do RHiD por CPF (ingestao_rhid_pessoas, …0310)
   v_ident := coalesce(v.parametros ->> 'identificador', 'cpf');
 
   for v_item in select value from jsonb_array_elements(p_usuarios) loop
@@ -474,7 +475,14 @@ begin
      order by c.user_id_externo
   loop
     v_func := null;
-    if r.registration is not null then
+    if v.tipo = 'rhid' and r.cpf is not null then
+      -- RHiD: CPF primeiro (a matrícula do RHiD nem sempre é a deste sistema)
+      select min(f.id::text)::uuid into v_func from public.funcionarios f
+       where f.empresa_id = v.empresa_id and f.cpf = r.cpf
+         and not exists (select 1 from public.controlid_usuarios x where x.integracao_id = v.id and x.funcionario_id = f.id)
+      having count(*) = 1;
+    end if;
+    if v_func is null and r.registration is not null then
       select min(f.id::text)::uuid into v_func from public.funcionarios f
        where f.empresa_id = v.empresa_id and f.matricula = r.registration
          and not exists (select 1 from public.controlid_usuarios x where x.integracao_id = v.id and x.funcionario_id = f.id)

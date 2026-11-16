@@ -1,7 +1,7 @@
 # Meu Dia de Gerente — Contrato técnico
 
 Fonte única da verdade entre **banco (Supabase)**, **front (web/)** e **N8N (n8n/)**.
-Adendos: `docs/CONTRATO-ADENDO-envio-controlid.md`, `docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md` (ocorrências, extras, reservas/Tagme).
+Adendos: `docs/CONTRATO-ADENDO-envio-controlid.md`, `docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md` (ocorrências, extras, reservas/Tagme). RHiD (nuvem da Control iD, tipo `rhid`): `docs/CONTRATO-ADENDO-rhid.md`.
 Seis agentes implementam em paralelo a partir deste documento (divisão em `docs/DIVISAO.md`).
 Mudou algo? Atualize **aqui primeiro** e avise os donos afetados.
 
@@ -229,6 +229,7 @@ Nas tabelas `[api:crud]`, quem não tem política para a operação recebe 0 lin
 | `20261006000260_extras.sql` | backend | pontos extras (RPCs), diárias, `gastos_periodo` (adendo) |
 | `20261006000270_reservas.sql` | backend | reservas, importação CSV, `ingestao_reservas` (Tagme) (adendo) |
 | `20261006000280_escala.sql` | backend | escala rotativa (setores, membros, caminhos, ajustes, troca, férias → abono, integração com a apuração; `docs/CONTRATO-ADENDO-escala.md`) |
+| `20261006000310_rhid.sql` | integração RHiD | tipo `rhid`: `ingestao_rhid_pessoas`, `ingestao_rhid_batidas` (cursor por equipamento), `integracao_trocar_para_rhid` (`docs/CONTRATO-ADENDO-rhid.md`) |
 | `20261006000900_permissoes.sql` | backend-1 | varredura de privilégios por etiqueta (§2.2). **Sempre a última.** |
 
 O backend-2 escreve contra o DDL do §5 **exatamente** como está aqui (nomes, tipos, nulidade).

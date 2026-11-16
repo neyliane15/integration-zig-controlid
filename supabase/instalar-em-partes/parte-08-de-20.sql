@@ -33,7 +33,7 @@ declare
   v_datas  date[];
   v_dia    date;
 begin
-  select case when i.tipo = 'controlid_rep' then 'controlid_rep' else 'controlid_acesso' end into v_origem
+  select case when i.tipo in ('controlid_rep', 'rhid') then 'controlid_rep' else 'controlid_acesso' end into v_origem
     from public.integracoes i where i.id = new.integracao_id;
   -- REP (user_id_externo = CPF/PIS): sem vínculo, a batida volta ao funcionário com esse CPF/PIS na ficha (como na ingestão)
   if v_origem = 'controlid_rep' and v_alvo is null then

@@ -394,13 +394,13 @@ declare
   v_par       text;
   v_motivo    text;
 begin
-  ig := public.ingestao_integracao_validar(p_integracao, array['controlid_acesso', 'controlid_rep']);
+  ig := public.ingestao_integracao_validar(p_integracao, array['controlid_acesso', 'controlid_rep', 'rhid']);
   p_batidas := public.ingestao_lista(p_batidas);
   if jsonb_array_length(p_batidas) > 2000 then
     raise exception 'Lote maior que 2000 itens' using errcode = '22023';
   end if;
   select e.fuso into v_fuso from public.empresas e where e.id = ig.empresa_id;
-  v_rep := ig.tipo = 'controlid_rep';
+  v_rep := ig.tipo in ('controlid_rep', 'rhid');   -- rhid: AFD do RHiD (ingestao_rhid_batidas, …0310), origem controlid_rep
   v_eventos := coalesce(ig.parametros -> 'eventos_validos', '[7]'::jsonb);
   if jsonb_typeof(v_eventos) <> 'array' then v_eventos := '[7]'::jsonb; end if;
 
@@ -481,7 +481,7 @@ begin
     end if;
 
     insert into public.ponto_batidas (empresa_id, funcionario_id, integracao_id, origem, id_externo, pessoa_externa, instante)
-    values (ig.empresa_id, v_func, ig.id, ig.tipo, v_idext, v_pessoa, v_instante)
+    values (ig.empresa_id, v_func, ig.id, case when ig.tipo = 'rhid' then 'controlid_rep' else ig.tipo end, v_idext, v_pessoa, v_instante)
     on conflict (integracao_id, id_externo) do nothing
     returning id, data_trabalho into v_id, v_data;
 

@@ -355,7 +355,7 @@ end $$;-- ======================================================================
 create table if not exists public.integracoes (
   id                   uuid primary key default gen_random_uuid(),
   empresa_id           uuid not null references public.empresas (id) on delete cascade,
-  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')),
+  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme', 'rhid')),
   nome                 text not null check (btrim(nome) <> ''),
   ativa                boolean not null default true,
   parametros           jsonb not null default '{}'::jsonb,
@@ -374,7 +374,7 @@ comment on table public.integracoes is '[api:crud] Integrações (Zig, Control i
 -- (adendo extras/ocorrências/reservas) bancos já instalados: check do tipo com 'tagme'.
 alter table public.integracoes drop constraint if exists integracoes_tipo_check;
 alter table public.integracoes add constraint integracoes_tipo_check
-  check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme'));
+  check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme', 'rhid'));
 
 create table if not exists public.integracoes_segredos (
   integracao_id  uuid primary key references public.integracoes (id) on delete cascade,
@@ -446,7 +446,8 @@ create table if not exists public.sync_execucoes (
   solicitacao_id       uuid references public.sync_solicitacoes (id) on delete set null,
   tipo                 text not null check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                          'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
-                         'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar')),
+                         'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar',
+                         'rhid_pessoas', 'rhid_batidas')),
   gatilho              text not null check (gatilho in ('agendado', 'manual', 'webhook')),
   workflow             text not null,
   n8n_execution_id     text,
@@ -470,7 +471,8 @@ alter table public.sync_execucoes drop constraint if exists sync_execucoes_tipo_
 alter table public.sync_execucoes add constraint sync_execucoes_tipo_check
   check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                   'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
-                  'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar'));
+                  'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar',
+                  'rhid_pessoas', 'rhid_batidas'));
 
 -- ====================================================================================== gatilhos
 -- Parâmetros padrão por tipo (§11.1); as chaves informadas prevalecem.
@@ -484,6 +486,8 @@ as $$
       '{"modelo": "iDFace", "dias_retroativos": 2, "eventos_validos": [7], "relogio_em_hora_local": true}'::jsonb
     when 'controlid_rep' then '{"modelo": "iDClass", "dias_retroativos": 2, "identificador": "cpf"}'::jsonb
     when 'tagme' then '{"url_base": "", "restaurante_id": "", "dias_retroativos": 1, "dias_a_frente": 7}'::jsonb
+    -- RHiD (nuvem da Control iD, adendo docs/CONTRATO-ADENDO-rhid.md): equipamentos [] = todos os REPs do cliente (+ REP-P)
+    when 'rhid' then '{"equipamentos": [], "incluir_rep_p": true, "dias_retroativos": 7, "importar_pessoas": true}'::jsonb
     else '{}'::jsonb
   end
 $$;

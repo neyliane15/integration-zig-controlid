@@ -1,6 +1,6 @@
 -- Meu Dia de Gerente — instalação do banco, PARTE 19 DE 20.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000290_comissao_presenca.sql, 20261006000300_importar_afd.sql, 20261006000900_permissoes.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000290_comissao_presenca.sql, 20261006000300_importar_afd.sql, 20261006000310_rhid.sql. Não edite à mão.
 
 begin;
 create or replace function public.extras_importar(p_itens jsonb, p_empresa uuid default null)
@@ -438,26 +438,63 @@ begin
 end $$;
 comment on function public.ponto_afd_pendentes(uuid) is
   '[api] CPF/PIS do relógio sem funcionário, com as batidas pendentes (G A M).';-- =====================================================================================================
--- 20261006000900_permissoes.sql  (backend-1) — SEMPRE A ÚLTIMA MIGRAÇÃO.
--- Varre o catálogo de public e concede privilégios pela etiqueta no início do comment (§2.2):
---   tabela  [api:crud] → authenticated: select, insert, update, delete
---           [api:leitura] → authenticated: select
---           [api:nenhum] / sem etiqueta → nada
---   função  [api] / [politica] → execute para authenticated (+ service_role)
---           [servico] / [interno] / sem etiqueta → só service_role (e o dono)
--- anon não recebe nada em public. service_role recebe tudo. Idempotente (revoga antes de conceder).
+-- 20261006000310_rhid.sql — integração RHiD (nuvem da Control iD) pela API oficial (docs/referencias/rhid-swagger.json)
+-- O relógio REP da loja (iDClass, Portaria 671) não é alcançável pela rede, mas sincroniza com o RHiD; o N8N
+-- ("MDG · RHiD · Importar") faz login no RHiD, lê as pessoas (GET /person) e baixa o AFD 671 de cada equipamento
+-- (GET /report/afd/download671, e o do coletor REP-P) a partir do último NSR. Aqui ficam:
+--   · ingestao_rhid_pessoas  → reaproveita ingestao_controlid_usuarios (id = CPF; vínculo automático matrícula/CPF)
+--   · ingestao_rhid_batidas  → reaproveita ingestao_controlid_batidas (id_externo = "<equipamento>|<NSR>", origem
+--                              controlid_rep) e mantém o cursor por equipamento {nsr_por_equipamento: {id: ultimo_nsr}}
+--   · integracao_trocar_para_rhid → troca um relógio controlid_rep (por rede ou por arquivo) por um RHiD sem perder vínculos
+-- O tipo 'rhid' (checks, parâmetros padrão, segredos {email, senha, dominio}, escopos, tipos de execução rhid_pessoas e
+-- rhid_batidas) está nas listas da …0120 (os checks precisam aceitar 'rhid' já na reaplicação das migrações).
+-- Idempotente. Contrato: docs/CONTRATO-ADENDO-rhid.md.
 -- =====================================================================================================
 
--- Objetos novos criados pelo dono (postgres) em public não ficam abertos por padrão: só esta varredura concede.
-alter default privileges in schema public revoke all on tables from anon, authenticated;
-alter default privileges in schema public revoke all on sequences from anon, authenticated;
-alter default privileges in schema public revoke all on functions from anon, authenticated;
-alter default privileges in schema public revoke execute on functions from public;
-alter default privileges in schema public grant all on tables to service_role;
-alter default privileges in schema public grant all on sequences to service_role;
-alter default privileges in schema public grant execute on functions to service_role;
+-- ------------------------------------------------------------------ auxiliares
+-- CPF/PIS do RHiD (número inteiro na API: perde os zeros à esquerda) → 11 dígitos; vazio/zero/maior que 11 → null.
+create or replace function public.rhid_documento(p_valor jsonb) returns text
+language sql immutable set search_path = public, extensions, pg_temp as $$
+  select case when d ~ '^[0-9]{1,11}$' and d !~ '^0+$' then lpad(d, 11, '0') end
+    from (select regexp_replace(coalesce(p_valor #>> '{}', ''), '[^0-9]', '', 'g') as d) x
+$$;
+comment on function public.rhid_documento(jsonb) is '[interno] CPF/PIS do RHiD (número) → 11 dígitos com zeros à esquerda (ou null).';
 
-grant usage on schema public to anon, authenticated, service_role;
+-- ---------------------------------------------------------------- pessoas (GET /person)
+-- p_pessoas: os PersonDTO do RHiD como vieram ({id, cpf, pis, name, registration, status, ...}). Snapshot completo:
+-- quem não vier é marcado removido_no_equipamento (a ingestão do Control iD faz isso). Pessoa sem CPF é ignorada
+-- (Portaria 671: o REP identifica pelo CPF).
+create or replace function public.ingestao_rhid_pessoas(p_integracao uuid, p_pessoas jsonb) returns jsonb
+language plpgsql volatile security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig       public.integracoes := public.integracao_validar(p_integracao, array['rhid']);
+  v_itens  jsonb := '[]'::jsonb;
+  x        jsonb;
+  v_cpf    text;
+  v_sem    int := 0;
+  v_res    jsonb;
+begin
+  p_pessoas := public.ingestao_lista(p_pessoas);
+  if jsonb_array_length(p_pessoas) > 20000 then
+    raise exception 'Lista maior que 20000 pessoas' using errcode = '22023';
+  end if;
+  for x in select value from jsonb_array_elements(p_pessoas) loop
+    v_cpf := case when jsonb_typeof(x) = 'object' then public.rhid_documento(x -> 'cpf') end;
+    if v_cpf is null then
+      v_sem := v_sem + 1;
+      continue;
+    end if;
+    v_itens := v_itens || jsonb_build_object(
+      'id', v_cpf, 'cpf', v_cpf, 'pis', public.rhid_documento(x -> 'pis'),
+      'name', coalesce(public.ingestao_texto(x -> 'name'), public.ingestao_texto(x -> 'socialName')),
+      'registration', public.ingestao_texto(x -> 'registration'));
+  end loop;
+  v_res := public.ingestao_controlid_usuarios(ig.id, v_itens);
+  return v_res || jsonb_build_object('lidos', jsonb_array_length(p_pessoas), 'sem_cpf', v_sem,
+                                     'ignorados', coalesce((v_res ->> 'ignorados')::int, 0) + v_sem);
+end $$;
+comment on function public.ingestao_rhid_pessoas(uuid, jsonb) is
+  '[servico] Pessoas do RHiD (GET /person) → usuários do relógio por CPF + vínculo automático (reaproveita a do Control iD).';
 
 commit;
 select 'parte 19 de 20 instalada' as resultado;

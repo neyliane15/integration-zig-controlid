@@ -159,6 +159,15 @@ export function useExcluirIntegracao() {
   })
 }
 
+/** Troca um relógio Control iD REP (rede ou arquivo) por uma integração RHiD, mantendo os vínculos (adendo RHiD). */
+export function useTrocarParaRhid() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (integracaoId: string) => chamarRpc('integracao_trocar_para_rhid', { p_integracao: integracaoId }),
+    onSuccess: () => invalidar(qc, 'integracoes', 'painel', 'controlid-usuarios'),
+  })
+}
+
 // ---------------------------------------------------------------- lojas Zig
 export function useLojasZig(empresaId: string | null, integracaoId?: string | null) {
   return useQuery({

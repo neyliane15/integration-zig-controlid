@@ -15,7 +15,7 @@ e-mail — gravando tudo no Supabase do sistema.
 | endereço do N8N (ex.: `https://n8n.seudominio.com.br`) | o que você configurou ao instalar o template "n8n" |
 | URL e chave **service_role** do Supabase | Supabase → *Project Settings → API* (`service_role` / *secret key*) |
 | um e-mail que envie mensagens (SMTP) | seu provedor de e-mail (Hostinger Mail, Google Workspace, etc.) |
-| um computador **sempre ligado** na loja (Windows serve) | para o Control iD (§4) |
+| um computador **sempre ligado** na loja (Windows serve) | para o Control iD na rede da loja (§4); dispensável com RHiD (§4A) |
 | token e id da rede da **Zig** | suporte/gerente de conta da Zig |
 | a pasta `n8n/pacote/` deste repositório | já vem pronta: workflows numerados + modelo de variáveis |
 
@@ -36,6 +36,7 @@ e-mail — gravando tudo no Supabase do sistema.
 
 A VPS está na internet; os equipamentos Control iD estão na rede **interna** da loja. A VPS **não enxerga** essa rede sozinha —
 por isso o §4 cria um túnel seguro (Tailscale). Zig e Tagme são serviços de internet: funcionam direto.
+Relógio que sincroniza com a nuvem **RHiD** (caso da Macaw) dispensa o túnel: o N8N fala direto com a API do RHiD (§4A).
 
 ---
 
@@ -82,7 +83,7 @@ chmod 600 mdg.env   # só o root lê
 |---|---|---|
 | `SUPABASE_URL` | `https://SEU-PROJETO.supabase.co` | sim |
 | `SUPABASE_SERVICE_ROLE_KEY` | a chave **service_role** (nunca a *anon*; nunca no site; nunca num nó do N8N) | sim |
-| `MDG_WF_CONTROLID_USUARIOS`, `MDG_WF_CONTROLID_BATIDAS`, `MDG_WF_CONTROLID_EXPORTAR`, `MDG_WF_ZIG_IMPORTAR`, `MDG_WF_TAGME_IMPORTAR`, `MDG_WF_EXPORTAR_FECHAMENTO` | ids dos subfluxos — **deixe em branco agora**, preencha no §5.3 | sim (depois) |
+| `MDG_WF_CONTROLID_USUARIOS`, `MDG_WF_CONTROLID_BATIDAS`, `MDG_WF_CONTROLID_EXPORTAR`, `MDG_WF_ZIG_IMPORTAR`, `MDG_WF_TAGME_IMPORTAR`, `MDG_WF_RHID_IMPORTAR`, `MDG_WF_EXPORTAR_FECHAMENTO` | ids dos subfluxos — **deixe em branco agora**, preencha no §5.3 | sim (depois) |
 | `N8N_BLOCK_ENV_ACCESS_IN_NODE` | `false` — sem isso os workflows não conseguem ler as variáveis | sim |
 | `GENERIC_TIMEZONE`, `TZ` | `America/Sao_Paulo` (a Rotina diária roda às 05:30 deste fuso) | sim |
 | `N8N_RUNNERS_TASK_TIMEOUT` | `900` — a importação da Zig leva minutos (o padrão de 60 s corta no meio) | sim |
@@ -125,6 +126,40 @@ Se o seu N8N não deixa definir variáveis de ambiente (N8N Cloud, por exemplo),
 *Settings/Configurações → Variables* do N8N (recurso de alguns planos). Os nós Code dos workflows leem `$env` e, se não houver,
 `$vars`. **Limitação**: os workflows do Control iD também usam `$env` em nós HTTP — eles só funcionam com variáveis de ambiente de
 verdade (self-hosted, como a VPS deste guia). Na VPS Hostinger, use sempre o §3.1–3.2.
+
+---
+
+## 4A. Control iD via RHiD (recomendado para a Macaw)
+
+Quando o relógio de ponto **sincroniza com o RHiD** (a nuvem da Control iD — caso da Macaw: o "REP MACAW", iDClass Portaria 671,
+não é alcançável pela rede da loja, e há também o REP-P das marcações por app/web), **não precisa de Tailscale nem de IP**: o
+workflow **07 · MDG · RHiD · Importar** usa a API oficial do RHiD (`https://www.rhid.com.br/v2/api.svc`, documentada em
+`docs/referencias/rhid-swagger.json`). Pule o §4 se não houver outro equipamento na rede da loja.
+
+1. **No RHiD, crie um usuário só para a integração** (Cadastros/Configurações → Usuários/Operadores → novo): e-mail próprio (ex.:
+   `integracao@macaw.com.br`), senha forte, perfil com **leitura de Pessoas e de Relatórios** (o AFD fica em Relatórios). Não use o
+   login de um funcionário (login de "pessoa" é recusado) nem o do dono da conta; assim dá para trocar a senha ou desligar a
+   integração sem afetar ninguém. Se a senha expirar no RHiD, a sincronização mostra "a senha do usuário de integração expirou".
+2. **No sistema**: Integrações → **Nova integração** → **Relógio de ponto (RHiD)**. Preencha e-mail e senha desse usuário
+   (o domínio só em contas RHiD com vários domínios). Deixe **Equipamentos** vazio (entram todos os REPs da conta — modelos REP-C/REP-A
+   — e o REP-P de cada empresa, `idCompany + 99000000`, inclusive o AFD do coletor) ou informe os ids dos relógios. **Dias
+   retroativos** (padrão 7, até 88) vale só para a 1ª sincronização de cada relógio; depois o N8N segue pelo último NSR.
+3. **Se já existe** o "Relógio de ponto (RHiD/arquivo)" ou um Control iD REP da loja: abra-o → **Trocar para RHiD**. Os CPFs do
+   relógio e os vínculos com os funcionários são copiados, a integração antiga é desativada e as batidas já importadas continuam
+   valendo. Marcações que vierem de novo pelo RHiD **não duplicam**: a ingestão descarta a que já existe com o mesmo CPF e o mesmo
+   horário (vale também entre o AFD do REP-P e o do coletor). Depois da troca não importe mais o AFD à mão.
+4. No N8N: importe `07-rhid-importar.json`, ponha o id em `MDG_WF_RHID_IMPORTAR` (§5). Variável opcional `RHID_BASE_URL` (vazia =
+   endereço oficial).
+5. Teste: Integrações → RHiD → **Sincronizar agora**. O histórico mostra **RHiD · pessoas** (pessoas lidas, ligadas pelo CPF da
+   ficha e depois pela matrícula) e **RHiD · batidas** (por relógio: NSR inicial, marcações, gravadas, duplicadas). CPF sem
+   funcionário aparece em Funcionários → vínculos (aba "Pessoas do relógio" da integração).
+
+O que o workflow faz a cada execução (agendador: conforme a frequência da integração; "Sincronizar agora": na hora):
+`POST /login` → `GET /person` → `ingestao_rhid_pessoas`; `GET /device` → para cada relógio `GET /report/afd/download671`
+(e `/report/afd_coletor_marcacao/download671` no REP-P) com `nsrInicial = último NSR + 1` (janela de até 90 dias; pedido com período
+→ relê o período) → `lerAfd` → lotes de 1000 em `ingestao_rhid_batidas` (cursor por relógio, nunca regride). Token expirado (401) →
+novo login automático; falha de rede/5xx → 3 tentativas. Senha e token nunca vão para log nem para o histórico.
+Detalhes técnicos: `docs/CONTRATO-ADENDO-rhid.md`.
 
 ---
 
@@ -238,16 +273,17 @@ idênticos). No N8N: *Workflows* → menu (⋯ / "+") → **Import from File** (
 | 04 | `04-controlid-exportar-usuarios.json` | MDG · Control iD · Exportar funcionários | `MDG_WF_CONTROLID_EXPORTAR` | não |
 | 05 | `05-zig-importar.json` | MDG · Zig · Importar | `MDG_WF_ZIG_IMPORTAR` | não |
 | 06 | `06-tagme-importar.json` | MDG · Tagme · Importar | `MDG_WF_TAGME_IMPORTAR` | não |
-| 07 | `07-exportar-fechamento.json` | MDG · Exportar fechamento CSV | `MDG_WF_EXPORTAR_FECHAMENTO` | não |
-| 08 | `08-sincronizar-agora.json` | MDG · Sincronizar agora (fila) — a cada 1 min | — | **sim** |
-| 09 | `09-agendador.json` | MDG · Agendador — a cada 15 min | — | **sim** |
-| 10 | `10-rotina-diaria.json` | MDG · Rotina diária — 05:30 | — | **sim** |
+| 07 | `07-rhid-importar.json` | MDG · RHiD · Importar | `MDG_WF_RHID_IMPORTAR` | não |
+| 08 | `08-exportar-fechamento.json` | MDG · Exportar fechamento CSV | `MDG_WF_EXPORTAR_FECHAMENTO` | não |
+| 09 | `09-sincronizar-agora.json` | MDG · Sincronizar agora (fila) — a cada 1 min | — | **sim** |
+| 10 | `10-agendador.json` | MDG · Agendador — a cada 15 min | — | **sim** |
+| 11 | `11-rotina-diaria.json` | MDG · Rotina diária — 05:30 | — | **sim** |
 
 Salve cada um depois de importar. **Não ative nada ainda.**
 
 ### 5.2 Pegar os ids
 
-Abra cada subfluxo (02 a 07). O endereço no navegador termina em `/workflow/XXXXXXXX` — esse `XXXXXXXX` é o id.
+Abra cada subfluxo (02 a 08). O endereço no navegador termina em `/workflow/XXXXXXXX` — esse `XXXXXXXX` é o id.
 
 ### 5.3 Preencher e reiniciar
 
@@ -256,9 +292,9 @@ Cole cada id na variável correspondente em `mdg.env` (tabela acima) e rode `doc
 
 ### 5.4 Tratador de erros, fuso e e-mail
 
-1. Em **cada** workflow (01 a 10): *Settings/Configurações do workflow* → **Error workflow** = "MDG · Tratador de erros"; confira
+1. Em **cada** workflow (01 a 11): *Settings/Configurações do workflow* → **Error workflow** = "MDG · Tratador de erros"; confira
    *Timezone* = America/Sao_Paulo (já vem no arquivo). Salve.
-2. **SMTP**: abra o nó **"Enviar e-mail"** (workflow 07) e o nó **"Avisar por e-mail"** (workflow 01) → em *Credential*, crie uma
+2. **SMTP**: abra o nó **"Enviar e-mail"** (workflow 08) e o nó **"Avisar por e-mail"** (workflow 01) → em *Credential*, crie uma
    credencial SMTP (servidor, porta, usuário, senha do seu e-mail; a Hostinger Mail, por exemplo, informa esses dados no painel de
    e-mail) e use a mesma nos dois. Salve.
 
@@ -267,7 +303,7 @@ Cole cada id na variável correspondente em `mdg.env` (tabela acima) e rode `doc
 1. No site do sistema, faça um pedido de sincronização (tela **Integrações** → *Sincronizar agora*).
 2. No N8N, abra "MDG · Sincronizar agora (fila)" e clique em **Test workflow / Executar**. Veja se o pedido no site muda para
    concluído (ou mostra o erro com a explicação).
-3. Ative **nesta ordem**: 08 (fila) → 09 (agendador) → 10 (rotina diária). Os demais **não** precisam ficar ativos (são chamados
+3. Ative **nesta ordem**: 09 (fila) → 10 (agendador) → 11 (rotina diária). Os demais **não** precisam ficar ativos (são chamados
    pelos de cima).
 
 ---
@@ -382,11 +418,12 @@ Planilha do Excel: salve como "CSV (separado por ponto e vírgula)". Reservas ta
 
 ## 8. Checklist final
 
-- [ ] `docker exec NOME-DO-CONTAINER printenv` mostra `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, os 6 `MDG_WF_*` preenchidos,
+- [ ] `docker exec NOME-DO-CONTAINER printenv` mostra `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, os 7 `MDG_WF_*` preenchidos,
       `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`, `GENERIC_TIMEZONE`/`TZ=America/Sao_Paulo`, `N8N_RUNNERS_TASK_TIMEOUT=900`, `MDG_EMAIL_RELATORIOS`.
-- [ ] Os 10 workflows importados, com os nomes "MDG · …"; *Error workflow* = "MDG · Tratador de erros" em todos.
-- [ ] Credencial SMTP nos nós "Enviar e-mail" (07) e "Avisar por e-mail" (01).
-- [ ] 08, 09 e 10 **ativos**; 01–07 inativos (normal).
+- [ ] Os 11 workflows importados, com os nomes "MDG · …"; *Error workflow* = "MDG · Tratador de erros" em todos.
+- [ ] Credencial SMTP nos nós "Enviar e-mail" (08) e "Avisar por e-mail" (01).
+- [ ] 09, 10 e 11 **ativos**; 01–08 inativos (normal).
+- [ ] (Macaw/RHiD) Integrações → Relógio de ponto (RHiD): *Sincronizar agora* → "RHiD · pessoas" e "RHiD · batidas" com sucesso (§4A).
 - [ ] `tailscale status` na VPS mostra a loja; rota da sub-rede aprovada; expiração de chave desativada nas duas máquinas.
 - [ ] Teste do §4.5 de dentro do container devolve `OK {"session":…}` para cada equipamento.
 - [ ] Integrações → Zig: *Sincronizar agora* → sucesso; vendas de ontem aparecem no painel.
