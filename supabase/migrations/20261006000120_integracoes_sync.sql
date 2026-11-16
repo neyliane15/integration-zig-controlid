@@ -8,7 +8,7 @@
 create table if not exists public.integracoes (
   id                   uuid primary key default gen_random_uuid(),
   empresa_id           uuid not null references public.empresas (id) on delete cascade,
-  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')),
+  tipo                 text not null check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme', 'rhid')),
   nome                 text not null check (btrim(nome) <> ''),
   ativa                boolean not null default true,
   parametros           jsonb not null default '{}'::jsonb,
@@ -27,7 +27,7 @@ comment on table public.integracoes is '[api:crud] Integrações (Zig, Control i
 -- (adendo extras/ocorrências/reservas) bancos já instalados: check do tipo com 'tagme'.
 alter table public.integracoes drop constraint if exists integracoes_tipo_check;
 alter table public.integracoes add constraint integracoes_tipo_check
-  check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme'));
+  check (tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme', 'rhid'));
 
 create table if not exists public.integracoes_segredos (
   integracao_id  uuid primary key references public.integracoes (id) on delete cascade,
@@ -99,7 +99,8 @@ create table if not exists public.sync_execucoes (
   solicitacao_id       uuid references public.sync_solicitacoes (id) on delete set null,
   tipo                 text not null check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                          'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
-                         'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar')),
+                         'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar',
+                         'rhid_pessoas', 'rhid_batidas')),
   gatilho              text not null check (gatilho in ('agendado', 'manual', 'webhook')),
   workflow             text not null,
   n8n_execution_id     text,
@@ -123,7 +124,8 @@ alter table public.sync_execucoes drop constraint if exists sync_execucoes_tipo_
 alter table public.sync_execucoes add constraint sync_execucoes_tipo_check
   check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                   'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
-                  'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar'));
+                  'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar',
+                  'rhid_pessoas', 'rhid_batidas'));
 
 -- ====================================================================================== gatilhos
 -- Parâmetros padrão por tipo (§11.1); as chaves informadas prevalecem.
@@ -137,6 +139,8 @@ as $$
       '{"modelo": "iDFace", "dias_retroativos": 2, "eventos_validos": [7], "relogio_em_hora_local": true}'::jsonb
     when 'controlid_rep' then '{"modelo": "iDClass", "dias_retroativos": 2, "identificador": "cpf"}'::jsonb
     when 'tagme' then '{"url_base": "", "restaurante_id": "", "dias_retroativos": 1, "dias_a_frente": 7}'::jsonb
+    -- RHiD (nuvem da Control iD, adendo docs/CONTRATO-ADENDO-rhid.md): equipamentos [] = todos os REPs do cliente (+ REP-P)
+    when 'rhid' then '{"equipamentos": [], "incluir_rep_p": true, "dias_retroativos": 7, "importar_pessoas": true}'::jsonb
     else '{}'::jsonb
   end
 $$;
@@ -174,6 +178,7 @@ begin
       public.integracao_envio_padrao(new.tipo, new.parametros ->> 'modelo')
       || case when jsonb_typeof(new.parametros -> 'envio') = 'object' then new.parametros -> 'envio' else '{}'::jsonb end);
   end if;
+  -- app.ingestao_arquivo = '1': ponto_importar_afd (…0300) grava cursor/ultimo_* em nome do usuário, como o serviço.
   if tg_op = 'INSERT' then
     if not public.eh_sistema() then
       new.cursor := '{}'::jsonb;
@@ -187,7 +192,7 @@ begin
     new.tipo := old.tipo;
     new.empresa_id := old.empresa_id;
     new.criado_em := old.criado_em;
-    if not public.eh_sistema() then
+    if not public.eh_sistema() and coalesce(current_setting('app.ingestao_arquivo', true), '') <> '1' then
       new.cursor := old.cursor;
       new.ultimo_sucesso_em := old.ultimo_sucesso_em;
       new.ultima_execucao_em := old.ultima_execucao_em;
@@ -348,6 +353,7 @@ as $$
     when 'controlid_acesso' then array['url', 'login', 'senha']
     when 'controlid_rep' then array['url', 'login', 'senha']
     when 'tagme' then array['token', 'cliente_id', 'cliente_segredo']
+    when 'rhid' then array['email', 'senha', 'dominio']
     else array[]::text[]
   end
 $$;
@@ -422,9 +428,9 @@ language sql immutable
 set search_path = public, extensions, pg_temp
 as $$
   select case p_escopo
-    when 'tudo' then p_tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme')
-    when 'funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep')
-    when 'batidas' then p_tipo in ('controlid_acesso', 'controlid_rep')
+    when 'tudo' then p_tipo in ('zig', 'controlid_acesso', 'controlid_rep', 'tagme', 'rhid')
+    when 'funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep', 'rhid')
+    when 'batidas' then p_tipo in ('controlid_acesso', 'controlid_rep', 'rhid')
     when 'vendas' then p_tipo = 'zig'
     when 'reservas' then p_tipo = 'tagme'
     when 'exportar_funcionarios' then p_tipo in ('controlid_acesso', 'controlid_rep')
@@ -473,6 +479,9 @@ begin
     if not v_int.ativa then
       raise exception 'Integração inativa' using errcode = '22023';
     end if;
+    if coalesce(v_int.parametros ->> 'fonte', '') = 'arquivo' then
+      raise exception 'Relógio por arquivo: use Importar AFD' using errcode = '22023';
+    end if;
   else
     v_empresa := public.resolver_empresa(p_empresa, 'operar');
   end if;
@@ -515,6 +524,7 @@ begin
     select i.id from public.integracoes i
      where not v_sem_integracao
        and i.empresa_id = v_empresa and i.ativa
+       and coalesce(i.parametros ->> 'fonte', '') <> 'arquivo'
        and public.sync_escopo_compativel(p_escopo, i.tipo)
        and (p_integracao is null or i.id = p_integracao)
   loop
@@ -542,7 +552,7 @@ language plpgsql volatile security definer
 set search_path = public, extensions, pg_temp
 as $$
 declare
-  v public.integracoes := public.integracao_validar(p_integracao, array['controlid_acesso', 'controlid_rep']);
+  v public.integracoes := public.integracao_validar(p_integracao, array['controlid_acesso', 'controlid_rep', 'rhid']);
   v_rep boolean;
   v_ident text;
   v_item jsonb;
@@ -559,7 +569,7 @@ begin
   if p_usuarios is null or jsonb_typeof(p_usuarios) <> 'array' then
     raise exception 'Lista de usuários inválida' using errcode = '22023';
   end if;
-  v_rep := v.tipo = 'controlid_rep';
+  v_rep := v.tipo in ('controlid_rep', 'rhid');   -- rhid: pessoas do RHiD por CPF (ingestao_rhid_pessoas, …0310)
   v_ident := coalesce(v.parametros ->> 'identificador', 'cpf');
 
   for v_item in select value from jsonb_array_elements(p_usuarios) loop
@@ -625,7 +635,14 @@ begin
      order by c.user_id_externo
   loop
     v_func := null;
-    if r.registration is not null then
+    if v.tipo = 'rhid' and r.cpf is not null then
+      -- RHiD: CPF primeiro (a matrícula do RHiD nem sempre é a deste sistema)
+      select min(f.id::text)::uuid into v_func from public.funcionarios f
+       where f.empresa_id = v.empresa_id and f.cpf = r.cpf
+         and not exists (select 1 from public.controlid_usuarios x where x.integracao_id = v.id and x.funcionario_id = f.id)
+      having count(*) = 1;
+    end if;
+    if v_func is null and r.registration is not null then
       select min(f.id::text)::uuid into v_func from public.funcionarios f
        where f.empresa_id = v.empresa_id and f.matricula = r.registration
          and not exists (select 1 from public.controlid_usuarios x where x.integracao_id = v.id and x.funcionario_id = f.id)
@@ -671,6 +688,7 @@ as $$
     from public.integracoes i
     join public.empresas e on e.id = i.empresa_id
    where i.ativa and e.ativa
+     and coalesce(i.parametros ->> 'fonte', '') <> 'arquivo'   -- relógio por arquivo (RHiD/AFD): sem N8N
      and (p_tipo is null or i.tipo = p_tipo)
      and (not coalesce(p_somente_vencidas, false)
           or i.ultima_execucao_em is null
@@ -678,7 +696,7 @@ as $$
    order by i.ultima_execucao_em nulls first, i.id
 $$;
 comment on function public.ingestao_integracoes_ativas(text, boolean) is
-  '[servico] Integrações ativas de empresas ativas (opcionalmente só as vencidas).';
+  '[servico] Integrações ativas de empresas ativas (opcionalmente só as vencidas); fora as por arquivo (parametros.fonte).';
 
 create or replace function public.ingestao_integracao_config(p_integracao uuid) returns jsonb
 language plpgsql stable security definer

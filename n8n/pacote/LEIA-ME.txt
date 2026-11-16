@@ -9,12 +9,13 @@ Passo a passo completo: docs/IMPLANTACAO-N8N-HOSTINGER.md
 04-controlid-exportar-usuarios.json      MDG · Control iD · Exportar funcionários     → MDG_WF_CONTROLID_EXPORTAR
 05-zig-importar.json                     MDG · Zig · Importar                         → MDG_WF_ZIG_IMPORTAR
 06-tagme-importar.json                   MDG · Tagme · Importar                       → MDG_WF_TAGME_IMPORTAR
-07-exportar-fechamento.json              MDG · Exportar fechamento CSV                → MDG_WF_EXPORTAR_FECHAMENTO
-08-sincronizar-agora.json                MDG · Sincronizar agora (fila)               → ATIVAR
-09-agendador.json                        MDG · Agendador                              → ATIVAR
-10-rotina-diaria.json                    MDG · Rotina diária                          → ATIVAR
+07-rhid-importar.json                    MDG · RHiD · Importar                        → MDG_WF_RHID_IMPORTAR
+08-exportar-fechamento.json              MDG · Exportar fechamento CSV                → MDG_WF_EXPORTAR_FECHAMENTO
+09-sincronizar-agora.json                MDG · Sincronizar agora (fila)               → ATIVAR
+10-agendador.json                        MDG · Agendador                              → ATIVAR
+11-rotina-diaria.json                    MDG · Rotina diária                          → ATIVAR
 
 2. Anote o id de cada subfluxo (na URL: .../workflow/<id>) e preencha a variável indicada em env.hostinger.exemplo.
-3. Reinicie o N8N (docker compose up -d), aponte o Error workflow, configure o SMTP e ative 08 → 09 → 10.
+3. Reinicie o N8N (docker compose up -d), aponte o Error workflow, configure o SMTP e ative 09 → 10 → 11.
 
 Gerado por n8n/pacote/gerar.mjs — não edite à mão (as cópias são conferidas por npm run n8n:verificar).

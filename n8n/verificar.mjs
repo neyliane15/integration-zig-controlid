@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Verifica os workflows N8N do repositório (todos os n8n/**/workflows/*.json, inclusive os do Control iD).
 // Uso: `npm run n8n:verificar` (ou `node n8n/verificar.mjs`). Sai com código 1 se houver erro.
-//      `node n8n/verificar.mjs --atualizar` reescreve as cópias `// @lib` desatualizadas (só em zig/, tagme/ e comum/, do n8n-2;
+//      `node n8n/verificar.mjs --atualizar` reescreve as cópias `// @lib` desatualizadas (só em zig/, tagme/, rhid/ e comum/;
 //      as de controlid/ são só apontadas — o dono atualiza) e regenera o pacote de implantação (n8n/pacote/).
 //
 // Confere, para cada arquivo:
@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 
 const N8N = dirname(fileURLToPath(import.meta.url))
 const ATUALIZAR = process.argv.includes('--atualizar')
-const DONO_N2 = (rel) => rel.startsWith('zig/') || rel.startsWith('tagme/') || rel.startsWith('comum/')
+const DONO_N2 = (rel) => rel.startsWith('zig/') || rel.startsWith('tagme/') || rel.startsWith('comum/') || rel.startsWith('rhid/')
 
 const T = {
   subfluxo: 'n8n-nodes-base.executeWorkflowTrigger',
@@ -38,6 +38,7 @@ const ESPERADOS = {
   'controlid/workflows/controlid-exportar-usuarios.json': { nome: 'MDG · Control iD · Exportar funcionários', gatilho: T.subfluxo },
   'zig/workflows/zig-importar.json': { nome: 'MDG · Zig · Importar', gatilho: T.subfluxo },
   'tagme/workflows/tagme-importar.json': { nome: 'MDG · Tagme · Importar', gatilho: T.subfluxo },
+  'rhid/workflows/rhid-importar.json': { nome: 'MDG · RHiD · Importar', gatilho: T.subfluxo },
   'comum/workflows/sincronizar-agora.json': { nome: 'MDG · Sincronizar agora (fila)', gatilho: T.agenda, agenda: { field: 'minutes', minutesInterval: 1 } },
   'comum/workflows/agendador.json': { nome: 'MDG · Agendador', gatilho: T.agenda, agenda: { field: 'minutes', minutesInterval: 15 } },
   'comum/workflows/rotina-diaria.json': { nome: 'MDG · Rotina diária', gatilho: T.agenda, agenda: { field: 'cronExpression', expression: '30 5 * * *' } },

@@ -939,6 +939,29 @@ tolerância diária 10, tolerância batida 5. Relógio fixo `2026-10-06 12:00-03
 | `funcionario_jornadas` | `after insert/update/delete` | reapura o funcionário de `vigente_desde` (limitado a 93 dias atrás) até hoje. |
 | `jornada_dias`, `jornadas` | `after insert/update/delete` | reapura, nos últimos 31 dias, os funcionários com essa jornada vigente. |
 Funcionário inativo (`ativo = false`) **continua** sendo apurado dentro do vínculo (datas); `ativo` só esconde de listas.
+*(AFD)* O mesmo gatilho de `controlid_usuarios` vale para o REP (`controlid_rep`, `user_id_externo` = CPF/PIS): ligar o CPF passa as batidas
+pendentes ao funcionário; desligar devolve-as ao funcionário com esse CPF/PIS na ficha (ou a null). A ingestão do REP resolve o funcionário
+primeiro pelo vínculo do relógio e depois pelo CPF/PIS da ficha.
+
+### 7.9 Importar AFD pelo site (RHiD/arquivo) — `…0300_importar_afd.sql`
+O relógio REP da loja não é alcançável pela rede; o RHiD (nuvem Control iD) exporta o AFD (Relatórios → Relatório de AFDs → período → Buscar →
+baixar; o arquivo vem em Latin-1, às vezes num .zip com a assinatura .p7s). O navegador lê o arquivo com `n8n/controlid/lib/afd.mjs` (fonte
+única; `web/src/lib/afd.ts` importa a lib e também abre o .zip) e chama, em lotes de 2000:
+- `ponto_integracao_arquivo(p_empresa uuid default null) returns uuid` `[api]` G A M — devolve/cria o "Relógio de ponto (RHiD/arquivo)":
+  `controlid_rep` com `parametros.fonte = 'arquivo'`, sem segredos. Integração por arquivo fica fora do N8N (`ingestao_integracoes_ativas`)
+  e do "Sincronizar agora" (`sync_solicitar` → `Relógio por arquivo: use Importar AFD`).
+- `ponto_importar_afd(p_integracao uuid, p_marcacoes jsonb, p_empregados jsonb default '[]', p_arquivo_nome text default null) returns jsonb`
+  `[api]` G A M, só `controlid_rep` ativa, até 5000 marcações e 5000 empregados por chamada (`Lote maior que 5000 marcações`). Empregados
+  (registro tipo 5: `{cpf|pis, nome}`) e CPFs das marcações viram `controlid_usuarios` (`user_id_externo` = documento; nome não é apagado),
+  com vínculo automático pelo CPF/PIS da ficha (único, livre, nunca sobre vínculo manual); as marcações passam por `ingestao_controlid_batidas`
+  (idempotência por NSR, batidas sem funcionário, reapuração, cursor que não regride — gravado em nome do usuário via `app.ingestao_arquivo`).
+  Registra `sync_execucoes` (`controlid_batidas`, gatilho `manual`, `detalhes.origem = 'arquivo'`). Retorno:
+  `{lidas, gravadas, duplicadas, ignoradas, sem_funcionario: [{cpf, pis, nome, quantidade, controlid_usuario_id}], dias_reapurados,
+  periodo: {inicio, fim}, empregados: {lidos, novos, atualizados, vinculados_automaticamente}, execucao_id, erros?}`.
+- `ponto_afd_pendentes(p_integracao uuid)` `[api]` G A M — CPF/PIS do relógio sem funcionário (nome, `nome_sugerido`, quantidade, primeira/última data).
+- `ponto_afd_ligar(p_controlid_usuario uuid, p_funcionario uuid, p_renomear boolean default false, p_cadastrar_documento boolean default false)`
+  `[api]` G A M — liga o CPF a um funcionário (inclusive provisório da escala), opcionalmente renomeando-o com o nome do AFD
+  (`nome_proprio`: "CARLA DE SOUZA" → "Carla de Souza") e gravando o CPF/PIS na ficha (`CPF já cadastrado em outro funcionário`, 23505).
 
 ---
 

@@ -9,6 +9,7 @@ export const NOMES_WORKFLOWS = {
   CONTROLID_EXPORTAR: 'MDG · Control iD · Exportar funcionários',
   ZIG_IMPORTAR: 'MDG · Zig · Importar',
   TAGME_IMPORTAR: 'MDG · Tagme · Importar',
+  RHID_IMPORTAR: 'MDG · RHiD · Importar',
   EXPORTAR_FECHAMENTO: 'MDG · Exportar fechamento CSV',
   SINCRONIZAR_AGORA: 'MDG · Sincronizar agora (fila)',
   AGENDADOR: 'MDG · Agendador',
@@ -23,6 +24,7 @@ export const VARIAVEIS_SUBFLUXOS = {
   CONTROLID_EXPORTAR: 'MDG_WF_CONTROLID_EXPORTAR',
   ZIG_IMPORTAR: 'MDG_WF_ZIG_IMPORTAR',
   TAGME_IMPORTAR: 'MDG_WF_TAGME_IMPORTAR',
+  RHID_IMPORTAR: 'MDG_WF_RHID_IMPORTAR',
   EXPORTAR_FECHAMENTO: 'MDG_WF_EXPORTAR_FECHAMENTO',
 }
 
@@ -33,6 +35,7 @@ export const TIPO_EXECUCAO_POR_WORKFLOW = {
   'MDG · Control iD · Exportar funcionários': 'controlid_exportar_usuarios',
   'MDG · Zig · Importar': 'zig_importar',
   'MDG · Tagme · Importar': 'tagme_importar',
+  'MDG · RHiD · Importar': 'rhid_batidas', // abre também rhid_pessoas (escopos tudo/funcionarios)
   'MDG · Exportar fechamento CSV': 'exportar_fechamento',
   'MDG · Rotina diária': 'apurar_ponto',
 }
@@ -248,6 +251,7 @@ export function subfluxosDe(tipo, escopo, envioAtivo) {
   if (escopo === 'exportar_fechamento') return ['EXPORTAR_FECHAMENTO']
   if (tipo === 'zig') return escopo === 'tudo' || escopo === 'vendas' ? ['ZIG_IMPORTAR'] : null
   if (tipo === 'tagme') return escopo === 'tudo' || escopo === 'reservas' ? ['TAGME_IMPORTAR'] : null
+  if (tipo === 'rhid') return ['tudo', 'funcionarios', 'batidas'].includes(escopo) ? ['RHID_IMPORTAR'] : null
   if (controlid) {
     if (escopo === 'tudo') return envioAtivo ? ['CONTROLID_USUARIOS', 'CONTROLID_EXPORTAR', 'CONTROLID_BATIDAS'] : ['CONTROLID_USUARIOS', 'CONTROLID_BATIDAS']
     if (escopo === 'funcionarios') return ['CONTROLID_USUARIOS']

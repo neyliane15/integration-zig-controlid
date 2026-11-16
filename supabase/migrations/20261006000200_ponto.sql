@@ -740,29 +740,40 @@ create or replace function public.ponto_gatilho_controlid_usuario()
 returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare
   v_antigo uuid := case when tg_op = 'UPDATE' then old.funcionario_id end;
+  v_alvo   uuid := new.funcionario_id;
+  v_origem text;
   v_datas  date[];
   v_dia    date;
 begin
+  select case when i.tipo in ('controlid_rep', 'rhid') then 'controlid_rep' else 'controlid_acesso' end into v_origem
+    from public.integracoes i where i.id = new.integracao_id;
+  -- REP (user_id_externo = CPF/PIS): sem vínculo, a batida volta ao funcionário com esse CPF/PIS na ficha (como na ingestão)
+  if v_origem = 'controlid_rep' and v_alvo is null then
+    select f.id into v_alvo from public.funcionarios f
+     where f.empresa_id = new.empresa_id and (f.cpf = new.user_id_externo or f.pis = new.user_id_externo)
+     order by f.id limit 1;
+  end if;
   with alt as (
     update public.ponto_batidas b
-       set funcionario_id = new.funcionario_id
+       set funcionario_id = v_alvo
      where b.integracao_id = new.integracao_id
        and b.pessoa_externa = new.user_id_externo
-       and b.origem = 'controlid_acesso'
+       and b.origem = v_origem
        and (b.funcionario_id is null or b.funcionario_id = v_antigo)
-       and b.funcionario_id is distinct from new.funcionario_id
+       and b.funcionario_id is distinct from v_alvo
     returning b.data_trabalho)
   select array_agg(distinct alt.data_trabalho) into v_datas from alt;
 
   if v_datas is not null then
     foreach v_dia in array v_datas loop
       perform public.ponto_apurar(v_antigo, v_dia, v_dia);
-      perform public.ponto_apurar(new.funcionario_id, v_dia, v_dia);
+      perform public.ponto_apurar(v_alvo, v_dia, v_dia);
     end loop;
   end if;
   return null;
 end $$;
-comment on function public.ponto_gatilho_controlid_usuario() is '[interno] §7.8: vínculo Control iD → batidas de acesso e reapuração.';
+comment on function public.ponto_gatilho_controlid_usuario() is
+  '[interno] §7.8: vínculo Control iD → batidas (acesso pelo id do usuário; REP pelo CPF/PIS) e reapuração.';
 
 drop trigger if exists ponto_vinculo_batidas on public.controlid_usuarios;
 create trigger ponto_vinculo_batidas after update of funcionario_id on public.controlid_usuarios

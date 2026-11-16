@@ -119,6 +119,8 @@ export function FormularioIntegracao({
   const ehTagme = tipo === 'tagme'
   const ehAcesso = tipo === 'controlid_acesso'
   const ehFace = ehAcesso && /idface/i.test(p.modelo ?? '')
+  // relógio por arquivo (RHiD): sem rede, sem segredos, sem envio — as marcações chegam por "Importar AFD"
+  const porArquivo = tipo === 'controlid_rep' && (parametros as ParametrosControlIdRep).fonte === 'arquivo'
   const carregando = salvar.isPending || definirSegredos.isPending
   const ro = somenteLeitura
 
@@ -178,11 +180,22 @@ export function FormularioIntegracao({
         </div>
       )}
 
+      {porArquivo && (
+        <div className="rounded-entrada border border-info/35 bg-info/5 px-4 py-3 text-sm leading-relaxed text-creme">
+          <p className="font-semibold">Relógio por arquivo (RHiD): sem endereço, usuário nem senha.</p>
+          <p className="mt-1 text-lavanda">
+            O N8N não busca nada deste relógio. As marcações entram por <strong className="text-creme">Importar AFD</strong> (Ponto ou esta
+            integração). No RHiD: Relatórios → Relatório de AFDs → período → Buscar → baixar o arquivo.
+          </p>
+        </div>
+      )}
+
       <Secao titulo="Geral" descricao={rotuloTipoIntegracao[tipo]}>
         <div className="grid gap-5 sm:grid-cols-2">
           <Campo rotulo="Nome" htmlFor={`${id}-nome`} obrigatorio ajuda={ehControlId ? 'Ex.: iDFace porta dos fundos' : undefined}>
             <Entrada id={`${id}-nome`} value={nome} onChange={(e) => setNome(e.target.value)} disabled={ro} />
           </Campo>
+          {!porArquivo && (
           <Campo rotulo="Frequência automática" htmlFor={`${id}-int`}>
             <Selecao id={`${id}-int`} value={intervalo} onChange={(e) => setIntervalo(Number(e.target.value))} disabled={ro}>
               {INTERVALOS.map((m) => (
@@ -192,6 +205,7 @@ export function FormularioIntegracao({
               ))}
             </Selecao>
           </Campo>
+          )}
           {ehControlId && (
             <Campo rotulo="Tipo do equipamento" htmlFor={`${id}-modelo`} ajuda={ehAcesso ? 'Controle de acesso (iDFace, iDFlex, iDAccess).' : 'Relógio de ponto REP (iDClass).'}>
               <Entrada
@@ -248,6 +262,7 @@ export function FormularioIntegracao({
               <Entrada id={`${id}-rede`} value={p.rede ?? ''} onChange={(e) => definir('rede', e.target.value)} disabled={ro} />
             </Campo>
           )}
+          {!porArquivo && (
           <Campo rotulo="Dias retroativos" htmlFor={`${id}-dias`} ajuda="Quantos dias para trás cada sincronização relê.">
             <Entrada
               id={`${id}-dias`}
@@ -261,6 +276,7 @@ export function FormularioIntegracao({
               disabled={ro}
             />
           </Campo>
+          )}
           {tipo === 'controlid_rep' && (
             <Campo rotulo="Identificador do funcionário" htmlFor={`${id}-ident`}>
               <Selecao id={`${id}-ident`} value={p.identificador ?? 'cpf'} onChange={(e) => definir('identificador', e.target.value)} disabled={ro}>
@@ -324,7 +340,7 @@ export function FormularioIntegracao({
         </Secao>
       )}
 
-      {ehControlId && (
+      {ehControlId && !porArquivo && (
         <Secao
           titulo="Envio para o equipamento"
           descricao="Quando ligado, o cadastro de funcionários deste sistema alimenta o equipamento (criar, alterar, remover)."
@@ -374,6 +390,7 @@ export function FormularioIntegracao({
         </Secao>
       )}
 
+      {!porArquivo && (
       <Secao
         titulo="Credenciais"
         descricao="Guardadas no banco sem acesso pelo navegador. Por segurança, o valor salvo nunca é exibido — preencha só para trocar."
@@ -424,6 +441,7 @@ export function FormularioIntegracao({
           })}
         </div>
       </Secao>
+      )}
 
       {!ro && (
         <div className="flex flex-wrap justify-end gap-2 border-t border-borda pt-5">

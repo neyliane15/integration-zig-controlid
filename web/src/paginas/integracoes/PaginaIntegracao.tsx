@@ -1,7 +1,7 @@
 /** /integracoes/:id — detalhe: visão geral, configuração (A M), lojas Zig, usuários e envio Control iD. Dono: frontend-1. */
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Send, Store, Trash2, Upload } from 'lucide-react'
+import { ArrowLeft, FileUp, Send, Store, Trash2, Upload } from 'lucide-react'
 import type { StatusEnvioControlId } from '@/tipos/banco'
 import { Abas, Botao, CabecalhoPagina, Cartao, Carregando, ErroCarga, Interruptor, Selo, Tabela, Vazio, type Tom } from '@/componentes/ui'
 import { useAvisos } from '@/componentes/avisos'
@@ -9,6 +9,8 @@ import { BotaoSincronizar, SeloStatusIntegracao } from '@/componentes/integracoe
 import { FormularioIntegracao } from '@/componentes/integracoes/FormularioIntegracao'
 import { HistoricoExecucoes } from '@/componentes/integracoes/HistoricoExecucoes'
 import { VinculoControlId } from '@/componentes/dominio/VinculoControlId'
+import { AJUDA_RHID, LigarFuncionariosAfd, ModalImportarAfd } from '@/componentes/dominio/ImportarAfd'
+import { ehRelogioPorArquivo } from '@/consultas/afd'
 import {
   useEnviosControlId,
   useExcluirIntegracao,
@@ -23,7 +25,7 @@ import { podeAdministrar } from '@/lib/permissoes'
 import { rotuloOperacaoEnvio, rotuloStatusEnvio, rotuloTipoIntegracao } from '@/lib/rotulos'
 import { useEmpresaAtual, usePerfil } from '@/lib/sessao'
 
-type Aba = 'geral' | 'configuracao' | 'lojas' | 'usuarios' | 'envio'
+type Aba = 'geral' | 'configuracao' | 'lojas' | 'usuarios' | 'ligar' | 'envio'
 
 export function PaginaIntegracao() {
   const { id } = useParams()
@@ -36,6 +38,7 @@ export function PaginaIntegracao() {
   const avisos = useAvisos()
   const navegar = useNavigate()
   const [aba, setAba] = useState<Aba>('geral')
+  const [importarAfd, setImportarAfd] = useState(false)
 
   if (consulta.isPending) return <Carregando />
   if (consulta.isError) return <ErroCarga erro={consulta.error} aoTentar={() => void consulta.refetch()} />
@@ -53,12 +56,16 @@ export function PaginaIntegracao() {
     )
 
   const ehControlId = i.tipo === 'controlid_acesso' || i.tipo === 'controlid_rep'
+  const ehRep = i.tipo === 'controlid_rep'
+  const porArquivo = ehRelogioPorArquivo(i)
   const executando = (abertas.data ?? []).some((s) => s.integracao_id === i.id)
   const abas: { id: Aba; rotulo: string }[] = [
     { id: 'geral', rotulo: 'Visão geral' },
     { id: 'configuracao', rotulo: admin ? 'Configuração' : 'Parâmetros' },
     ...(i.tipo === 'zig' ? [{ id: 'lojas' as Aba, rotulo: 'Lojas' }] : []),
-    ...(ehControlId ? [{ id: 'usuarios' as Aba, rotulo: 'Usuários do equipamento' }, { id: 'envio' as Aba, rotulo: 'Envio' }] : []),
+    ...(ehControlId ? [{ id: 'usuarios' as Aba, rotulo: porArquivo ? 'Pessoas do relógio' : 'Usuários do equipamento' }] : []),
+    ...(ehRep ? [{ id: 'ligar' as Aba, rotulo: 'Ligar funcionários' }] : []),
+    ...(ehControlId && !porArquivo ? [{ id: 'envio' as Aba, rotulo: 'Envio' }] : []),
   ]
 
   async function apagar() {
@@ -94,7 +101,12 @@ export function PaginaIntegracao() {
         }
         acoes={
           <>
-            {i.ativa && <BotaoSincronizar empresaId={empresaId} integracaoId={i.id} tamanho="m" desabilitado={executando} />}
+            {ehRep && i.ativa && (
+              <Botao variante={porArquivo ? 'primario' : 'secundario'} icone={<FileUp aria-hidden />} onClick={() => setImportarAfd(true)}>
+                Importar AFD
+              </Botao>
+            )}
+            {i.ativa && !porArquivo && <BotaoSincronizar empresaId={empresaId} integracaoId={i.id} tamanho="m" desabilitado={executando} />}
             {admin && (
               <Botao variante="perigo" icone={<Trash2 aria-hidden />} onClick={apagar} carregando={excluir.isPending}>
                 Excluir
@@ -110,6 +122,14 @@ export function PaginaIntegracao() {
 
       {aba === 'geral' && (
         <div className="flex flex-col gap-5">
+          {porArquivo && (
+            <Cartao sobrancelha="Relógio por arquivo (RHiD)">
+              <p className="text-sm text-creme">{AJUDA_RHID}</p>
+              <p className="mt-1 text-sm text-lavanda">
+                Depois use <strong className="text-creme">Importar AFD</strong>. Reimportar o mesmo período não duplica marcações.
+              </p>
+            </Cartao>
+          )}
           {i.ultimo_status === 'erro' && i.ultimo_erro && (
             <Cartao sobrancelha="Último erro" className="border-perigo/30">
               <p className="text-sm text-creme">{i.ultimo_erro}</p>
@@ -131,11 +151,17 @@ export function PaginaIntegracao() {
       {aba === 'usuarios' && (
         <div className="flex flex-col gap-4">
           <p className="text-sm text-lavanda">
-            Usuários lidos do equipamento e o funcionário correspondente. O vínculo automático usa matrícula, CPF ou PIS.
+            {porArquivo
+              ? 'Pessoas (CPF/PIS) vistas nos AFDs importados e o funcionário correspondente. O vínculo automático usa o CPF ou o PIS da ficha.'
+              : 'Usuários lidos do equipamento e o funcionário correspondente. O vínculo automático usa matrícula, CPF ou PIS.'}
           </p>
           <VinculoControlId integracaoId={i.id} />
         </div>
       )}
+
+      {aba === 'ligar' && <LigarFuncionariosAfd integracaoId={i.id} />}
+
+      {importarAfd && <ModalImportarAfd aberto integracaoId={i.id} aoFechar={() => setImportarAfd(false)} />}
 
       {aba === 'envio' && (
         <EnvioControlId

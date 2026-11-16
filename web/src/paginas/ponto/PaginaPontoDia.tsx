@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { AlertTriangle, CalendarRange, ChevronLeft, ChevronRight, RefreshCw, Search } from 'lucide-react'
+import { AlertTriangle, CalendarRange, ChevronLeft, ChevronRight, FileUp, RefreshCw, Search } from 'lucide-react'
 import type { EsperadaEspelho, LinhaPontoDiaEmpresa } from '@/tipos/banco'
 import { Botao, CabecalhoPagina, Campo, Entrada, EntradaData, ErroCarga, Indicador, Interruptor, Selo, Tabela, Vazio, type Coluna } from '@/componentes/ui'
 import { useAvisos } from '@/componentes/avisos'
@@ -14,6 +14,7 @@ import { podeOperar } from '@/lib/permissoes'
 import { formatarData, formatarMinutos, normalizar, somarDias } from '@/lib/formato'
 import { rotuloDiaSemana } from '@/lib/rotulos'
 import { batidasValidas, dataValida, identificarFaltantes } from '@/lib/ponto'
+import { ModalImportarAfd } from '@/componentes/dominio/ImportarAfd'
 import { ModalIncluirBatida } from './ModaisPonto'
 
 interface LinhaTela extends LinhaPontoDiaEmpresa {
@@ -40,6 +41,7 @@ export function PaginaPontoDia() {
   const [busca, setBusca] = useState('')
   const [soProblemas, setSoProblemas] = useState(false)
   const [incluir, setIncluir] = useState<{ linha: LinhaTela; hora: string | null } | null>(null)
+  const [importarAfd, setImportarAfd] = useState(false)
 
   const dia = usePontoDia(data)
   const reapurar = useReapurar()
@@ -167,6 +169,11 @@ export function PaginaPontoDia() {
               Alarmes
             </BotaoLink>
             {operar && (
+              <Botao variante="secundario" icone={<FileUp aria-hidden className="size-4" />} onClick={() => setImportarAfd(true)}>
+                Importar AFD
+              </Botao>
+            )}
+            {operar && (
               <Botao
                 variante="secundario"
                 icone={<RefreshCw aria-hidden className="size-4" />}
@@ -239,6 +246,8 @@ export function PaginaPontoDia() {
           }
         />
       )}
+
+      {importarAfd && <ModalImportarAfd aberto aoFechar={() => setImportarAfd(false)} />}
 
       {incluir && (
         <ModalIncluirBatida

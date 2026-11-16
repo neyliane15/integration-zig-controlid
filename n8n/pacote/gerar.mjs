@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Pacote de implantação do N8N (ver docs/IMPLANTACAO-N8N-HOSTINGER.md): copia os workflows na ORDEM de importação para
 // n8n/pacote/workflows/NN-<nome>.json e gera n8n/pacote/env.hostinger.exemplo (sem segredos). Sem dependências, sem zip:
-// baixe a pasta n8n/pacote/ inteira (ou só workflows/) e importe os arquivos 01 → 10 no N8N.
+// baixe a pasta n8n/pacote/ inteira (ou só workflows/) e importe os arquivos 01 → 11 no N8N.
 //
 // Uso:  node n8n/pacote/gerar.mjs            (regenera)
 //       node n8n/pacote/gerar.mjs --conferir (só confere; sai com 1 se estiver desatualizado — também roda em `npm run n8n:verificar`)
@@ -14,7 +14,7 @@ const PACOTE = dirname(fileURLToPath(import.meta.url))
 const N8N = join(PACOTE, '..')
 const SAIDA = join(PACOTE, 'workflows')
 
-/** Ordem de importação: primeiro o tratador de erros, depois os subfluxos, por último os que têm agenda (ativar 08 → 09 → 10). */
+/** Ordem de importação: primeiro o tratador de erros, depois os subfluxos, por último os que têm agenda (ativar 09 → 10 → 11). */
 export const ORDEM_IMPORTACAO = [
   { arquivo: 'comum/workflows/erros.json', variavel: null, ativar: false },
   { arquivo: 'controlid/workflows/controlid-importar-usuarios.json', variavel: 'MDG_WF_CONTROLID_USUARIOS', ativar: false },
@@ -22,6 +22,7 @@ export const ORDEM_IMPORTACAO = [
   { arquivo: 'controlid/workflows/controlid-exportar-usuarios.json', variavel: 'MDG_WF_CONTROLID_EXPORTAR', ativar: false },
   { arquivo: 'zig/workflows/zig-importar.json', variavel: 'MDG_WF_ZIG_IMPORTAR', ativar: false },
   { arquivo: 'tagme/workflows/tagme-importar.json', variavel: 'MDG_WF_TAGME_IMPORTAR', ativar: false },
+  { arquivo: 'rhid/workflows/rhid-importar.json', variavel: 'MDG_WF_RHID_IMPORTAR', ativar: false },
   { arquivo: 'comum/workflows/exportar-fechamento.json', variavel: 'MDG_WF_EXPORTAR_FECHAMENTO', ativar: false },
   { arquivo: 'comum/workflows/sincronizar-agora.json', variavel: null, ativar: true },
   { arquivo: 'comum/workflows/agendador.json', variavel: null, ativar: true },
@@ -61,12 +62,15 @@ ZIG_BASE_URL=https://api.zigcore.com.br/integration
 # URL base da Tagme usada quando a integração não tiver parametros.base_url (exemplo: o domínio do painel; o CAMINHO do
 # endpoint de reservas é configurado na tela Integrações → Tagme). Pode ficar vazio.
 TAGME_BASE_URL=
+# URL da API do RHiD (integração "Relógio de ponto (RHiD)"). Vazio = https://www.rhid.com.br/v2/api.svc.
+RHID_BASE_URL=
 MDG_EMAIL_RELATORIOS=
 MDG_EMAIL_REMETENTE=
 `
 }
 
 export function leiaMe() {
+  const ATIVAR = ORDEM_IMPORTACAO.map((o, i) => (o.ativar ? String(i + 1).padStart(2, '0') : null)).filter(Boolean).join(' → ')
   const linhas = ORDEM_IMPORTACAO.map((o, i) => {
     const wf = JSON.parse(readFileSync(join(N8N, o.arquivo), 'utf8'))
     return `${nomeNoPacote(i, o.arquivo).padEnd(40)} ${wf.name.padEnd(44)} ${o.variavel ? `→ ${o.variavel}` : o.ativar ? '→ ATIVAR' : ''}`.trimEnd()
@@ -79,7 +83,7 @@ Passo a passo completo: docs/IMPLANTACAO-N8N-HOSTINGER.md
 ${linhas.join('\n')}
 
 2. Anote o id de cada subfluxo (na URL: .../workflow/<id>) e preencha a variável indicada em env.hostinger.exemplo.
-3. Reinicie o N8N (docker compose up -d), aponte o Error workflow, configure o SMTP e ative 08 → 09 → 10.
+3. Reinicie o N8N (docker compose up -d), aponte o Error workflow, configure o SMTP e ative ${ATIVAR}.
 
 Gerado por n8n/pacote/gerar.mjs — não edite à mão (as cópias são conferidas por npm run n8n:verificar).
 `

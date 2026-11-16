@@ -88,6 +88,7 @@ begin
   -- sincronização (só status, nunca segredos)
   select coalesce(jsonb_agg(jsonb_build_object(
            'integracao_id', i.id, 'tipo', i.tipo, 'nome', i.nome, 'ativa', i.ativa,
+           'por_arquivo', coalesce(i.parametros ->> 'fonte', '') = 'arquivo',
            'ultimo_sucesso_em', i.ultimo_sucesso_em, 'ultimo_status', i.ultimo_status, 'ultimo_erro', i.ultimo_erro,
            'executando', exists (select 1 from public.sync_execucoes s where s.integracao_id = i.id and s.status = 'executando')
                       or exists (select 1 from public.sync_solicitacoes s

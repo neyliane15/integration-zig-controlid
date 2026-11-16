@@ -2,13 +2,15 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import clsx from 'clsx'
-import { ChevronRight, Clock, Plus, PlugZap, RefreshCw } from 'lucide-react'
+import { ChevronRight, Clock, FileUp, Plus, PlugZap, RefreshCw } from 'lucide-react'
 import type { Integracao, TipoIntegracao } from '@/tipos/banco'
 import { Botao, CabecalhoPagina, Cartao, ErroCarga, Esqueleto, FOCO, Modal, Selo, Vazio } from '@/componentes/ui'
 import { BotaoSincronizar, IconeIntegracao, SeloStatusIntegracao } from '@/componentes/integracoes/comum'
 import { FormularioIntegracao } from '@/componentes/integracoes/FormularioIntegracao'
 import { HistoricoExecucoes } from '@/componentes/integracoes/HistoricoExecucoes'
 import { useIntegracoes, useSolicitacoesAbertas } from '@/consultas/integracoes'
+import { ehRelogioPorArquivo, useCriarRelogioArquivo } from '@/consultas/afd'
+import { useAvisos } from '@/componentes/avisos'
 import { formatarRelativo } from '@/lib/formato'
 import { podeAdministrar } from '@/lib/permissoes'
 import { rotuloStatusSolicitacao, rotuloTipoIntegracao } from '@/lib/rotulos'
@@ -19,6 +21,7 @@ const DESCRICAO_TIPO: Record<TipoIntegracao, string> = {
   controlid_acesso: 'Batidas de iDFace, iDFlex ou iDAccess usadas como ponto, e envio do cadastro ao equipamento.',
   controlid_rep: 'Marcações do relógio de ponto iDClass (AFD), com envio opcional do cadastro.',
   tagme: 'Reservas do dia no painel. A API da Tagme é só para parceiros; enquanto isso, importe o CSV ou lance à mão.',
+  rhid: 'Recomendado quando o relógio está na nuvem RHiD: o N8N busca pessoas e marcações (AFD) pela API oficial, sem rede da loja.',
 }
 
 export function PaginaIntegracoes() {
@@ -29,6 +32,8 @@ export function PaginaIntegracoes() {
   const abertas = useSolicitacoesAbertas(empresaId)
   const [novoTipo, setNovoTipo] = useState<TipoIntegracao | 'escolher' | null>(null)
   const navegar = useNavigate()
+  const criarArquivo = useCriarRelogioArquivo()
+  const avisos = useAvisos()
 
   const lista = integracoes.data ?? []
   const nomes = Object.fromEntries(lista.map((i) => [i.id, i.nome]))
@@ -46,7 +51,7 @@ export function PaginaIntegracoes() {
         subtitulo="Zig e Control iD conversando com a sua rotina. O N8N busca os dados no horário e quando você pede."
         acoes={
           <>
-            {lista.some((i) => i.ativa) && <BotaoSincronizar empresaId={empresaId} rotulo="Sincronizar tudo" tamanho="m" />}
+            {lista.some((i) => i.ativa && !ehRelogioPorArquivo(i)) && <BotaoSincronizar empresaId={empresaId} rotulo="Sincronizar tudo" tamanho="m" />}
             {admin && (
               <Botao icone={<Plus aria-hidden />} onClick={() => setNovoTipo('escolher')}>
                 Nova integração
@@ -107,7 +112,7 @@ export function PaginaIntegracoes() {
       >
         {novoTipo === 'escolher' ? (
           <ul className="flex flex-col gap-3">
-            {(['zig', 'controlid_acesso', 'controlid_rep', 'tagme'] as TipoIntegracao[]).map((t) => (
+            {(['zig', 'rhid', 'controlid_acesso', 'controlid_rep', 'tagme'] as TipoIntegracao[]).map((t) => (
               <li key={t}>
                 <button
                   type="button"
@@ -126,6 +131,34 @@ export function PaginaIntegracoes() {
                 </button>
               </li>
             ))}
+            <li>
+              <button
+                type="button"
+                disabled={criarArquivo.isPending}
+                onClick={() =>
+                  criarArquivo.mutate(undefined, {
+                    onSuccess: (id) => {
+                      setNovoTipo(null)
+                      navegar(`/integracoes/${id}`)
+                    },
+                    onError: avisos.erro,
+                  })
+                }
+                className={clsx(
+                  'flex w-full items-center gap-4 rounded-entrada border border-borda bg-entrada p-4 text-left transition-colors hover:border-ouro/60 hover:bg-cartao-2',
+                  FOCO,
+                )}
+              >
+                <IconeIntegracao tipo="controlid_rep" />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-semibold text-creme">Relógio de ponto (RHiD/arquivo)</span>
+                  <span className="mt-0.5 block text-sm text-lavanda">
+                    Relógio na nuvem RHiD, fora da rede: importe o AFD baixado do RHiD. Sem endereço nem senha.
+                  </span>
+                </span>
+                <ChevronRight aria-hidden className="size-4 text-lavanda" />
+              </button>
+            </li>
           </ul>
         ) : novoTipo && empresaId ? (
           <FormularioIntegracao
@@ -146,6 +179,7 @@ export function PaginaIntegracoes() {
 function CartaoIntegracao({ i, empresaId, executando }: { i: Integracao; empresaId: string | null; executando: boolean }) {
   const envioAtivo = i.tipo !== 'zig' && !!(i.parametros as { envio?: { ativo?: boolean } }).envio?.ativo
   const modelo = (i.parametros as { modelo?: string }).modelo
+  const porArquivo = ehRelogioPorArquivo(i)
   return (
     <Cartao className="flex flex-col">
       <div className="flex items-start gap-3">
@@ -170,10 +204,10 @@ function CartaoIntegracao({ i, empresaId, executando }: { i: Integracao; empresa
           <dd className="mt-0.5 text-creme">{formatarRelativo(i.ultimo_sucesso_em)}</dd>
         </div>
         <div>
-          <dt className="text-[10px] font-bold tracking-[0.14em] text-lavanda uppercase">Frequência</dt>
+          <dt className="text-[10px] font-bold tracking-[0.14em] text-lavanda uppercase">{porArquivo ? 'Origem' : 'Frequência'}</dt>
           <dd className="mt-0.5 flex items-center gap-1.5 text-creme">
-            <Clock aria-hidden className="size-3.5 text-lavanda" />
-            {i.intervalo_minutos < 60 ? `${i.intervalo_minutos} min` : `${i.intervalo_minutos / 60} h`}
+            {porArquivo ? <FileUp aria-hidden className="size-3.5 text-lavanda" /> : <Clock aria-hidden className="size-3.5 text-lavanda" />}
+            {porArquivo ? 'Arquivo AFD' : i.intervalo_minutos < 60 ? `${i.intervalo_minutos} min` : `${i.intervalo_minutos / 60} h`}
           </dd>
         </div>
       </dl>
@@ -186,7 +220,15 @@ function CartaoIntegracao({ i, empresaId, executando }: { i: Integracao; empresa
         <Link to={`/integracoes/${i.id}`} className={clsx('inline-flex items-center gap-1 rounded text-sm font-semibold text-ouro hover:text-ouro-claro', FOCO)}>
           Detalhes <ChevronRight aria-hidden className="size-4" />
         </Link>
-        {i.ativa && <BotaoSincronizar empresaId={empresaId} integracaoId={i.id} desabilitado={executando} />}
+        {i.ativa && !porArquivo && <BotaoSincronizar empresaId={empresaId} integracaoId={i.id} desabilitado={executando} />}
+        {i.ativa && porArquivo && (
+          <Link
+            to={`/integracoes/${i.id}`}
+            className={clsx('inline-flex items-center gap-1 rounded text-sm font-semibold text-ouro hover:text-ouro-claro', FOCO)}
+          >
+            <FileUp aria-hidden className="size-4" /> Importar AFD
+          </Link>
+        )}
       </div>
     </Cartao>
   )
