@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import {
   validarConfigRhid, planoRhid, requisicaoLoginRhid, tokenDoLoginRhid, registrosRhid, textoAfdRhid, empresasRhid, alvosRhid,
   janelaRhid, requisicaoAfdRhid, abrirSessaoRhid, importarPessoasRhid, importarBatidasRhid, juntarSaidasRhid, RHID_BASE_PADRAO,
-  cpfRhid, deveImportarHorariosRhid, janelaHorariosRhid, diasApuracaoRhid, importarHorariosRhid,
+  cpfRhid, toleranciasTurnoRhid, deveImportarHorariosRhid, janelaHorariosRhid, diasApuracaoRhid, importarHorariosRhid,
 } from './rhid.mjs'
 import { lerAfd, resumoAfd } from '../../controlid/lib/afd.mjs'
 import { requisitarComRetentativa, criarHttpFetch } from '../../comum/lib/supabase.mjs'
@@ -160,9 +160,16 @@ test('horários: apuração do RHiD (formato real) → previsto, folga, feriado,
     { date: '2026-11-02T00:00:00', strHorarioContratualSimples: '', horasUteis: 0, folga: false, isHoliday: 1, holiday: { name: 'Finados', folga: false }, saldoBancoCredDeb: 622 },
     { date: '2026-11-03T00:00:00', strHorarioContratualSimples: '08:00-13:00\r\n13:30-15:50', horasUteis: 440, folga: true, isHoliday: 0, holiday: null, saldoBancoCredDeb: 0 },
     { dateTimeStr: '20261104', strHorarioContratualSimples: '15:00-17:00\r\n17:30-22:50', horasUteis: 440, folga: false },
+    { date: '2026-11-05T00:00:00', strHorarioContratualSimples: '', horasUteis: 0, folga: false, isHoliday: 0, holiday: null, neutro: null },
     { date: 'lixo' }, null,
   ])
-  const d = diasApuracaoRhid(JSON.stringify(real), '04567891230')
+  const todos = diasApuracaoRhid(JSON.stringify(real), '04567891230', { extra: 10, falta: 5 })
+  assert.deepEqual(todos.at(-1), { cpf: '04567891230', data: '2026-11-05', sem_horario: true }, 'sem horário no RHiD')
+  const d = todos.slice(0, -1)
+  assert.ok(d.every((x) => x.tolerancia_extra_minutos === 10 && x.tolerancia_falta_minutos === 5))
+  assert.deepEqual(toleranciasTurnoRhid({ tolerancias: [{ code: 'tolerancia_clt', value: true }, { code: 'lim_min_diario_horas_extras', value: 10 }, { code: 'lim_min_diario_faltas', value: 15 }] }), { extra: 10, falta: 15 })
+  assert.deepEqual(toleranciasTurnoRhid({ tolerancias: [{ code: 'tolerancia_clt', value: true }] }), { extra: 10, falta: 10 })
+  assert.deepEqual(toleranciasTurnoRhid({}), { extra: 0, falta: 0 })
   assert.deepEqual(d.map((x) => [x.data, x.previsto_minutos, x.folga, x.feriado, x.horarios.join(' '), x.saldo_minutos]), [
     ['2026-11-01', 440, false, null, '08:00 13:00 13:30 15:50', -326],
     ['2026-11-02', 0, false, 'Finados', '', 622],
@@ -203,6 +210,7 @@ test('horários ponta a ponta (HTTP): só CPFs ligados, uma apuração por pesso
   assert.deepEqual(dias.filter((x) => x.previsto_minutos === 0).map((x) => [x.data, x.folga, x.feriado]),
     [['2026-11-15', false, 'Proclamação da República']], '15/11 (domingo) é feriado: previsto 0')
   assert.deepEqual(dias.find((x) => x.data === '2026-11-09').horarios, ['08:00', '13:00', '13:30', '15:50'])
+  assert.ok(dias.every((x) => x.tolerancia_extra_minutos === 10 && x.tolerancia_falta_minutos === 10), 'tolerância do /shift/4')
   assert.match(h.detalhes.avisos.join(' '), /…99 ligado, mas não está nas pessoas do RHiD/)
 })
 

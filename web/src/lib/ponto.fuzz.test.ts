@@ -5,7 +5,7 @@
  * Gera, numa transação desfeita no fim, 2 empresas (São Paulo/05:00 e Manaus/04:00), 16 funcionários com escalas
  * aleatórias (2 ou 4 batidas, muitas atravessando a meia-noite, folgas) e ~55 dias de batidas aleatórias (esquecidas,
  * extras, duplicadas a menos de 2 min, desconsideradas). Apura no banco e confere, dia a dia, com as funções do front:
- *   - duplicadas: regra §7.2-3 reimplementada aqui (janela da empresa a partir da última válida);
+ *   - duplicadas: regra §7.2-3 reimplementada aqui (janela da empresa a partir da última válida; saída repetida vale a última);
  *   - trabalhado = `paresTrabalhados(válidas).total` (§7.2-4);
  *   - batida(s) faltante(s) dos alarmes do banco = `identificarFaltantes` (o que a tela mostra como "faltou");
  *   - um alarme `batida_faltando` por slot faltante, `sem_batida_dia_escalado` só com 0 batidas, ímpar só fora do caso
@@ -127,13 +127,19 @@ describe.skipIf(!ATIVO)('ponto — banco × front (fuzz; MDG_FUZZ_BANCO=1)', () 
       const ctx = JSON.stringify(l)
       // duplicadas (§7.2-3): ordem por instante; dentro da janela da ÚLTIMA válida
       const naoDesc = l.batidas.filter((x) => !x.desconsiderada).sort((x, y) => Date.parse(x.instante) - Date.parse(y.instante))
+      // entrada repetida (válidas em nº ímpar) vale a 1ª; saída repetida (nº par) vale a última
       let ultima: number | null = null
-      for (const x of naoDesc) {
+      const esperadoDup: boolean[] = []
+      let nValidas = 0
+      let idxUltima = -1
+      naoDesc.forEach((x, i) => {
         const t = Date.parse(x.instante)
-        const dup = ultima != null && t - ultima < janela.get(l.f)! * 60000
-        expect(x.duplicada, ctx).toBe(dup)
-        if (!dup) ultima = t
-      }
+        if (ultima != null && t - ultima < janela.get(l.f)! * 60000) {
+          if (nValidas % 2 === 0) { esperadoDup[idxUltima] = true; esperadoDup[i] = false; idxUltima = i; ultima = t }
+          else esperadoDup[i] = true
+        } else { esperadoDup[i] = false; nValidas++; idxUltima = i; ultima = t }
+      })
+      naoDesc.forEach((x, i) => expect(x.duplicada, ctx).toBe(esperadoDup[i]))
       const validas = naoDesc.filter((x) => !x.duplicada).map((x) => x.instante)
       expect(l.trabalhado_minutos, ctx).toBe(paresTrabalhados(validas).total)
       const n = validas.length

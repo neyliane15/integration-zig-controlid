@@ -209,8 +209,9 @@ begin
   -- (adendo RHiD §R.9) horário previsto importado do RHiD: a função real é definida em …0320_rhid_horarios.sql.
   if to_regprocedure('public.ponto_previsto_externo_dia(uuid, date)') is null then
     execute $f$create function public.ponto_previsto_externo_dia(p_funcionario uuid, p_data date,
-      out previsto_minutos int, out horarios time[])
-      language sql stable security definer set search_path = public, extensions, pg_temp as 'select null::int, null::time[]'$f$;
+      out previsto_minutos int, out horarios time[], out tolerancia_extra_minutos int, out tolerancia_falta_minutos int)
+      language sql stable security definer set search_path = public, extensions, pg_temp as
+      'select null::int, null::time[], null::int, null::int'$f$;
     execute $c$comment on function public.ponto_previsto_externo_dia(uuid, date) is '[interno] Previsto externo do dia (esqueleto; ver …0320).'$c$;
   end if;
   -- (adendo extras v3, §E.7.2) falta do funcionário no dia: a função real é definida em …0290_comissao_presenca.sql.
@@ -284,6 +285,9 @@ declare
   v_falta      text;
   v_ext_prev   int;
   v_ext_hor    time[];
+  v_ext_tol_e  int;
+  v_ext_tol_f  int;
+  v_ult_idx    int;
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -376,7 +380,8 @@ begin
   -- (adendo RHiD §R.9) previsto importado do RHiD (apuração do RHiD por dia: horário contratual, folga, feriado):
   -- prevalece sobre jornada e escala. Folga/feriado = previsto 0 (o trabalhado vira saldo positivo, como no RHiD).
   if v_abono is null and v_falta is distinct from 'justificada' then
-    select x.previsto_minutos, x.horarios into v_ext_prev, v_ext_hor
+    select x.previsto_minutos, x.horarios, x.tolerancia_extra_minutos, x.tolerancia_falta_minutos
+      into v_ext_prev, v_ext_hor, v_ext_tol_e, v_ext_tol_f
       from public.ponto_previsto_externo_dia(f.id, p_data) x;
     if v_ext_prev is not null then
       v_prev := v_ext_prev;
@@ -396,7 +401,7 @@ begin
     end if;
   end if;
 
-  -- 3. Batidas (duplicadas: a menos de N minutos da última válida)
+  -- 3. Batidas (duplicadas: a menos de N minutos da última válida; entrada repetida vale a 1ª, saída repetida vale a última)
   for b in
     select pb.id, pb.instante, pb.origem, pb.desconsiderada, pb.motivo
       from public.ponto_batidas pb
@@ -406,11 +411,20 @@ begin
     v_dup := false;
     if not b.desconsiderada then
       if v_ultima is not null and b.instante - v_ultima < make_interval(mins => e.ponto_janela_duplicada_minutos) then
-        v_dup := true;
         v_dups := v_dups + 1;
+        if array_length(v_validas, 1) % 2 = 0 then
+          -- repetiu a SAÍDA (válidas em nº par): vale a última (como no RHiD); a anterior vira duplicada
+          v_batidas := jsonb_set(v_batidas, array[v_ult_idx::text, 'duplicada'], 'true'::jsonb);
+          v_validas[array_length(v_validas, 1)] := b.instante;
+          v_ultima := b.instante;
+          v_ult_idx := jsonb_array_length(v_batidas);
+        else
+          v_dup := true;   -- repetiu a ENTRADA: vale a primeira
+        end if;
       else
         v_validas := v_validas || b.instante;
         v_ultima := b.instante;
+        v_ult_idx := jsonb_array_length(v_batidas);
       end if;
     end if;
     v_batidas := v_batidas || jsonb_build_object('id', b.id, 'instante', b.instante, 'origem', b.origem,
@@ -431,7 +445,11 @@ begin
   elsif v_prev > 0 then
     if v_n = 0 then
       v_saldo := -v_prev;
-    elsif abs(v_trab - v_prev) <= v_tol_dia then
+    elsif v_ext_prev is not null and v_trab >= v_prev and v_trab - v_prev <= coalesce(v_ext_tol_e, v_tol_dia) then
+      v_saldo := 0;   -- tolerância do horário do RHiD (CLT: até 10 min/dia)
+    elsif v_ext_prev is not null and v_trab < v_prev and v_prev - v_trab <= coalesce(v_ext_tol_f, v_tol_dia) then
+      v_saldo := 0;
+    elsif v_ext_prev is null and abs(v_trab - v_prev) <= v_tol_dia then
       v_saldo := 0;
     else
       v_saldo := v_trab - v_prev;

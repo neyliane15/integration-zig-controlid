@@ -436,7 +436,8 @@ export function janelaHorariosRhid(entrada, config) {
  * `ingestao_rhid_horarios`: previsto = horasUteis (0 em folga/feriado), horários de strHorarioContratualSimples
  * ("08:00-13:00\r\n13:30-15:50"), feriado = nome, saldo = saldoBancoCredDeb.
  */
-export function diasApuracaoRhid(corpo, cpf) {
+export function diasApuracaoRhid(corpo, cpf, tolerancias) {
+  const tol = tolerancias || {}
   let c = corpoJsonRhid(corpo)
   if (typeof c === 'string') c = corpoJsonRhid(c)
   if (c && !Array.isArray(c) && typeof c === 'object') {
@@ -461,6 +462,8 @@ export function diasApuracaoRhid(corpo, cpf) {
     }
     const folga = d.folga === true
     const uteis = Math.max(0, Math.min(1440, Math.trunc(Number(d.horasUteis) || 0)))
+    // sem horário no RHiD (pessoa sem escala/horário): o RHiD não apura → apaga o previsto (vale a jornada/escala daqui)
+    if (!horarios.length && !uteis && !folga && !feriado) { dias.push({ cpf, data, sem_horario: true }); continue }
     dias.push({
       cpf,
       data,
@@ -469,9 +472,23 @@ export function diasApuracaoRhid(corpo, cpf) {
       folga,
       feriado,
       saldo_minutos: Number.isFinite(Number(d.saldoBancoCredDeb)) ? Math.trunc(Number(d.saldoBancoCredDeb)) : null,
+      tolerancia_extra_minutos: tol.extra || 0,
+      tolerancia_falta_minutos: tol.falta || 0,
     })
   }
   return dias
+}
+
+/** Tolerância diária de um horário do RHiD (ShiftDTO.tolerancias): lim_min_diario_horas_extras / _faltas; CLT = 10. */
+export function toleranciasTurnoRhid(turno) {
+  const lista = Array.isArray(turno && turno.tolerancias) ? turno.tolerancias : []
+  const valor = (codigo) => { const t = lista.find((x) => x && x.code === codigo); return t ? t.value : undefined }
+  const clt = valor('tolerancia_clt') === true
+  const num = (v) => (Number.isFinite(Number(v)) && v !== null && v !== '' && typeof v !== 'boolean' ? Math.max(0, Math.min(120, Math.trunc(Number(v)))) : null)
+  return {
+    extra: num(valor('lim_min_diario_horas_extras')) ?? (clt ? 10 : 0),
+    falta: num(valor('lim_min_diario_faltas')) ?? (clt ? 10 : 0),
+  }
 }
 
 /**
@@ -481,12 +498,30 @@ export function diasApuracaoRhid(corpo, cpf) {
  */
 export async function importarHorariosRhid(config, entrada, sessao, deps) {
   const janela = janelaHorariosRhid(entrada, config)
+  const avisos = []
+  const falhas = []
   const vinculados = ((await deps.rpc('ingestao_rhid_vinculados', { p_integracao: config.integracao_id })) || []).map(cpfRhid).filter(Boolean)
   if (!sessao.pessoas) sessao.pessoas = await sessao.listar('/person', 'pessoas')
   const idPorCpf = new Map()
-  for (const x of sessao.pessoas) { const c = cpfRhid(x && x.cpf); if (c && Number(x.id) > 0 && !idPorCpf.has(c)) idPorCpf.set(c, Number(x.id)) }
-  const avisos = []
-  const falhas = []
+  const turnoPorCpf = new Map()
+  for (const x of sessao.pessoas) {
+    const c = cpfRhid(x && x.cpf)
+    if (c && Number(x.id) > 0 && !idPorCpf.has(c)) { idPorCpf.set(c, Number(x.id)); turnoPorCpf.set(c, Number(x.idShift) > 0 ? Number(x.idShift) : null) }
+  }
+  const turnos = new Map()
+  const toleranciaDo = async (idTurno) => {
+    if (!idTurno) return { extra: 0, falta: 0 }
+    if (!turnos.has(idTurno)) {
+      try {
+        const corpo = await sessao.chamar((token) => ({ method: 'GET', url: urlRhid(sessao.base, `/shift/${idTurno}`, {}), headers: cabecalhosRhid(token), timeoutMs: deps.timeoutMs || 120000 }), `RHiD horário ${idTurno}`)
+        turnos.set(idTurno, toleranciasTurnoRhid(corpoJsonRhid(corpo)))
+      } catch (e) {
+        avisos.push(`horário ${idTurno}: tolerância não lida (${String(e && e.message ? e.message : e).slice(0, 80)})`)
+        turnos.set(idTurno, { extra: 0, falta: 0 })
+      }
+    }
+    return turnos.get(idTurno)
+  }
   let dias = []
   let pessoas = 0
   for (const cpf of vinculados) {
@@ -494,7 +529,7 @@ export async function importarHorariosRhid(config, entrada, sessao, deps) {
     if (!id) { avisos.push(`CPF …${cpf.slice(-2)} ligado, mas não está nas pessoas do RHiD`); continue }
     try {
       const corpo = await sessao.chamar((token) => ({ method: 'GET', url: urlRhid(sessao.base, '/apuracao_ponto', { idPerson: id, dataIni: janela.dataIni, dataFinal: janela.dataFinal }), headers: cabecalhosRhid(token), timeoutMs: deps.timeoutMs || 120000 }), `RHiD apuração ${id}`)
-      dias = dias.concat(diasApuracaoRhid(corpo, cpf))
+      dias = dias.concat(diasApuracaoRhid(corpo, cpf, await toleranciaDo(turnoPorCpf.get(cpf))))
       pessoas++
     } catch (e) {
       falhas.push(`pessoa ${id}: ${e && e.message ? e.message : String(e)}`.slice(0, 200))
@@ -505,10 +540,11 @@ export async function importarHorariosRhid(config, entrada, sessao, deps) {
     e.tentativas = sessao.tentativasMax
     throw e
   }
-  const tot = { gravados: 0, iguais: 0, ignorados: 0, reapurados: 0 }
+  const tot = { gravados: 0, apagados: 0, iguais: 0, ignorados: 0, reapurados: 0 }
   for (const lote of lotesRhid(dias, deps.tamanhoLote || 2000)) {
     const r = (await deps.rpc('ingestao_rhid_horarios', { p_integracao: config.integracao_id, p_dias: lote })) || {}
     tot.gravados += Number(r.gravados) || 0
+    tot.apagados += Number(r.apagados) || 0
     tot.iguais += Number(r.iguais) || 0
     tot.ignorados += Number(r.ignorados) || 0
     tot.reapurados += Number(r.funcionarios_reapurados) || 0
@@ -519,7 +555,7 @@ export async function importarHorariosRhid(config, entrada, sessao, deps) {
     gravados: tot.gravados,
     ignorados: tot.ignorados,
     erro: falhas.length ? `${falhas.length} pessoa(s) sem apuração: ${falhas.slice(0, 2).join(' | ')}` : null,
-    detalhes: { janela, vinculados: vinculados.length, pessoas, iguais: tot.iguais, funcionarios_reapurados: tot.reapurados, avisos: avisos.slice(0, 20), logins: sessao.logins },
+    detalhes: { janela, vinculados: vinculados.length, pessoas, iguais: tot.iguais, apagados: tot.apagados, sem_horario: dias.filter((x) => x.sem_horario).length, funcionarios_reapurados: tot.reapurados, avisos: avisos.slice(0, 20), logins: sessao.logins },
     tentativas: sessao.tentativasMax,
   }
 }

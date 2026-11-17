@@ -3629,8 +3629,9 @@ begin
   -- (adendo RHiD §R.9) horário previsto importado do RHiD: a função real é definida em …0320_rhid_horarios.sql.
   if to_regprocedure('public.ponto_previsto_externo_dia(uuid, date)') is null then
     execute $f$create function public.ponto_previsto_externo_dia(p_funcionario uuid, p_data date,
-      out previsto_minutos int, out horarios time[])
-      language sql stable security definer set search_path = public, extensions, pg_temp as 'select null::int, null::time[]'$f$;
+      out previsto_minutos int, out horarios time[], out tolerancia_extra_minutos int, out tolerancia_falta_minutos int)
+      language sql stable security definer set search_path = public, extensions, pg_temp as
+      'select null::int, null::time[], null::int, null::int'$f$;
     execute $c$comment on function public.ponto_previsto_externo_dia(uuid, date) is '[interno] Previsto externo do dia (esqueleto; ver …0320).'$c$;
   end if;
   -- (adendo extras v3, §E.7.2) falta do funcionário no dia: a função real é definida em …0290_comissao_presenca.sql.
@@ -3704,6 +3705,9 @@ declare
   v_falta      text;
   v_ext_prev   int;
   v_ext_hor    time[];
+  v_ext_tol_e  int;
+  v_ext_tol_f  int;
+  v_ult_idx    int;
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -3796,7 +3800,8 @@ begin
   -- (adendo RHiD §R.9) previsto importado do RHiD (apuração do RHiD por dia: horário contratual, folga, feriado):
   -- prevalece sobre jornada e escala. Folga/feriado = previsto 0 (o trabalhado vira saldo positivo, como no RHiD).
   if v_abono is null and v_falta is distinct from 'justificada' then
-    select x.previsto_minutos, x.horarios into v_ext_prev, v_ext_hor
+    select x.previsto_minutos, x.horarios, x.tolerancia_extra_minutos, x.tolerancia_falta_minutos
+      into v_ext_prev, v_ext_hor, v_ext_tol_e, v_ext_tol_f
       from public.ponto_previsto_externo_dia(f.id, p_data) x;
     if v_ext_prev is not null then
       v_prev := v_ext_prev;
@@ -3816,7 +3821,7 @@ begin
     end if;
   end if;
 
-  -- 3. Batidas (duplicadas: a menos de N minutos da última válida)
+  -- 3. Batidas (duplicadas: a menos de N minutos da última válida; entrada repetida vale a 1ª, saída repetida vale a última)
   for b in
     select pb.id, pb.instante, pb.origem, pb.desconsiderada, pb.motivo
       from public.ponto_batidas pb
@@ -3826,11 +3831,20 @@ begin
     v_dup := false;
     if not b.desconsiderada then
       if v_ultima is not null and b.instante - v_ultima < make_interval(mins => e.ponto_janela_duplicada_minutos) then
-        v_dup := true;
         v_dups := v_dups + 1;
+        if array_length(v_validas, 1) % 2 = 0 then
+          -- repetiu a SAÍDA (válidas em nº par): vale a última (como no RHiD); a anterior vira duplicada
+          v_batidas := jsonb_set(v_batidas, array[v_ult_idx::text, 'duplicada'], 'true'::jsonb);
+          v_validas[array_length(v_validas, 1)] := b.instante;
+          v_ultima := b.instante;
+          v_ult_idx := jsonb_array_length(v_batidas);
+        else
+          v_dup := true;   -- repetiu a ENTRADA: vale a primeira
+        end if;
       else
         v_validas := v_validas || b.instante;
         v_ultima := b.instante;
+        v_ult_idx := jsonb_array_length(v_batidas);
       end if;
     end if;
     v_batidas := v_batidas || jsonb_build_object('id', b.id, 'instante', b.instante, 'origem', b.origem,
@@ -3851,7 +3865,11 @@ begin
   elsif v_prev > 0 then
     if v_n = 0 then
       v_saldo := -v_prev;
-    elsif abs(v_trab - v_prev) <= v_tol_dia then
+    elsif v_ext_prev is not null and v_trab >= v_prev and v_trab - v_prev <= coalesce(v_ext_tol_e, v_tol_dia) then
+      v_saldo := 0;   -- tolerância do horário do RHiD (CLT: até 10 min/dia)
+    elsif v_ext_prev is not null and v_trab < v_prev and v_prev - v_trab <= coalesce(v_ext_tol_f, v_tol_dia) then
+      v_saldo := 0;
+    elsif v_ext_prev is null and abs(v_trab - v_prev) <= v_tol_dia then
       v_saldo := 0;
     else
       v_saldo := v_trab - v_prev;
@@ -9653,6 +9671,11 @@ create table if not exists public.ponto_previsto_externo (
   atualizado_em          timestamptz not null default now(),
   primary key (funcionario_id, data)
 );
+-- tolerância diária do horário do RHiD (lim_min_diario_horas_extras / _faltas; CLT = 10): diferença até ela zera o saldo
+alter table public.ponto_previsto_externo add column if not exists tolerancia_extra_minutos int not null default 0
+  check (tolerancia_extra_minutos between 0 and 120);
+alter table public.ponto_previsto_externo add column if not exists tolerancia_falta_minutos int not null default 0
+  check (tolerancia_falta_minutos between 0 and 120);
 create index if not exists ponto_previsto_externo_empresa_idx on public.ponto_previsto_externo (empresa_id, data);
 create index if not exists ponto_previsto_externo_integracao_idx on public.ponto_previsto_externo (integracao_id);
 comment on table public.ponto_previsto_externo is
@@ -9672,15 +9695,23 @@ alter table public.sync_execucoes add constraint sync_execucoes_tipo_check
                   'rhid_pessoas', 'rhid_batidas', 'rhid_horarios'));
 
 -- Usado por ponto_calcular_dia (…0200). Sem linha → nulls (vale a jornada/escala).
+-- (a assinatura ganhou as tolerâncias: recria; ponto_calcular_dia só a chama em tempo de execução)
+do $$
+begin
+  if exists (select 1 from pg_proc p where p.oid = to_regprocedure('public.ponto_previsto_externo_dia(uuid, date)')
+               and coalesce(array_length(p.proargnames, 1), 0) <> 6) then
+    drop function public.ponto_previsto_externo_dia(uuid, date);
+  end if;
+end $$;
 create or replace function public.ponto_previsto_externo_dia(p_funcionario uuid, p_data date,
-  out previsto_minutos int, out horarios time[])
+  out previsto_minutos int, out horarios time[], out tolerancia_extra_minutos int, out tolerancia_falta_minutos int)
 language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  select x.previsto_minutos, x.horarios
+  select x.previsto_minutos, x.horarios, x.tolerancia_extra_minutos, x.tolerancia_falta_minutos
     from public.ponto_previsto_externo x
    where x.funcionario_id = p_funcionario and x.data = p_data
 $$;
 comment on function public.ponto_previsto_externo_dia(uuid, date) is
-  '[interno] Previsto do dia vindo do RHiD (minutos e horários) — null se não houver.';
+  '[interno] Previsto do dia vindo do RHiD (minutos, horários, tolerâncias) — null se não houver.';
 
 -- CPFs do RHiD ligados a funcionário (o N8N só pede a apuração desses).
 create or replace function public.ingestao_rhid_vinculados(p_integracao uuid) returns jsonb
@@ -9697,8 +9728,9 @@ end $$;
 comment on function public.ingestao_rhid_vinculados(uuid) is
   '[servico] CPFs (user_id_externo) do RHiD ligados a funcionário ativo.';
 
--- p_dias: [{cpf, data, previsto_minutos, horarios: ["08:00", …], folga, feriado, saldo_minutos}]
--- Grava só o que mudou e reapura os dias alterados. Atualiza cursor.horarios_em.
+-- p_dias: [{cpf, data, previsto_minutos, horarios: ["08:00", …], folga, feriado, saldo_minutos, tolerancia_extra_minutos,
+--           tolerancia_falta_minutos}] ou {cpf, data, sem_horario: true} (pessoa sem horário no RHiD: apaga o previsto do dia
+--           e volta a valer a jornada/escala). Grava só o que mudou e reapura os dias alterados. Atualiza cursor.horarios_em.
 create or replace function public.ingestao_rhid_horarios(p_integracao uuid, p_dias jsonb) returns jsonb
 language plpgsql volatile security definer set search_path = public, extensions, pg_temp as $$
 declare
@@ -9712,6 +9744,10 @@ declare
   v_folga   boolean;
   v_feriado text;
   v_saldo   int;
+  v_tol_e   int;
+  v_tol_f   int;
+  v_sem_hor boolean;
+  v_apag    int := 0;
   v_mudou   boolean;
   v_grav    int := 0;
   v_iguais  int := 0;
@@ -9735,6 +9771,10 @@ begin
       v_folga := coalesce((x ->> 'folga')::boolean, false);
       v_feriado := nullif(btrim(coalesce(x ->> 'feriado', '')), '');
       v_saldo := (x ->> 'saldo_minutos')::int;
+      v_sem_hor := coalesce((x ->> 'sem_horario')::boolean, false);
+      v_tol_e := least(greatest(coalesce((x ->> 'tolerancia_extra_minutos')::int, 0), 0), 120);
+      v_tol_f := least(greatest(coalesce((x ->> 'tolerancia_falta_minutos')::int, 0), 0), 120);
+      if v_sem_hor then v_prev := 0; end if;
       v_hor := coalesce((select array_agg(h::time order by o)
                            from jsonb_array_elements_text(case when jsonb_typeof(x -> 'horarios') = 'array'
                                                                then x -> 'horarios' else '[]'::jsonb end)
@@ -9754,8 +9794,20 @@ begin
       continue;
     end if;
 
-    select (p.previsto_minutos, p.horarios, p.folga, p.feriado, p.saldo_externo_minutos)
-           is distinct from (v_prev, v_hor, v_folga, v_feriado, v_saldo)
+    if v_sem_hor then
+      delete from public.ponto_previsto_externo p where p.funcionario_id = v_func and p.data = v_data;
+      if found then
+        insert into pg_temp.rhid_horarios_alterados values (v_func, v_data);
+        v_apag := v_apag + 1;
+      else
+        v_iguais := v_iguais + 1;
+      end if;
+      continue;
+    end if;
+
+    select (p.previsto_minutos, p.horarios, p.folga, p.feriado, p.saldo_externo_minutos,
+            p.tolerancia_extra_minutos, p.tolerancia_falta_minutos)
+           is distinct from (v_prev, v_hor, v_folga, v_feriado, v_saldo, v_tol_e, v_tol_f)
       into v_mudou
       from public.ponto_previsto_externo p
      where p.funcionario_id = v_func and p.data = v_data;
@@ -9765,12 +9817,14 @@ begin
     end if;
 
     insert into public.ponto_previsto_externo as p (
-      funcionario_id, data, empresa_id, integracao_id, previsto_minutos, horarios, folga, feriado, saldo_externo_minutos)
-    values (v_func, v_data, ig.empresa_id, ig.id, v_prev, v_hor, v_folga, v_feriado, v_saldo)
+      funcionario_id, data, empresa_id, integracao_id, previsto_minutos, horarios, folga, feriado, saldo_externo_minutos,
+      tolerancia_extra_minutos, tolerancia_falta_minutos)
+    values (v_func, v_data, ig.empresa_id, ig.id, v_prev, v_hor, v_folga, v_feriado, v_saldo, v_tol_e, v_tol_f)
     on conflict (funcionario_id, data) do update set
       integracao_id = excluded.integracao_id, previsto_minutos = excluded.previsto_minutos, horarios = excluded.horarios,
       folga = excluded.folga, feriado = excluded.feriado, saldo_externo_minutos = excluded.saldo_externo_minutos,
-      atualizado_em = now();
+      tolerancia_extra_minutos = excluded.tolerancia_extra_minutos,
+      tolerancia_falta_minutos = excluded.tolerancia_falta_minutos, atualizado_em = now();
     insert into pg_temp.rhid_horarios_alterados values (v_func, v_data);
     v_grav := v_grav + 1;
   end loop;
@@ -9782,7 +9836,7 @@ begin
 
   update public.integracoes i set cursor = i.cursor || jsonb_build_object('horarios_em', now()) where i.id = ig.id;
 
-  return jsonb_build_object('lidos', jsonb_array_length(p_dias), 'gravados', v_grav, 'iguais', v_iguais,
+  return jsonb_build_object('lidos', jsonb_array_length(p_dias), 'gravados', v_grav, 'apagados', v_apag, 'iguais', v_iguais,
                             'sem_funcionario', v_sem, 'invalidos', v_inval,
                             'ignorados', v_sem + v_inval,
                             'funcionarios_reapurados', (select count(distinct a.funcionario_id) from pg_temp.rhid_horarios_alterados a));

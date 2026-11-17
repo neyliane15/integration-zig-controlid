@@ -83,6 +83,39 @@ select teste.ok('14/11 virou folga: situação folga, saldo 0, alarme resolvido'
   (select previsto_minutos = 0 and saldo_minutos = 0 and situacao = 'folga' and alarmes_abertos = 0
      from public.ponto_dias where funcionario_id = 'e8000000-0000-4000-8000-000000000301' and data = '2026-11-14'));
 
+-- tolerância do horário do RHiD (CLT 10/10) e pessoa sem horário (apaga o previsto)
+insert into r_h select 3, public.ingestao_rhid_horarios('e8000000-0000-4000-8000-000000000101', $$[
+  {"cpf": 52998224725, "data": "2026-11-11", "previsto_minutos": 405, "horarios": ["08:00","13:00","13:30","15:15"], "saldo_minutos": 0,
+   "tolerancia_extra_minutos": 10, "tolerancia_falta_minutos": 10},
+  {"cpf": 52998224725, "data": "2026-11-15", "sem_horario": true}]$$);
+select teste.ok('3ª ingestão: 1 gravado, 1 apagado', (select r ->> 'gravados' = '1' and r ->> 'apagados' = '1' from r_h where n = 3));
+select teste.ok('11/11: trabalhado 6h41 vs previsto 6h45 (−4 min ≤ 10) → saldo 0',
+  (select previsto_minutos = 405 and saldo_minutos = 0
+     from public.ponto_dias where funcionario_id = 'e8000000-0000-4000-8000-000000000301' and data = '2026-11-11'));
+select teste.ok('15/11 sem horário no RHiD: previsto apagado, volta a valer jornada/escala (sem escala: saldo = trabalhado)',
+  not exists (select 1 from public.ponto_previsto_externo where funcionario_id = 'e8000000-0000-4000-8000-000000000301' and data = '2026-11-15')
+  and (select previsto_minutos = 0 and saldo_minutos = 652
+         from public.ponto_dias where funcionario_id = 'e8000000-0000-4000-8000-000000000301' and data = '2026-11-15'));
+
+-- saída repetida vale a última; entrada repetida vale a primeira (janela 5 min)
+select teste.como_dono();
+update public.empresas set ponto_janela_duplicada_minutos = 5 where id = 'e8000000-0000-4000-8000-00000000000a';
+insert into public.ponto_batidas (empresa_id, funcionario_id, origem, instante, motivo) values
+  ('e8000000-0000-4000-8000-00000000000a', 'e8000000-0000-4000-8000-000000000301', 'manual', '2026-11-10 14:11-03', 't'),
+  ('e8000000-0000-4000-8000-00000000000a', 'e8000000-0000-4000-8000-000000000301', 'manual', '2026-11-10 14:13-03', 't'),
+  ('e8000000-0000-4000-8000-00000000000a', 'e8000000-0000-4000-8000-000000000301', 'manual', '2026-11-10 15:08-03', 't'),
+  ('e8000000-0000-4000-8000-00000000000a', 'e8000000-0000-4000-8000-000000000301', 'manual', '2026-11-10 15:10-03', 't'),
+  ('e8000000-0000-4000-8000-00000000000a', 'e8000000-0000-4000-8000-000000000301', 'manual', '2026-11-10 18:51-03', 't');
+select public.ponto_apurar('e8000000-0000-4000-8000-000000000301', '2026-11-10', '2026-11-10');
+select teste.ok('10/11: 14:11 (14:13 duplicada), 15:10 (15:08 duplicada), 18:51 ímpar → trabalhado 59',
+  (select batidas_validas = 3 and batidas_duplicadas = 2 and trabalhado_minutos = 59
+     from public.ponto_dias where funcionario_id = 'e8000000-0000-4000-8000-000000000301' and data = '2026-11-10'));
+select teste.ok('espelho marca as duplicadas certas',
+  (select array_agg(to_char(x.instante at time zone 'America/Sao_Paulo', 'HH24:MI') order by x.instante)
+     from public.ponto_calcular_dia('e8000000-0000-4000-8000-000000000301', '2026-11-10') c,
+          jsonb_to_recordset(c.batidas) x(instante timestamptz, duplicada boolean)
+    where x.duplicada) = array['14:13', '15:08']);
+
 -- abono do dia prevalece sobre o previsto do RHiD
 select teste.como_dono();
 insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo)
@@ -95,7 +128,7 @@ select teste.ok('abono prevalece: 11/11 abonado, previsto 0',
 -- permissões
 select teste.como('rhidh.ger@teste.local');
 select teste.ok('gerente lê o previsto da empresa',
-  (select count(*) = 4 from public.ponto_previsto_externo));
+  (select count(*) = 3 from public.ponto_previsto_externo));
 select teste.erro('gerente não chama a ingestão',
   $$select public.ingestao_rhid_horarios('e8000000-0000-4000-8000-000000000101', '[]')$$, 'permission denied');
 select teste.erro('gerente não grava previsto direto',
