@@ -61,7 +61,7 @@ describe.skipIf(!ATIVO)('ponto — banco × front (fuzz; MDG_FUZZ_BANCO=1)', () 
     ]
     let sql = `begin;\nset local app.agora = '2026-10-06 12:00:00-03';\nset local client_min_messages = warning;\n`
     for (const e of EMP) {
-      sql += `insert into public.empresas (id, nome, fuso, virada_dia, ponto_janela_duplicada_minutos) values ('${e.id}', 'Fuzz ponto ${e.fuso}', '${e.fuso}', '${e.virada}', ${e.janela});\n`
+      sql += `insert into public.empresas (id, nome, fuso, virada_dia, ponto_janela_duplicada_minutos, ponto_alarme_prazo_dias) values ('${e.id}', 'Fuzz ponto ${e.fuso}', '${e.fuso}', '${e.virada}', ${e.janela}, 93);\n`
     }
     const funcionarios: { id: string; emp: (typeof EMP)[number] }[] = []
     for (let k = 0; k < 16; k++) {
@@ -159,7 +159,11 @@ describe.skipIf(!ATIVO)('ponto — banco × front (fuzz; MDG_FUZZ_BANCO=1)', () 
         expect(faltando, ctx).toEqual([])
       }
       expect(abertos.some((x) => x.tipo === 'sem_batida_dia_escalado'), ctx).toBe(k > 0 && n === 0)
-      expect(abertos.some((x) => x.tipo === 'batidas_impares'), ctx).toBe(n % 2 === 1 && !(k > 0 && n > 0 && n < k))
+      // sem horário no dia (folga): menos batidas que a jornada do funcionário → "poucas batidas" (no lugar de ímpar)
+      const jmax = Math.max(0, ...a.filter((y) => y.f === l.f).map((y) => y.esperadas.length))
+      const poucas = k === 0 && n > 0 && n < jmax
+      expect(abertos.some((x) => x.tipo === 'poucas_batidas'), ctx).toBe(poucas)
+      expect(abertos.some((x) => x.tipo === 'batidas_impares'), ctx).toBe(n % 2 === 1 && !(k > 0 && n > 0 && n < k) && !poucas)
       if (k === 0 && n === 0) expect(['folga', 'sem_escala'], ctx).toContain(l.situacao)
       if (k > 0 && n === 0) expect(l.situacao, ctx).toBe('ausente')
       if (n > 0 && n >= k && n % 2 === 0) expect(l.situacao, ctx).toBe('completo')

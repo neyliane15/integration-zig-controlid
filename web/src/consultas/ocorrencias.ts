@@ -168,6 +168,22 @@ export function useUrlAnexo(caminho: string | null | undefined) {
   })
 }
 
+/** Faltas (registradas e dias ausentes do ponto) e atrasos na entrada no período. */
+export function useOcorrenciasPonto(inicio: string, fim: string, funcionarioId?: string | null, habilitado = true) {
+  const { empresaId } = useEmpresaAtual()
+  return useQuery({
+    queryKey: chaves.ocorrenciasPonto(empresaId, funcionarioId, inicio, fim),
+    enabled: !!empresaId && habilitado,
+    queryFn: async () =>
+      (await chamarRpc('ocorrencias_ponto', {
+        p_inicio: inicio,
+        p_fim: fim,
+        p_funcionario: funcionarioId ?? null,
+        p_empresa: funcionarioId ? null : empresaId,
+      })) ?? [],
+  })
+}
+
 export function useResumoOcorrencias(dias = 30, habilitado = true) {
   const { empresaId } = useEmpresaAtual()
   return useQuery({

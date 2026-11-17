@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 01 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 01 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000100_base.sql. Não edite à mão.
 
@@ -74,6 +74,11 @@ create table if not exists public.empresas (
   criado_em                       timestamptz not null default now(),
   atualizado_em                   timestamptz not null default now()
 );
+-- (ocorrências de ponto) alarmes só dos últimos N dias; alerta de quem bateu menos que o mínimo (0 = desligado)
+alter table public.empresas add column if not exists ponto_alarme_prazo_dias int not null default 2
+  check (ponto_alarme_prazo_dias between 1 and 93);
+alter table public.empresas add column if not exists ponto_batidas_minimas int not null default 4
+  check (ponto_batidas_minimas between 0 and 8);
 comment on table public.empresas is '[api:crud] Empresas (estabelecimentos/redes).';
 
 -- ========================================================================================= perfis
@@ -650,7 +655,6 @@ begin
   update public.perfis set papel = 'master', empresa_id = null, ativo = true where id = v_id;
   update public.configuracao set master_email = lower(btrim(p_email)) where id = 1 and master_email is null;
 end $$;
-comment on function public.tornar_master(text) is '[interno] Torna um usuário existente master (só pelo SQL Editor).';
 
 commit;
-select 'parte 01 de 20 instalada' as resultado;
+select 'parte 01 de 21 instalada' as resultado;

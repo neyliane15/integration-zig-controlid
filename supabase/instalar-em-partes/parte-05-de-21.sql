@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 05 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 05 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000140_envio_controlid.sql. Não edite à mão.
 
@@ -550,4 +550,4 @@ create trigger controlid_envio after insert or update or delete on public.contro
 drop trigger if exists controlid_envio on public.controlid_horario_faixas;
 
 commit;
-select 'parte 05 de 20 instalada' as resultado;
+select 'parte 05 de 21 instalada' as resultado;

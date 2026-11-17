@@ -176,7 +176,9 @@ function Ficha({ funcionario }: { funcionario: Funcionario | null }) {
   const salvar = useSalvarFuncionario()
   const excluir = useExcluirFuncionario()
   const todos = useFuncionarios()
-  const [aba, setAba] = useState<Aba>('dados')
+  const [aba, setAba] = useState<Aba>(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('aba') === 'ocorrencias' ? 'ocorrencias' : 'dados',
+  )
   const [form, setForm] = useState<Formulario>(() => (funcionario ? paraFormulario(funcionario) : VAZIO))
   const [tentou, setTentou] = useState(false)
   const idForm = useId()

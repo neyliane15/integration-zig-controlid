@@ -4,8 +4,8 @@
  */
 import { useEffect, useId, useRef, useState } from 'react'
 import clsx from 'clsx'
-import { Camera, ExternalLink, FileText, ImagePlus, Paperclip, Pencil, Plus, ShieldAlert, Trash2, X } from 'lucide-react'
-import type { AnexoOcorrencia, Ocorrencia, TipoOcorrencia } from '@/tipos/banco'
+import { AlarmClock, Camera, CalendarX, ExternalLink, FileText, ImagePlus, Paperclip, Pencil, Plus, ShieldAlert, Trash2, X } from 'lucide-react'
+import type { AnexoOcorrencia, Ocorrencia, OcorrenciaPonto, TipoOcorrencia } from '@/tipos/banco'
 import { AreaTexto, Botao, Campo, Carregando, Entrada, EntradaData, ErroCarga, FOCO, Modal, Selecao, Selo, Vazio } from '@/componentes/ui'
 import { useAvisos } from '@/componentes/avisos'
 import { SeletorFuncionario } from '@/componentes/dominio/SeletorFuncionario'
@@ -18,10 +18,11 @@ import {
   useRemoverAnexo,
   useSalvarOcorrencia,
   useUrlAnexo,
+  useOcorrenciasPonto,
 } from '@/consultas/ocorrencias'
 import { useContextoEmpresa } from '@/consultas/funcionarios'
 import { comprimirImagem, ehImagem } from '@/lib/imagem'
-import { formatarData, formatarDataHora, somarDias } from '@/lib/formato'
+import { formatarData, formatarDataCurta, formatarDataHora, somarDias } from '@/lib/formato'
 import { rotuloTipoOcorrencia } from '@/lib/rotulos'
 import { mensagemDeErro } from '@/lib/supabase'
 
@@ -233,7 +234,8 @@ export function ModalOcorrencia({
         </>
       }
     >
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-x-6 gap-y-5 lg:grid-cols-[minmax(0,1fr)_280px]">
+      <div className="grid content-start gap-4 sm:grid-cols-2">
         {funcionarioId == null && (
           <div className="sm:col-span-2">
             <Campo rotulo="Funcionário" htmlFor={`${id}-f`} obrigatorio erro={mostrar(erros.funcionario)}>
@@ -281,10 +283,11 @@ export function ModalOcorrencia({
         </div>
         <div className="sm:col-span-2">
           <Campo rotulo="Descrição" htmlFor={`${id}-ds`}>
-            <AreaTexto id={`${id}-ds`} value={descricao} onChange={(e) => setDescricao(e.target.value)} placeholder="O que aconteceu, testemunhas, conversa com o funcionário…" />
+            <AreaTexto id={`${id}-ds`} rows={3} value={descricao} onChange={(e) => setDescricao(e.target.value)} placeholder="O que aconteceu, testemunhas, conversa com o funcionário…" />
           </Campo>
         </div>
-        <div className="sm:col-span-2">
+      </div>
+        <div className="lg:border-l lg:border-borda lg:pl-6">
           <p className="mb-2 text-sm font-bold text-creme">Documento assinado</p>
           <p className="mb-3 text-xs text-lavanda">
             Tire uma foto pelo celular ou escolha o arquivo (foto ou PDF). As fotos são reduzidas e comprimidas antes de enviar. Até {LIMITE_ANEXOS} por
@@ -496,6 +499,112 @@ function ItemOcorrencia({ o, aoEditar }: { o: Ocorrencia; aoEditar(): void }) {
   )
 }
 
+
+// ------------------------------------------------------- faltas e atrasos (ponto)
+const ROTULO_PONTO: Record<OcorrenciaPonto['tipo'], string> = {
+  falta: 'Falta',
+  falta_justificada: 'Falta justificada',
+  falta_injustificada: 'Falta sem justificativa',
+  atraso: 'Atraso',
+}
+
+/** Uma linha de falta/atraso: data, tipo e o detalhe (chegada × horário da escala; previsto do dia; motivo). */
+export function LinhaOcorrenciaPonto({ o, comNome = false }: { o: OcorrenciaPonto; comNome?: boolean }) {
+  const atraso = o.tipo === 'atraso'
+  const detalhe = atraso
+    ? `${o.minutos} min · chegou ${o.chegada}, escala ${o.previsto}`
+    : o.origem === 'ponto'
+      ? `Sem batida em dia previsto${o.previsto ? ` (${o.previsto})` : ''}`
+      : o.motivo || 'Registrada no sistema'
+  return (
+    <span className="flex min-w-0 flex-1 items-start gap-3">
+      <span
+        className={clsx(
+          'mt-0.5 grid size-8 shrink-0 place-items-center rounded-full',
+          atraso ? 'bg-alerta/10 text-alerta' : o.tipo === 'falta_justificada' ? 'bg-cartao-2 text-lavanda' : 'bg-perigo/10 text-perigo',
+        )}
+      >
+        {atraso ? <AlarmClock aria-hidden className="size-4" /> : <CalendarX aria-hidden className="size-4" />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-baseline justify-between gap-x-3">
+          <span className="truncate font-semibold text-creme">{comNome ? o.funcionario_nome : ROTULO_PONTO[o.tipo]}</span>
+          <span className="numero text-xs text-lavanda">{comNome ? formatarDataCurta(o.data) : formatarData(o.data)}</span>
+        </span>
+        <span className="mt-0.5 block text-sm text-lavanda">
+          {comNome ? `${ROTULO_PONTO[o.tipo]} · ` : ''}
+          {detalhe}
+        </span>
+      </span>
+    </span>
+  )
+}
+
+const PERIODOS_PONTO = [
+  { id: '30', rotulo: '30 dias' },
+  { id: '60', rotulo: '60 dias' },
+  { id: '90', rotulo: '90 dias' },
+] as const
+
+/** Faltas (registradas e dias sem batida do ponto) e atrasos (1ª batida × chegada da escala / horário previsto). */
+export function FaltasEAtrasos({ funcionarioId }: { funcionarioId: string }) {
+  const { hoje } = useContextoEmpresa()
+  const [dias, setDias] = useState<(typeof PERIODOS_PONTO)[number]['id']>('30')
+  const inicio = somarDias(hoje, -(Number(dias) - 1))
+  const lista = useOcorrenciasPonto(inicio, hoje, funcionarioId)
+  const itens = lista.data ?? []
+  const faltas = itens.filter((o) => o.tipo !== 'atraso').length
+  const atrasos = itens.filter((o) => o.tipo === 'atraso')
+  const minutos = atrasos.reduce((a, o) => a + (o.minutos ?? 0), 0)
+  return (
+    <section aria-labelledby="faltas-atrasos" className="rounded-cartao border border-borda bg-cartao p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 id="faltas-atrasos" className="font-display text-lg text-creme">
+            Faltas e atrasos
+          </h3>
+          <p className="mt-0.5 text-sm text-lavanda">
+            <span className="numero text-creme">{faltas}</span> falta{faltas === 1 ? '' : 's'} ·{' '}
+            <span className="numero text-creme">{atrasos.length}</span> atraso{atrasos.length === 1 ? '' : 's'}
+            {minutos > 0 && <> ({minutos} min no total)</>}
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-lavanda">
+          Período
+          <Selecao value={dias} onChange={(e) => setDias(e.target.value as typeof dias)} className="h-9! w-[120px]! text-sm!">
+            {PERIODOS_PONTO.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.rotulo}
+              </option>
+            ))}
+          </Selecao>
+        </label>
+      </div>
+      <p className="mt-2 text-xs text-lavanda-escuro">
+        Atraso: 1ª batida depois da chegada da escala do dia (ou do horário previsto), além da tolerância. Falta: registrada no
+        sistema ou dia previsto sem nenhuma batida.
+      </p>
+      {lista.error ? (
+        <div className="mt-3">
+          <ErroCarga erro={lista.error} aoTentar={() => lista.refetch()} />
+        </div>
+      ) : lista.isLoading ? (
+        <Carregando />
+      ) : itens.length === 0 ? (
+        <p className="mt-3 text-sm text-lavanda">Nenhuma falta ou atraso no período.</p>
+      ) : (
+        <ul className="mt-3 flex flex-col divide-y divide-borda">
+          {itens.map((o) => (
+            <li key={`${o.data}-${o.tipo}`} className="flex py-2.5">
+              <LinhaOcorrenciaPonto o={o} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 export function ListaOcorrencias({ funcionarioId, funcionarioNome }: { funcionarioId: string; funcionarioNome: string }) {
   const lista = useOcorrencias(funcionarioId)
   const [modal, setModal] = useState<{ ocorrencia: Ocorrencia | null } | null>(null)
@@ -504,6 +613,7 @@ export function ListaOcorrencias({ funcionarioId, funcionarioNome }: { funcionar
   const sus = itens.filter((o) => o.tipo === 'suspensao').length
   return (
     <div className="flex flex-col gap-4">
+      <FaltasEAtrasos funcionarioId={funcionarioId} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="flex items-center gap-2 text-sm text-lavanda">
           <ShieldAlert aria-hidden className="size-4 text-ouro" />

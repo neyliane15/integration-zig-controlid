@@ -29,6 +29,7 @@ export const TOM_ALARME: Record<TipoAlarme, Tom> = {
   sem_batida_dia_escalado: 'perigo',
   batida_faltando: 'alerta',
   batidas_impares: 'alerta',
+  poucas_batidas: 'alerta',
   atraso: 'info',
 }
 

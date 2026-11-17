@@ -780,6 +780,8 @@ export function Modal({
 }) {
   const idTitulo = useId()
   const caixa = useRef<HTMLDivElement>(null)
+  const corpo = useRef<HTMLDivElement>(null)
+  const [maisAbaixo, setMaisAbaixo] = useState(false)
   const fecharRef = useRef(aoFechar)
   fecharRef.current = aoFechar
 
@@ -825,6 +827,22 @@ export function Modal({
     }
   }, [aberto])
 
+  // indica (sombra no rodapé do conteúdo) quando ainda há campos abaixo para rolar
+  useEffect(() => {
+    const el = corpo.current
+    if (!aberto || !el) return
+    const medir = () => setMaisAbaixo(el.scrollHeight - el.scrollTop - el.clientHeight > 8)
+    medir()
+    el.addEventListener('scroll', medir, { passive: true })
+    const obs = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(medir) : null
+    obs?.observe(el)
+    if (el.firstElementChild) obs?.observe(el.firstElementChild)
+    return () => {
+      el.removeEventListener('scroll', medir)
+      obs?.disconnect()
+    }
+  }, [aberto])
+
   if (!aberto) return null
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-6">
@@ -836,8 +854,8 @@ export function Modal({
         aria-labelledby={idTitulo}
         tabIndex={-1}
         className={clsx(
-          'modal-caixa relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-cartao border border-borda bg-cartao shadow-cartao focus:outline-none sm:rounded-cartao',
-          { p: 'sm:max-w-md', m: 'sm:max-w-lg', g: 'sm:max-w-3xl' }[largura],
+          'modal-caixa relative flex w-full flex-col overflow-hidden rounded-t-cartao border border-borda bg-cartao shadow-cartao focus:outline-none sm:max-h-[calc(100dvh-3rem)] sm:rounded-cartao',
+          { p: 'max-h-[92dvh] sm:max-w-md', m: 'max-h-[92dvh] sm:max-w-lg', g: 'h-[100dvh] max-sm:rounded-none sm:h-auto sm:max-w-4xl' }[largura],
         )}
       >
         <header className="flex items-start justify-between gap-4 border-b border-borda px-5 py-4 sm:px-6">
@@ -853,7 +871,18 @@ export function Modal({
             <X aria-hidden className="size-5" />
           </button>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">{children}</div>
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <div ref={corpo} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5 sm:px-6">
+            {children}
+          </div>
+          <div
+            aria-hidden
+            className={clsx(
+              'pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-cartao to-transparent transition-opacity',
+              maisAbaixo ? 'opacity-100' : 'opacity-0',
+            )}
+          />
+        </div>
         {rodape && (
           <footer className="flex flex-wrap justify-end gap-2 border-t border-borda bg-noite-2/60 px-5 py-4 pb-[calc(env(safe-area-inset-bottom)+16px)] sm:px-6 sm:pb-4">
             {rodape}

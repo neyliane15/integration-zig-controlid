@@ -1,8 +1,126 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 19 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 19 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000290_comissao_presenca.sql, 20261006000300_importar_afd.sql, 20261006000310_rhid.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000290_comissao_presenca.sql, 20261006000300_importar_afd.sql. Não edite à mão.
 
 begin;
+-- ================================================================ detalhe (adendo E.3.4 + v3 §E.7.7)
+create or replace function public.comissao_detalhe(p_fechamento uuid)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos;
+begin
+  select * into fc from public.comissao_fechamentos where id = p_fechamento;
+  if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(fc.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  return (
+    with pres as materialized (select * from public.comissao_presenca(fc.empresa_id, fc.data_inicio, fc.data_fim))
+    select jsonb_build_object(
+    'fechamento', to_jsonb(fc),
+    'servico_dias', (
+      select jsonb_agg(jsonb_build_object('data', g::date, 'servico_zig_centavos',
+               coalesce((select sum(i.valor_total) from public.zig_vendas_itens i
+                          where i.empresa_id = fc.empresa_id and i.tipo = 'Tip' and i.data_operacao = g::date
+                            and (fc.loja_id_externo is null or i.loja_id_externo = fc.loja_id_externo)), 0)::bigint)
+               order by g)
+        from generate_series(fc.data_inicio::timestamp, fc.data_fim::timestamp, interval '1 day') g),
+    'dias', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'data', rd.data, 'servico_zig_centavos', rd.servico_zig_centavos, 'ajuste_centavos', rd.ajuste_centavos,
+               'servico_bruto_centavos', rd.servico_bruto_centavos, 'retencao_centavos', rd.retencao_centavos,
+               'base_centavos', rd.base_centavos, 'soma_pontos', rd.soma_pontos, 'participantes', rd.participantes,
+               'sem_presenca', rd.sem_presenca, 'sem_participantes', rd.sem_participantes,
+               'rateio', coalesce((
+                 select jsonb_agg(jsonb_build_object('item_id', ri.item_id, 'pontos', ri.pontos,
+                                                     'valor_centavos', ri.valor_centavos, 'fallback', ri.fallback)
+                                  order by it.funcionario_nome collate "C", (it.tipo = 'extra'),
+                                           coalesce(it.funcionario_id, it.extra_id) nulls last, it.id)
+                   from public.comissao_rateio_itens_dia ri join public.comissao_itens it on it.id = ri.item_id
+                  where ri.fechamento_id = rd.fechamento_id and ri.data = rd.data), '[]'::jsonb))
+             order by rd.data)
+        from public.comissao_rateio_dias rd where rd.fechamento_id = fc.id), '[]'::jsonb),
+    'itens', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', it.id, 'tipo', it.tipo, 'funcionario_id', it.funcionario_id, 'extra_id', it.extra_id,
+               'nome', it.funcionario_nome, 'cargo', it.cargo, 'incluido', it.incluido, 'pontos', it.pontos,
+               'pontos_manual', it.pontos_manual, 'pontos_pendente', it.pontos_pendente, 'dias_presentes', it.dias_presentes,
+               'pontos_efetivos', it.pontos_efetivos, 'valor_centavos', it.valor_centavos,
+               'entrada', case
+                 when it.tipo = 'extra' then coalesce((
+                   select jsonb_agg(jsonb_build_object('data', d.data, 'presente', true, 'pontos', d.pontos,
+                                                       'pendente', d.pontos_pendente) order by d.data)
+                     from public.diarias d
+                    where d.extra_id = it.extra_id and d.data between fc.data_inicio and fc.data_fim), '[]'::jsonb)
+                 when it.funcionario_id is null then '[]'::jsonb
+                 else coalesce((
+                   select jsonb_agg(jsonb_build_object(
+                            'data', p.data, 'presente', p.presente, 'fallback', p.fallback, 'bloqueado', p.bloqueado,
+                            'motivo', p.motivo, 'origem', p.origem,
+                            'pontos', coalesce(public.comissao_pontos_vigentes(it.funcionario_id, p.data), 0))
+                          order by p.data)
+                     from pres p where p.funcionario_id = it.funcionario_id), '[]'::jsonb)
+               end)
+             order by it.funcionario_nome collate "C", (it.tipo = 'extra'), coalesce(it.funcionario_id, it.extra_id) nulls last, it.id)
+        from public.comissao_itens it where it.fechamento_id = fc.id), '[]'::jsonb)));
+end $$;
+comment on function public.comissao_detalhe(uuid) is '[api] Fechamento com rateio por dia e entradas da prévia (G A M).';
+
+-- ================================================================ extras: pontuação pendente (§E.7.5)
+create or replace function public.extra_definir_pontuacao(p_extra uuid, p_pontos numeric)
+returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare x public.extras; v_n int; v_ini date; v_fim date;
+begin
+  x := public.extra_para_operar(p_extra);
+  if p_pontos is null or p_pontos < 0 or p_pontos > 9999.99 or p_pontos <> round(p_pontos, 2) then
+    raise exception 'Pontos inválidos' using errcode = '22023';
+  end if;
+  update public.extras set pontos_padrao = p_pontos, pontos_pendente = false where id = x.id;
+  select min(d.data), max(d.data) into v_ini, v_fim from public.diarias d
+   where d.extra_id = x.id and d.pontos_pendente and not public.comissao_periodo_fechado(d.empresa_id, d.data);
+  update public.diarias d set pontos = p_pontos, pontos_pendente = false
+   where d.extra_id = x.id and d.pontos_pendente and not public.comissao_periodo_fechado(d.empresa_id, d.data);
+  get diagnostics v_n = row_count;
+  if v_n > 0 then perform public.comissao_recalcular_rascunhos(x.empresa_id, v_ini, v_fim); end if;
+  return v_n;
+end $$;
+comment on function public.extra_definir_pontuacao(uuid, numeric) is
+  '[api] Preenche a pontuação de um extra e dos dias pendentes dele (G A M); recalcula rascunhos.';
+
+-- ================================================================ importação de extras (§E.7.6)
+create or replace function public.extras_normalizar_documento(p text)
+returns text language sql immutable set search_path = public, extensions, pg_temp as $$
+  select nullif(lower(regexp_replace(coalesce(p, ''), '[^[:alnum:]]', '', 'g')), '')
+$$;
+comment on function public.extras_normalizar_documento(text) is '[interno] Documento só com letras e dígitos, minúsculo.';
+
+create or replace function public.extras_normalizar_nome(p text)
+returns text language sql immutable set search_path = public, extensions, pg_temp as $$
+  select nullif(lower(regexp_replace(btrim(coalesce(p, '')), '\s+', ' ', 'g')), '')
+$$;
+comment on function public.extras_normalizar_nome(text) is '[interno] Nome minúsculo, sem pontas e com espaços colapsados.';
+
+-- Converte um campo jsonb (número ou texto) para numeric/bigint/date com a mensagem do contrato.
+create or replace function public.extras_imp_num(p jsonb, p_msg text)
+returns numeric language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+begin
+  if p is null or p = 'null'::jsonb then return null; end if;
+  if jsonb_typeof(p) = 'number' then return (p #>> '{}')::numeric; end if;
+  if jsonb_typeof(p) = 'string' and btrim(p #>> '{}') = '' then return null; end if;
+  return replace(btrim(p #>> '{}'), ',', '.')::numeric;
+exception when others then
+  raise exception '%', p_msg using errcode = '22023';
+end $$;
+comment on function public.extras_imp_num(jsonb, text) is '[interno] Número de um campo da importação.';
+
+create or replace function public.extras_imp_data(p jsonb)
+returns date language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+begin
+  if p is null or p = 'null'::jsonb or btrim(p #>> '{}') = '' then return null; end if;
+  if (p #>> '{}') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'Data inválida' using errcode = '22023'; end if;
+  return (p #>> '{}')::date;
+exception when others then
+  raise exception 'Data inválida' using errcode = '22023';
+end $$;
+comment on function public.extras_imp_data(jsonb) is '[interno] Data (AAAA-MM-DD) de um campo da importação.';
+
 create or replace function public.extras_importar(p_itens jsonb, p_empresa uuid default null)
 returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare
@@ -357,112 +475,5 @@ end $$;
 comment on function public.ponto_importar_afd(uuid, jsonb, jsonb, text) is
   '[api] Importa marcações do AFD (lido no navegador) e empregados (tipo 5) num relógio REP — mesma regra da ingestão (G A M).';
 
--- ------------------------------------------------------------- ligar funcionários (CPF do AFD)
--- Liga o CPF/PIS do AFD ou do RHiD (usuário do equipamento) a um funcionário — inclusive provisório da escala ("Garçom 1") —,
--- opcionalmente renomeando-o com o nome do AFD e gravando o CPF/PIS na ficha. As batidas pendentes passam ao funcionário
--- e os dias são reapurados (gatilho §7.8).
-create or replace function public.ponto_afd_ligar(
-  p_controlid_usuario uuid, p_funcionario uuid, p_renomear boolean default false, p_cadastrar_documento boolean default false
-) returns jsonb
-language plpgsql volatile security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v public.controlid_usuarios;
-  v_tipo text;
-  f public.funcionarios;
-  v_nome text;
-  v_renomeado boolean := false;
-  v_documento boolean := false;
-begin
-  select * into v from public.controlid_usuarios where id = p_controlid_usuario;
-  if not found then raise exception 'Usuário do equipamento não encontrado' using errcode = 'P0002'; end if;
-  if not public.pode_operar(v.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  select i.tipo into v_tipo from public.integracoes i where i.id = v.integracao_id;
-  -- relógio REP (rede ou arquivo) ou RHiD (nuvem): os dois guardam os CPFs/PIS em controlid_usuarios
-  if v_tipo is null or v_tipo not in ('controlid_rep', 'rhid') then
-    raise exception 'Tipo de integração incompatível' using errcode = '22023';
-  end if;
-  if p_funcionario is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  select * into f from public.funcionarios where id = p_funcionario;
-  if not found then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if f.empresa_id <> v.empresa_id then raise exception 'Funcionário de outra empresa' using errcode = '22023'; end if;
-
-  if coalesce(p_cadastrar_documento, false) then
-    if v.cpf is not null and f.cpf is distinct from v.cpf then
-      if exists (select 1 from public.funcionarios x where x.empresa_id = v.empresa_id and x.cpf = v.cpf and x.id <> f.id) then
-        raise exception 'CPF já cadastrado em outro funcionário' using errcode = '23505';
-      end if;
-      update public.funcionarios set cpf = v.cpf where id = f.id;
-      v_documento := true;
-    elsif v.cpf is null and v.pis is not null and f.pis is distinct from v.pis then
-      update public.funcionarios set pis = v.pis where id = f.id;
-      v_documento := true;
-    end if;
-  end if;
-
-  perform public.funcionario_vincular_controlid(v.id, f.id);
-
-  v_nome := public.nome_proprio(v.nome);
-  if coalesce(p_renomear, false) and v_nome is not null and v_nome is distinct from f.nome then
-    update public.funcionarios set nome = v_nome where id = f.id;
-    v_renomeado := true;
-  end if;
-
-  return jsonb_build_object(
-    'funcionario_id', f.id,
-    'nome', coalesce(case when v_renomeado then v_nome end, f.nome),
-    'renomeado', v_renomeado,
-    'documento_cadastrado', v_documento,
-    'batidas', (select count(*) from public.ponto_batidas b
-                 where b.integracao_id = v.integracao_id and b.pessoa_externa = v.user_id_externo and b.funcionario_id = f.id));
-end $$;
-comment on function public.ponto_afd_ligar(uuid, uuid, boolean, boolean) is
-  '[api] Liga o CPF/PIS do AFD/RHiD (relógio controlid_rep ou rhid) a um funcionário (renomear e gravar o documento na ficha são opcionais) (G A M).';
-
--- Usuários do relógio (CPF/PIS) com batidas ainda sem funcionário — a lista do "Ligar funcionários".
-create or replace function public.ponto_afd_pendentes(p_integracao uuid)
-returns table(controlid_usuario_id uuid, cpf text, pis text, nome text, nome_sugerido text, quantidade int,
-              primeira date, ultima date)
-language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare
-  ig public.integracoes;
-begin
-  select * into ig from public.integracoes where id = p_integracao;
-  if not found then raise exception 'Integração não encontrada' using errcode = 'P0002'; end if;
-  if not public.pode_operar(ig.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  if ig.tipo not in ('controlid_rep', 'rhid') then raise exception 'Tipo de integração incompatível' using errcode = '22023'; end if;
-  return query
-  select c.id, c.cpf, c.pis, c.nome, public.nome_proprio(c.nome), count(b.id)::int, min(b.data_trabalho), max(b.data_trabalho)
-    from public.controlid_usuarios c
-    left join public.ponto_batidas b
-      on b.integracao_id = c.integracao_id and b.pessoa_externa = c.user_id_externo and b.funcionario_id is null
-   where c.integracao_id = ig.id and c.funcionario_id is null
-   group by c.id, c.cpf, c.pis, c.nome
-  having count(b.id) > 0 or not c.removido_no_equipamento
-   order by count(b.id) desc, c.nome nulls last, c.user_id_externo;
-end $$;
-comment on function public.ponto_afd_pendentes(uuid) is
-  '[api] CPF/PIS do relógio (controlid_rep ou rhid) sem funcionário, com as batidas pendentes (G A M).';-- =====================================================================================================
--- 20261006000310_rhid.sql — integração RHiD (nuvem da Control iD) pela API oficial (docs/referencias/rhid-swagger.json)
--- O relógio REP da loja (iDClass, Portaria 671) não é alcançável pela rede, mas sincroniza com o RHiD; o N8N
--- ("MDG · RHiD · Importar") faz login no RHiD, lê as pessoas (GET /person) e baixa o AFD 671 de cada equipamento
--- (GET /report/afd/download671, e o do coletor REP-P) a partir do último NSR. Aqui ficam:
---   · ingestao_rhid_pessoas  → reaproveita ingestao_controlid_usuarios (id = CPF; vínculo automático matrícula/CPF)
---   · ingestao_rhid_batidas  → reaproveita ingestao_controlid_batidas (id_externo = "<equipamento>|<NSR>", origem
---                              controlid_rep) e mantém o cursor por equipamento {nsr_por_equipamento: {id: ultimo_nsr}}
---   · integracao_trocar_para_rhid → troca um relógio controlid_rep (por rede ou por arquivo) por um RHiD sem perder vínculos
--- O tipo 'rhid' (checks, parâmetros padrão, segredos {email, senha, dominio}, escopos, tipos de execução rhid_pessoas e
--- rhid_batidas) está nas listas da …0120 (os checks precisam aceitar 'rhid' já na reaplicação das migrações).
--- Idempotente. Contrato: docs/CONTRATO-ADENDO-rhid.md.
--- =====================================================================================================
-
--- ------------------------------------------------------------------ auxiliares
--- CPF/PIS do RHiD (número inteiro na API: perde os zeros à esquerda) → 11 dígitos; vazio/zero/maior que 11 → null.
-create or replace function public.rhid_documento(p_valor jsonb) returns text
-language sql immutable set search_path = public, extensions, pg_temp as $$
-  select case when d ~ '^[0-9]{1,11}$' and d !~ '^0+$' then lpad(d, 11, '0') end
-    from (select regexp_replace(coalesce(p_valor #>> '{}', ''), '[^0-9]', '', 'g') as d) x
-$$;
-comment on function public.rhid_documento(jsonb) is '[interno] CPF/PIS do RHiD (número) → 11 dígitos com zeros à esquerda (ou null).';
-
 commit;
-select 'parte 19 de 20 instalada' as resultado;
+select 'parte 19 de 21 instalada' as resultado;

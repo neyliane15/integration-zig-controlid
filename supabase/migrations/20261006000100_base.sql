@@ -69,6 +69,11 @@ create table if not exists public.empresas (
   criado_em                       timestamptz not null default now(),
   atualizado_em                   timestamptz not null default now()
 );
+-- (ocorrências de ponto) alarmes só dos últimos N dias; alerta de quem bateu menos que o mínimo (0 = desligado)
+alter table public.empresas add column if not exists ponto_alarme_prazo_dias int not null default 2
+  check (ponto_alarme_prazo_dias between 1 and 93);
+alter table public.empresas add column if not exists ponto_batidas_minimas int not null default 4
+  check (ponto_batidas_minimas between 0 and 8);
 comment on table public.empresas is '[api:crud] Empresas (estabelecimentos/redes).';
 
 -- ========================================================================================= perfis

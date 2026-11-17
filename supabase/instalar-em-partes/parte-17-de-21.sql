@@ -1,8 +1,142 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 17 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 17 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000280_escala.sql, 20261006000290_comissao_presenca.sql. Não edite à mão.
 
 begin;
+-- Modelo do cliente (docs/referencias/escala-macaw-v3.html), §S.7.8.
+create or replace function public.escala_aplicar_modelo_macaw(p_empresa uuid default null, p_ancora date default null)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_empresa uuid; v_cfg public.escala_config; r record; v_setor uuid; v_func uuid; v_membro uuid;
+  v_setores int := 0; v_membros int := 0; v_criados int := 0; v_pos smallint; v_chave text; v_setores_ids uuid[] := '{}';
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  if p_ancora is not null then
+    perform public.escala_configurar(p_ancora, coalesce((select c.fase from public.escala_config c where c.empresa_id = v_empresa), 0),
+                                     v_empresa);
+  end if;
+  v_cfg := public.escala_garantir_config(v_empresa);
+
+  for r in
+    select * from (values
+      ('Salão', 1, 1, 'Garçom 1', 'Garçom', '{2,3}', 1, 1), ('Salão', 1, 2, 'Garçom 2', 'Garçom', '{2,3}', 1, 2),
+      ('Salão', 1, 3, 'Garçom 3', 'Garçom', '{2,3}', 1, 3), ('Salão', 1, 4, 'Cumim 2', 'Cumim', '{2,6}', 1, 4),
+      ('Salão', 1, 5, 'Garçom 4', 'Garçom', '{0,1}', 2, 1), ('Salão', 1, 6, 'Garçom 5', 'Garçom', '{0,1}', 2, 2),
+      ('Salão', 1, 7, 'Garçom 6', 'Garçom', '{0,1}', 2, 3), ('Salão', 1, 8, 'Cumim 1', 'Cumim', '{1,6}', 2, 4),
+      ('Maître', 2, 1, 'Maître 1', 'Maître', '{0,1}', 1, 2), ('Maître', 2, 2, 'Maître 2', 'Maître', '{1,3}', 1, 1),
+      ('Maître', 2, 3, 'Maître 3', 'Maître', '{2,3}', 1, 4), ('Maître', 2, 4, 'Gerente', 'Gerente', '{2}', null, null),
+      ('Maître', 2, 5, 'Recepção', 'Recepção', '{0,6}', 1, 3),
+      ('Areia', 3, 1, 'Areia 1', 'Areia', '{0,6}', 1, 2), ('Areia', 3, 2, 'Areia 2', 'Areia', '{0,1}', 1, 1),
+      ('Areia', 3, 3, 'Areia 3', 'Areia', '{2,3}', 1, 3), ('Areia', 3, 4, 'Areia 4', 'Areia', '{2,3}', 1, 4),
+      ('Areia', 3, 5, 'Areia 5', 'Areia', '{1,4}', 1, 5),
+      ('Bar', 4, 1, 'Bar 1', 'Bar', '{0,6}', 1, 1), ('Bar', 4, 2, 'Bar 2', 'Bar', '{0,1}', 1, 4),
+      ('Bar', 4, 3, 'Bar 3', 'Bar', '{2,3}', 1, 3), ('Bar', 4, 4, 'Bar 4', 'Bar', '{2,3}', 1, 2),
+      ('ASG', 5, 1, 'ASG 1', 'ASG', '{0,6}', 1, 1), ('ASG', 5, 2, 'ASG 2', 'ASG', '{1,2}', 1, 2),
+      ('ASG', 5, 3, 'ASG 3', 'ASG', '{3,4}', 1, 3),
+      ('Cozinha', 6, 1, 'Chef', 'Chef', '{3}', null, null), ('Cozinha', 6, 2, 'Cozinha 1', 'Cozinha', '{0,1}', 1, 3),
+      ('Cozinha', 6, 3, 'Cozinha 2', 'Cozinha', '{0,1}', 1, 2), ('Cozinha', 6, 4, 'Cozinha 3', 'Cozinha', '{0,6}', 1, 1),
+      ('Cozinha', 6, 5, 'Cozinha 4', 'Cozinha', '{1,2}', 2, 1), ('Cozinha', 6, 6, 'Cozinha 5', 'Cozinha', '{2,3}', 2, 2),
+      ('Cozinha', 6, 7, 'Cozinha 6', 'Cozinha', '{3,6}', 2, 3), ('Cozinha', 6, 8, 'Cozinha 7', 'Cozinha', '{2,4}', 2, 4)
+    ) as t(setor, ordem_setor, ordem, nome, cargo, folgas, caminho, posicao)
+    order by ordem_setor, ordem
+  loop
+    select x.id into v_setor from public.escala_setores x where x.empresa_id = v_empresa and lower(btrim(x.nome)) = lower(r.setor);
+    if v_setor is null then
+      insert into public.escala_setores (empresa_id, nome, ordem) values (v_empresa, r.setor, r.ordem_setor) returning id into v_setor;
+      v_setores := v_setores + 1;
+    end if;
+    if not (v_setor = any (v_setores_ids)) then v_setores_ids := v_setores_ids || v_setor; end if;
+    v_chave := r.setor || '|' || r.nome;
+    continue when exists (select 1 from public.escala_membros m where m.empresa_id = v_empresa and m.modelo_posicao = v_chave);
+    -- funcionário de mesmo nome: já na escala → só marca a posição do modelo; fora da escala → entra nela
+    select f.id, m.id into v_func, v_membro
+      from public.funcionarios f left join public.escala_membros m on m.funcionario_id = f.id
+     where f.empresa_id = v_empresa and lower(btrim(f.nome)) = lower(r.nome)
+     order by (m.id is null) desc, f.criado_em, f.id
+     limit 1;
+    if v_membro is not null then
+      update public.escala_membros set modelo_posicao = v_chave where id = v_membro and modelo_posicao is null;
+      continue;
+    end if;
+    if v_func is null then
+      insert into public.funcionarios (empresa_id, nome, cargo, pontos_comissao) values (v_empresa, r.nome, r.cargo, 0)
+      returning id into v_func;
+      v_criados := v_criados + 1;
+    end if;
+    v_pos := r.posicao;
+    if r.caminho is not null and exists (select 1 from public.escala_membros m
+                                          where m.setor_id = v_setor and m.caminho = r.caminho and m.posicao = v_pos) then
+      v_pos := null;    -- posição ocupada → próxima livre do caminho
+    end if;
+    perform public.escala_gravar_membro(v_setor, v_func, r.folgas::smallint[], null, r.caminho::smallint, v_pos, r.ordem, v_chave);
+    v_membros := v_membros + 1;
+  end loop;
+
+  perform public.escala_reapurar(v_empresa, public.escala_funcionarios_dos_setores(v_setores_ids), v_cfg.ancora);
+  return jsonb_build_object('ancora', (select c.ancora from public.escala_config c where c.empresa_id = v_empresa),
+                            'setores', v_setores, 'membros', v_membros, 'funcionarios_criados', v_criados);
+end $$;
+comment on function public.escala_aplicar_modelo_macaw(uuid, date) is
+  '[api] Monta setores, caminhos e posições do modelo Macaw (cria funcionários provisórios); idempotente.';
+
+-- (adendo extras v3, §S.11) dia com falta registrada não aceita ajuste/troca da escala
+create or replace function public.escala_checar_falta(p_funcionario uuid, p_data date)
+returns void language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+begin
+  if p_funcionario is not null and p_data is not null and public.ponto_falta_do_dia(p_funcionario, p_data) is not null then
+    raise exception 'Dia com falta em %: remova a falta antes', to_char(p_data, 'DD/MM/YYYY') using errcode = '22023';
+  end if;
+end $$;
+comment on function public.escala_checar_falta(uuid, date) is '[interno] Recusa ajuste/troca da escala em dia com falta.';
+
+-- ================================================================ RPCs de ajuste
+create or replace function public.escala_ajustar(p_funcionario uuid, p_data date, p_status text default null,
+                                                 p_chegada time default null, p_motivo text default null)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare m public.escala_membros; v_status text; c record;
+begin
+  m := public.escala_membro_para_operar(p_funcionario);
+  -- (v3, §S.11) status de falta = atalho para falta_registrar (o ajuste do dia não muda)
+  if p_status in ('falta_justificada', 'falta_injustificada') then
+    perform public.falta_registrar(p_funcionario, p_data, substr(p_status, 7), p_motivo);
+    return public.escala_dia_json(m.empresa_id, p_funcionario, p_data, true);
+  end if;
+  v_status := public.escala_status_param(p_status);
+  perform public.escala_validar_data(m.empresa_id, p_data);
+  select * into c from public.escala_calcular(m.empresa_id, p_data, p_data, p_funcionario) x;
+  if c.status is null or c.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
+  perform public.escala_checar_falta(p_funcionario, p_data);
+  perform public.escala_gravar_dia(m.id, p_data, v_status, p_chegada, p_motivo);
+  perform public.escala_reapurar(m.empresa_id, array[p_funcionario], p_data, p_data);
+  return public.escala_dia_json(m.empresa_id, p_funcionario, p_data, true);
+end $$;
+comment on function public.escala_ajustar(uuid, date, text, time, text) is '[api] Define o estado de um dia da escala (status/chegada) e reapura.';
+
+create or replace function public.escala_ajustar_periodo(p_funcionario uuid, p_inicio date, p_fim date, p_status text,
+                                                         p_motivo text default null)
+returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare m public.escala_membros; v_status text; c record; v_n int := 0;
+begin
+  m := public.escala_membro_para_operar(p_funcionario);
+  v_status := public.escala_status_param(p_status);
+  perform public.ponto_validar_periodo(p_inicio, p_fim, 62);
+  perform public.escala_validar_data(m.empresa_id, p_inicio);
+  perform public.escala_validar_data(m.empresa_id, p_fim);
+  for c in select * from public.escala_calcular(m.empresa_id, p_inicio, p_fim, p_funcionario) x order by x.data loop
+    continue when c.status = 'fora';
+    perform public.escala_checar_falta(p_funcionario, c.data);
+  end loop;
+  for c in select * from public.escala_calcular(m.empresa_id, p_inicio, p_fim, p_funcionario) x order by x.data loop
+    continue when c.status = 'fora';
+    perform public.escala_gravar_dia(m.id, c.data, v_status, c.ajuste_chegada, p_motivo);
+    v_n := v_n + 1;
+  end loop;
+  perform public.escala_reapurar(m.empresa_id, array[p_funcionario], p_inicio, p_fim);
+  return v_n;
+end $$;
+comment on function public.escala_ajustar_periodo(uuid, date, date, text, text) is
+  '[api] Mesmo status em vários dias (ex.: férias), mantendo a chegada ajustada; reapura.';
+
 create or replace function public.escala_trocar(p_funcionario_a uuid, p_data_a date, p_funcionario_b uuid default null,
                                                 p_data_b date default null, p_motivo text default null)
 returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -283,146 +417,6 @@ returns jsonb language sql stable security definer set search_path = public, ext
     from public.funcionario_faltas fl join public.funcionarios f on f.id = fl.funcionario_id
    where fl.id = p_falta
 $$;
-comment on function public.falta_json(uuid) is '[interno] Objeto-falta (§E.7.2).';
-
-create or replace function public.falta_validar_anexo(p_empresa uuid, p_funcionario uuid, p_caminho text, p_ignorar uuid)
-returns text language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare v text := nullif(btrim(coalesce(p_caminho, '')), ''); v_prefixo text; v_existe boolean := true;
-begin
-  if v is null then return null; end if;
-  v_prefixo := p_empresa::text || '/faltas/' || p_funcionario::text || '/';
-  if position(v_prefixo in v) <> 1 or v !~* ('^' || v_prefixo || '[^/]+\.(jpg|jpeg|png|webp|pdf)$') then
-    raise exception 'Anexo inválido' using errcode = '22023';
-  end if;
-  if exists (select 1 from public.funcionario_faltas fl where fl.anexo_caminho = v and fl.id is distinct from p_ignorar) then
-    raise exception 'Anexo já registrado' using errcode = '23505';
-  end if;
-  if to_regclass('storage.objects') is not null then
-    execute 'select exists (select 1 from storage.objects where bucket_id = $1 and name = $2)'
-      into v_existe using 'funcionarios-documentos', v;
-  end if;
-  if not v_existe then raise exception 'Anexo não encontrado no armazenamento' using errcode = 'P0002'; end if;
-  return v;
-end $$;
-comment on function public.falta_validar_anexo(uuid, uuid, text, uuid) is '[interno] Caminho de anexo de falta válido e existente no Storage.';
-
-create or replace function public.falta_registrar(p_funcionario uuid, p_data date, p_tipo text, p_motivo text default null,
-                                                  p_anexo_caminho text default null, p_anexo_nome text default null)
-returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  f public.funcionarios; v_hoje date; v_motivo text; v_atual public.funcionario_faltas; v_anexo text; v_id uuid;
-  v_esc record;
-begin
-  f := public.funcionario_para_operar(p_funcionario);
-  if p_tipo is null or p_tipo not in ('justificada', 'injustificada') then
-    raise exception 'Tipo de falta inválido' using errcode = '22023';
-  end if;
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  v_motivo := nullif(btrim(coalesce(p_motivo, '')), '');
-  if p_tipo = 'justificada' and v_motivo is null then raise exception 'Informe o motivo' using errcode = '22023'; end if;
-  v_hoje := public.dia_de_trabalho(public.agora(), f.empresa_id);
-  if p_data > v_hoje then raise exception 'Data no futuro' using errcode = '22023'; end if;
-  if p_data < v_hoje - 366 then raise exception 'Data fora do limite' using errcode = '22023'; end if;
-  if not public.ponto_no_vinculo(f.data_admissao, f.data_desligamento, p_data) then
-    raise exception 'Dia fora do vínculo do funcionário' using errcode = '22023';
-  end if;
-  if public.comissao_periodo_fechado(f.empresa_id, p_data) then
-    raise exception 'Período de comissão já fechado' using errcode = '22023';
-  end if;
-  if exists (select 1 from public.ponto_batidas b
-              where b.funcionario_id = f.id and b.data_trabalho = p_data and not b.desconsiderada) then
-    raise exception 'Funcionário com batidas em %: desconsidere as batidas antes de registrar a falta',
-      to_char(p_data, 'DD/MM/YYYY') using errcode = '22023';
-  end if;
-  if exists (select 1 from public.ponto_abonos a where a.funcionario_id = f.id and a.data = p_data) then
-    raise exception 'Já existe abono para o funcionário em %', to_char(p_data, 'DD/MM/YYYY') using errcode = '22023';
-  end if;
-  select * into v_esc from public.escala_status_ponto(f.id, p_data);
-  if v_esc.status = 'folga' then
-    raise exception 'Funcionário de folga na escala em %', to_char(p_data, 'DD/MM/YYYY') using errcode = '22023';
-  end if;
-  select * into v_atual from public.funcionario_faltas where funcionario_id = f.id and data = p_data;
-  v_anexo := public.falta_validar_anexo(f.empresa_id, f.id, p_anexo_caminho, v_atual.id);
-
-  insert into public.funcionario_faltas as fl (empresa_id, funcionario_id, data, tipo, motivo, anexo_caminho, anexo_nome,
-                                               criado_por, criado_por_nome)
-  values (f.empresa_id, f.id, p_data, p_tipo, v_motivo, v_anexo, case when v_anexo is not null then nullif(btrim(p_anexo_nome), '') end,
-          public.meu_perfil_id(), public.ponto_nome_autor())
-  on conflict (funcionario_id, data) do update set
-    tipo = excluded.tipo, motivo = excluded.motivo,
-    anexo_caminho = coalesce(excluded.anexo_caminho, fl.anexo_caminho),
-    anexo_nome = case when excluded.anexo_caminho is not null then excluded.anexo_nome else fl.anexo_nome end,
-    criado_por = excluded.criado_por, criado_por_nome = excluded.criado_por_nome
-  returning fl.id into v_id;
-
-  perform public.ponto_apurar(f.id, p_data, p_data);
-  perform public.comissao_recalcular_rascunhos(f.empresa_id, p_data, p_data);
-  return public.falta_json(v_id)
-         || jsonb_build_object('anexo_anterior',
-                               case when v_anexo is not null and v_atual.anexo_caminho is distinct from v_anexo
-                                    then v_atual.anexo_caminho end);
-end $$;
-comment on function public.falta_registrar(uuid, date, text, text, text, text) is
-  '[api] Registra/altera a falta do funcionário no dia (G A M); reapura o ponto e recalcula rascunhos de comissão.';
-
-create or replace function public.falta_para_operar(p_funcionario uuid, p_data date)
-returns public.funcionario_faltas language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare f public.funcionarios; fl public.funcionario_faltas;
-begin
-  f := public.funcionario_para_operar(p_funcionario);
-  select * into fl from public.funcionario_faltas where funcionario_id = f.id and data = p_data;
-  if not found then raise exception 'Falta não encontrada' using errcode = 'P0002'; end if;
-  return fl;
-end $$;
-comment on function public.falta_para_operar(uuid, date) is '[interno] Falta existente e operável (G A M).';
-
-create or replace function public.falta_remover(p_funcionario uuid, p_data date)
-returns text language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare fl public.funcionario_faltas;
-begin
-  fl := public.falta_para_operar(p_funcionario, p_data);
-  if public.comissao_periodo_fechado(fl.empresa_id, fl.data) then
-    raise exception 'Período de comissão já fechado' using errcode = '22023';
-  end if;
-  delete from public.funcionario_faltas where id = fl.id;
-  perform public.ponto_apurar(fl.funcionario_id, fl.data, fl.data);
-  perform public.comissao_recalcular_rascunhos(fl.empresa_id, fl.data, fl.data);
-  return fl.anexo_caminho;
-end $$;
-comment on function public.falta_remover(uuid, date) is
-  '[api] Remove a falta do dia (G A M); devolve o caminho do anexo para remover do Storage.';
-
-create or replace function public.falta_definir_anexo(p_funcionario uuid, p_data date, p_caminho text, p_nome_arquivo text default null)
-returns text language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare fl public.funcionario_faltas; v text;
-begin
-  fl := public.falta_para_operar(p_funcionario, p_data);
-  v := public.falta_validar_anexo(fl.empresa_id, fl.funcionario_id, p_caminho, fl.id);
-  update public.funcionario_faltas
-     set anexo_caminho = v, anexo_nome = case when v is not null then nullif(btrim(p_nome_arquivo), '') end
-   where id = fl.id;
-  return case when fl.anexo_caminho is distinct from v then fl.anexo_caminho end;
-end $$;
-comment on function public.falta_definir_anexo(uuid, date, text, text) is
-  '[api] Troca/remove o anexo da falta (G A M); devolve o caminho antigo.';
-
-create or replace function public.faltas_listar(p_inicio date, p_fim date, p_funcionario uuid default null, p_empresa uuid default null)
-returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid;
-begin
-  if p_funcionario is not null then
-    v_empresa := (public.funcionario_para_operar(p_funcionario)).empresa_id;
-  else
-    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
-  end if;
-  perform public.ponto_validar_periodo(p_inicio, p_fim, 366);
-  return coalesce((
-    select jsonb_agg(public.falta_json(fl.id) order by fl.data desc, f.nome collate "C", fl.id)
-      from public.funcionario_faltas fl join public.funcionarios f on f.id = fl.funcionario_id
-     where fl.empresa_id = v_empresa and fl.data between p_inicio and p_fim
-       and (p_funcionario is null or fl.funcionario_id = p_funcionario)), '[]'::jsonb);
-end $$;
-comment on function public.faltas_listar(date, date, uuid, uuid) is '[api] Faltas do período (G A M).';
 
 commit;
-select 'parte 17 de 20 instalada' as resultado;
+select 'parte 17 de 21 instalada' as resultado;

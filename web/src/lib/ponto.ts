@@ -278,6 +278,7 @@ export const GRAVIDADE_ALARME: Record<TipoAlarme, number> = {
   sem_batida_dia_escalado: 4,
   batida_faltando: 3,
   batidas_impares: 2,
+  poucas_batidas: 2,
   atraso: 1,
 }
 

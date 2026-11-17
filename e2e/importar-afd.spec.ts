@@ -145,7 +145,7 @@ test('importar AFD do RHiD → ligar CPF ao provisório da escala → batidas e 
   for (const h of ['18:00', '22:00', '22:30']) await expect(linha.getByText(h, { exact: true }).first()).toBeVisible()
   await expect(linha.getByLabel('Precisa de atenção')).toBeVisible()
   await page.goto('/ponto/alarmes')
-  await expect(page.getByText('3 batidas (número ímpar)').filter({ visible: true }).first()).toBeVisible()
+  await expect(page.getByText('3 batidas no dia (menos que o mínimo de batidas)').filter({ visible: true }).first()).toBeVisible()
   await expect(page.locator('#conteudo').getByText('Bruno Lima', { exact: true }).filter({ visible: true }).first()).toBeVisible()
 
   // Integrações: relógio por arquivo sem "Sincronizar", com o histórico da importação

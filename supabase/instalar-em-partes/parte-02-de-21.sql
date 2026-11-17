@@ -1,9 +1,9 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 02 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 02 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000110_cadastros.sql, 20261006000120_integracoes_sync.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000100_base.sql, 20261006000110_cadastros.sql, 20261006000120_integracoes_sync.sql. Não edite à mão.
 
 begin;
--- =====================================================================================================
+comment on function public.tornar_master(text) is '[interno] Torna um usuário existente master (só pelo SQL Editor).';-- =====================================================================================================
 -- 20261006000110_cadastros.sql  (backend-1)
 -- funcionarios, funcionario_pontos, jornadas, jornada_dias, funcionario_jornadas, perfis.funcionario_id,
 -- meu_funcionario(), pontos_vigentes(), gatilhos e RLS. Idempotente.
@@ -511,4 +511,4 @@ $$;
 comment on function public.integracao_envio_padrao(text, text) is '[api] Padrões de parametros.envio por tipo/modelo.';
 
 commit;
-select 'parte 02 de 20 instalada' as resultado;
+select 'parte 02 de 21 instalada' as resultado;

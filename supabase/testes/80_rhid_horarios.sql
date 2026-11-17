@@ -4,6 +4,8 @@
 begin;
 set local app.agora = '2026-11-17 12:00:00-03';
 select teste.como_dono();
+-- testes com datas antigas: alarmes sem o prazo de 2 dias da empresa (revertido no rollback)
+alter table public.empresas alter column ponto_alarme_prazo_dias set default 31;
 insert into public.empresas (id, nome, fuso, virada_dia) values
   ('e8000000-0000-4000-8000-00000000000a', 'Teste Horários RHiD', 'America/Sao_Paulo', '05:00');
 insert into auth.users (id, email, raw_user_meta_data) values

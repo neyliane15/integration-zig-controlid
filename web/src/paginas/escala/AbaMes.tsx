@@ -16,6 +16,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardCopy,
+  FileDown,
   FileUp,
   Repeat,
   UserX,
@@ -49,6 +50,8 @@ import {
   useRemoverFalta,
 } from "@/consultas/faltas";
 import { comprimirImagem } from "@/lib/imagem";
+import { baixarElementoComoPdf } from "@/lib/pdf";
+import { useEmpresaAtual } from "@/lib/sessao";
 import {
   DIAS_SEMANA,
   chegadaParaHora,
@@ -130,6 +133,49 @@ export function AbaMes({
   const [tsvManual, setTsvManual] = useState<string | null>(null);
   const areaTsv = useRef<HTMLTextAreaElement>(null);
   const tabela = useRef<HTMLDivElement>(null);
+  const legenda = useRef<HTMLDivElement>(null);
+  const { empresa } = useEmpresaAtual();
+  const [gerandoPdf, setGerandoPdf] = useState(false);
+
+  /** PDF com o visual do app: cabeçalho + a grade inteira do mês (sem rolagem) + legenda, numa cópia fora da tela. */
+  async function baixarPdf() {
+    const grade = tabela.current?.querySelector("table");
+    if (!m || !grade) return;
+    setGerandoPdf(true);
+    const titulo = nomeDoMes(mes).replace(/^./, (c) => c.toUpperCase());
+    const caixa = document.createElement("div");
+    caixa.className = "rounded-cartao border border-borda bg-cartao text-creme";
+    Object.assign(caixa.style, {
+      position: "fixed",
+      top: "0",
+      left: "-100000px",
+      padding: "28px",
+      width: `${grade.scrollWidth + 58}px`,
+    });
+    const cab = document.createElement("div");
+    cab.style.marginBottom = "16px";
+    cab.innerHTML =
+      '<p class="text-xs font-bold tracking-[0.18em] text-ouro uppercase"></p><h2 class="font-display text-3xl text-creme"></h2>';
+    (cab.firstChild as HTMLElement).textContent = `Escala do mês${empresa ? ` · ${empresa.nome}` : ""}`;
+    (cab.lastChild as HTMLElement).textContent = titulo;
+    caixa.appendChild(cab);
+    const copia = grade.cloneNode(true) as HTMLElement;
+    const moldura = document.createElement("div");
+    moldura.className = "rounded-entrada border border-borda";
+    moldura.appendChild(copia);
+    caixa.appendChild(moldura);
+    if (legenda.current) caixa.appendChild(legenda.current.cloneNode(true));
+    document.body.appendChild(caixa);
+    try {
+      await document.fonts?.ready;
+      await baixarElementoComoPdf(caixa, `escala-${mes}.pdf`, `Escala ${titulo}`);
+    } catch (e) {
+      avisos.erro(e);
+    } finally {
+      caixa.remove();
+      setGerandoPdf(false);
+    }
+  }
 
   useEffect(() => {
     setSel(null);
@@ -321,6 +367,16 @@ export function AbaMes({
           >
             Copiar para Excel
           </Botao>
+          <Botao
+            tamanho="p"
+            variante="secundario"
+            icone={<FileDown aria-hidden />}
+            disabled={!m || linhas.length === 0}
+            carregando={gerandoPdf}
+            onClick={() => void baixarPdf()}
+          >
+            Baixar PDF
+          </Botao>
         </div>
       }
     >
@@ -469,7 +525,9 @@ export function AbaMes({
               </tbody>
             </table>
           </div>
-          <Legenda />
+          <div ref={legenda}>
+            <Legenda />
+          </div>
           {editar && (
             <PainelDia
               mes={m}

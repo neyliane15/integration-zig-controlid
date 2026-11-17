@@ -1,8 +1,115 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 20 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 20 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000310_rhid.sql, 20261006000320_rhid_horarios.sql, 20261006000900_permissoes.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000300_importar_afd.sql, 20261006000310_rhid.sql, 20261006000320_rhid_horarios.sql, 20261006000330_ocorrencias_ponto.sql. Não edite à mão.
 
 begin;
+-- ------------------------------------------------------------- ligar funcionários (CPF do AFD)
+-- Liga o CPF/PIS do AFD ou do RHiD (usuário do equipamento) a um funcionário — inclusive provisório da escala ("Garçom 1") —,
+-- opcionalmente renomeando-o com o nome do AFD e gravando o CPF/PIS na ficha. As batidas pendentes passam ao funcionário
+-- e os dias são reapurados (gatilho §7.8).
+create or replace function public.ponto_afd_ligar(
+  p_controlid_usuario uuid, p_funcionario uuid, p_renomear boolean default false, p_cadastrar_documento boolean default false
+) returns jsonb
+language plpgsql volatile security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v public.controlid_usuarios;
+  v_tipo text;
+  f public.funcionarios;
+  v_nome text;
+  v_renomeado boolean := false;
+  v_documento boolean := false;
+begin
+  select * into v from public.controlid_usuarios where id = p_controlid_usuario;
+  if not found then raise exception 'Usuário do equipamento não encontrado' using errcode = 'P0002'; end if;
+  if not public.pode_operar(v.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  select i.tipo into v_tipo from public.integracoes i where i.id = v.integracao_id;
+  -- relógio REP (rede ou arquivo) ou RHiD (nuvem): os dois guardam os CPFs/PIS em controlid_usuarios
+  if v_tipo is null or v_tipo not in ('controlid_rep', 'rhid') then
+    raise exception 'Tipo de integração incompatível' using errcode = '22023';
+  end if;
+  if p_funcionario is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
+  select * into f from public.funcionarios where id = p_funcionario;
+  if not found then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
+  if f.empresa_id <> v.empresa_id then raise exception 'Funcionário de outra empresa' using errcode = '22023'; end if;
+
+  if coalesce(p_cadastrar_documento, false) then
+    if v.cpf is not null and f.cpf is distinct from v.cpf then
+      if exists (select 1 from public.funcionarios x where x.empresa_id = v.empresa_id and x.cpf = v.cpf and x.id <> f.id) then
+        raise exception 'CPF já cadastrado em outro funcionário' using errcode = '23505';
+      end if;
+      update public.funcionarios set cpf = v.cpf where id = f.id;
+      v_documento := true;
+    elsif v.cpf is null and v.pis is not null and f.pis is distinct from v.pis then
+      update public.funcionarios set pis = v.pis where id = f.id;
+      v_documento := true;
+    end if;
+  end if;
+
+  perform public.funcionario_vincular_controlid(v.id, f.id);
+
+  v_nome := public.nome_proprio(v.nome);
+  if coalesce(p_renomear, false) and v_nome is not null and v_nome is distinct from f.nome then
+    update public.funcionarios set nome = v_nome where id = f.id;
+    v_renomeado := true;
+  end if;
+
+  return jsonb_build_object(
+    'funcionario_id', f.id,
+    'nome', coalesce(case when v_renomeado then v_nome end, f.nome),
+    'renomeado', v_renomeado,
+    'documento_cadastrado', v_documento,
+    'batidas', (select count(*) from public.ponto_batidas b
+                 where b.integracao_id = v.integracao_id and b.pessoa_externa = v.user_id_externo and b.funcionario_id = f.id));
+end $$;
+comment on function public.ponto_afd_ligar(uuid, uuid, boolean, boolean) is
+  '[api] Liga o CPF/PIS do AFD/RHiD (relógio controlid_rep ou rhid) a um funcionário (renomear e gravar o documento na ficha são opcionais) (G A M).';
+
+-- Usuários do relógio (CPF/PIS) com batidas ainda sem funcionário — a lista do "Ligar funcionários".
+create or replace function public.ponto_afd_pendentes(p_integracao uuid)
+returns table(controlid_usuario_id uuid, cpf text, pis text, nome text, nome_sugerido text, quantidade int,
+              primeira date, ultima date)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig public.integracoes;
+begin
+  select * into ig from public.integracoes where id = p_integracao;
+  if not found then raise exception 'Integração não encontrada' using errcode = 'P0002'; end if;
+  if not public.pode_operar(ig.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if ig.tipo not in ('controlid_rep', 'rhid') then raise exception 'Tipo de integração incompatível' using errcode = '22023'; end if;
+  return query
+  select c.id, c.cpf, c.pis, c.nome, public.nome_proprio(c.nome), count(b.id)::int, min(b.data_trabalho), max(b.data_trabalho)
+    from public.controlid_usuarios c
+    left join public.ponto_batidas b
+      on b.integracao_id = c.integracao_id and b.pessoa_externa = c.user_id_externo and b.funcionario_id is null
+   where c.integracao_id = ig.id and c.funcionario_id is null
+   group by c.id, c.cpf, c.pis, c.nome
+  having count(b.id) > 0 or not c.removido_no_equipamento
+   order by count(b.id) desc, c.nome nulls last, c.user_id_externo;
+end $$;
+comment on function public.ponto_afd_pendentes(uuid) is
+  '[api] CPF/PIS do relógio (controlid_rep ou rhid) sem funcionário, com as batidas pendentes (G A M).';-- =====================================================================================================
+-- 20261006000310_rhid.sql — integração RHiD (nuvem da Control iD) pela API oficial (docs/referencias/rhid-swagger.json)
+-- O relógio REP da loja (iDClass, Portaria 671) não é alcançável pela rede, mas sincroniza com o RHiD; o N8N
+-- ("MDG · RHiD · Importar") faz login no RHiD, lê as pessoas (GET /person) e baixa o AFD 671 de cada equipamento
+-- (GET /report/afd/download671, e o do coletor REP-P) a partir do último NSR. Aqui ficam:
+--   · ingestao_rhid_pessoas  → reaproveita ingestao_controlid_usuarios (id = CPF; vínculo automático matrícula/CPF)
+--   · ingestao_rhid_batidas  → reaproveita ingestao_controlid_batidas (id_externo = "<equipamento>|<NSR>", origem
+--                              controlid_rep) e mantém o cursor por equipamento {nsr_por_equipamento: {id: ultimo_nsr}}
+--   · integracao_trocar_para_rhid → troca um relógio controlid_rep (por rede ou por arquivo) por um RHiD sem perder vínculos
+-- O tipo 'rhid' (checks, parâmetros padrão, segredos {email, senha, dominio}, escopos, tipos de execução rhid_pessoas e
+-- rhid_batidas) está nas listas da …0120 (os checks precisam aceitar 'rhid' já na reaplicação das migrações).
+-- Idempotente. Contrato: docs/CONTRATO-ADENDO-rhid.md.
+-- =====================================================================================================
+
+-- ------------------------------------------------------------------ auxiliares
+-- CPF/PIS do RHiD (número inteiro na API: perde os zeros à esquerda) → 11 dígitos; vazio/zero/maior que 11 → null.
+create or replace function public.rhid_documento(p_valor jsonb) returns text
+language sql immutable set search_path = public, extensions, pg_temp as $$
+  select case when d ~ '^[0-9]{1,11}$' and d !~ '^0+$' then lpad(d, 11, '0') end
+    from (select regexp_replace(coalesce(p_valor #>> '{}', ''), '[^0-9]', '', 'g') as d) x
+$$;
+comment on function public.rhid_documento(jsonb) is '[interno] CPF/PIS do RHiD (número) → 11 dígitos com zeros à esquerda (ou null).';
+
 -- ---------------------------------------------------------------- pessoas (GET /person)
 -- p_pessoas: os PersonDTO do RHiD como vieram ({id, cpf, pis, name, registration, status, ...}). Snapshot completo:
 -- quem não vier é marcado removido_no_equipamento (a ingestão do Control iD faz isso). Pessoa sem CPF é ignorada
@@ -352,92 +459,21 @@ begin
 end $$;
 comment on function public.ingestao_rhid_horarios(uuid, jsonb) is
   '[servico] Previsto por dia da apuração do RHiD (horário, folga, feriado) → ponto_previsto_externo + reapuração.';-- =====================================================================================================
--- 20261006000900_permissoes.sql  (backend-1) — SEMPRE A ÚLTIMA MIGRAÇÃO.
--- Varre o catálogo de public e concede privilégios pela etiqueta no início do comment (§2.2):
---   tabela  [api:crud] → authenticated: select, insert, update, delete
---           [api:leitura] → authenticated: select
---           [api:nenhum] / sem etiqueta → nada
---   função  [api] / [politica] → execute para authenticated (+ service_role)
---           [servico] / [interno] / sem etiqueta → só service_role (e o dono)
--- anon não recebe nada em public. service_role recebe tudo. Idempotente (revoga antes de conceder).
+-- 20261006000330_ocorrencias_ponto.sql — faltas e atrasos nas ocorrências
+-- Ocorrências passam a mostrar, além de advertências e suspensões:
+--   · faltas: as registradas no sistema (funcionario_faltas, com/sem justificativa) e os dias de ponto "ausente"
+--     (previsto pela jornada / horário do RHiD, encerrado, sem batida) que ainda não foram registrados;
+--   · atrasos: ponto_dias.atraso_minutos > 0 — 1ª batida × entrada prevista (deslocada para a chegada da escala do dia).
+-- Idempotente.
 -- =====================================================================================================
 
--- Objetos novos criados pelo dono (postgres) em public não ficam abertos por padrão: só esta varredura concede.
-alter default privileges in schema public revoke all on tables from anon, authenticated;
-alter default privileges in schema public revoke all on sequences from anon, authenticated;
-alter default privileges in schema public revoke all on functions from anon, authenticated;
-alter default privileges in schema public revoke execute on functions from public;
-alter default privileges in schema public grant all on tables to service_role;
-alter default privileges in schema public grant all on sequences to service_role;
-alter default privileges in schema public grant execute on functions to service_role;
-
-grant usage on schema public to anon, authenticated, service_role;
-
-do $$
-declare
-  r record;
-  v_etiqueta text;
-begin
-  -- -------------------------------------------------------------- tabelas, views e afins
-  for r in
-    select c.oid, c.relkind, format('%I.%I', n.nspname, c.relname) as nome,
-           obj_description(c.oid, 'pg_class') as comentario
-      from pg_class c
-      join pg_namespace n on n.oid = c.relnamespace
-     where n.nspname = 'public'
-       and c.relkind in ('r', 'p', 'v', 'm', 'f')
-       and not exists (select 1 from pg_depend d where d.objid = c.oid and d.deptype = 'e')
-  loop
-    execute format('revoke all on table %s from public, anon, authenticated', r.nome);
-    execute format('grant all on table %s to service_role', r.nome);
-    v_etiqueta := substring(coalesce(r.comentario, '') from '^\s*(\[[a-z_:]+\])');
-    if v_etiqueta = '[api:crud]' then
-      execute format('grant select, insert, update, delete on table %s to authenticated', r.nome);
-    elsif v_etiqueta = '[api:leitura]' then
-      execute format('grant select on table %s to authenticated', r.nome);
-    end if;
-  end loop;
-
-  -- ------------------------------------------------------------------------ sequências
-  for r in
-    select format('%I.%I', n.nspname, c.relname) as nome,
-           (select obj_description(t.oid, 'pg_class')
-              from pg_depend d join pg_class t on t.oid = d.refobjid
-             where d.objid = c.oid and d.deptype in ('a', 'i') and d.refclassid = 'pg_class'::regclass
-             limit 1) as comentario_dono
-      from pg_class c
-      join pg_namespace n on n.oid = c.relnamespace
-     where n.nspname = 'public' and c.relkind = 'S'
-       and not exists (select 1 from pg_depend d where d.objid = c.oid and d.deptype = 'e')
-  loop
-    execute format('revoke all on sequence %s from public, anon, authenticated', r.nome);
-    execute format('grant all on sequence %s to service_role', r.nome);
-    if substring(coalesce(r.comentario_dono, '') from '^\s*(\[[a-z_:]+\])') = '[api:crud]' then
-      execute format('grant usage, select on sequence %s to authenticated', r.nome);
-    end if;
-  end loop;
-
-  -- ------------------------------------------------------------- funções e procedimentos
-  for r in
-    select p.oid::regprocedure::text as assinatura, p.prokind,
-           obj_description(p.oid, 'pg_proc') as comentario
-      from pg_proc p
-      join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public'
-       and p.prokind in ('f', 'p', 'w')
-       and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
-  loop
-    execute format('revoke all on %s %s from public, anon, authenticated',
-                   case r.prokind when 'p' then 'procedure' else 'function' end, r.assinatura);
-    execute format('grant execute on %s %s to service_role',
-                   case r.prokind when 'p' then 'procedure' else 'function' end, r.assinatura);
-    v_etiqueta := substring(coalesce(r.comentario, '') from '^\s*(\[[a-z_:]+\])');
-    if v_etiqueta in ('[api]', '[politica]') then
-      execute format('grant execute on %s %s to authenticated',
-                     case r.prokind when 'p' then 'procedure' else 'function' end, r.assinatura);
-    end if;
-  end loop;
-end $$;
+-- "4h00" a partir de minutos (para o previsto de um dia de falta)
+create or replace function public.minutos_em_horas(p_minutos int) returns text
+language sql immutable set search_path = public, extensions, pg_temp as $$
+  select case when p_minutos is null then null
+              else (p_minutos / 60)::text || 'h' || lpad((p_minutos % 60)::text, 2, '0') end
+$$;
+comment on function public.minutos_em_horas(int) is '[interno] Minutos em texto "7h20".';
 
 commit;
-select 'parte 20 de 20 instalada' as resultado;
+select 'parte 20 de 21 instalada' as resultado;

@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 04 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 04 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000120_integracoes_sync.sql, 20261006000130_tarefas.sql, 20261006000140_envio_controlid.sql. Não edite à mão.
 
@@ -578,4 +578,4 @@ create table if not exists public.controlid_horario_faixas (
 create index if not exists controlid_horario_faixas_empresa_idx on public.controlid_horario_faixas (empresa_id);
 
 commit;
-select 'parte 04 de 20 instalada' as resultado;
+select 'parte 04 de 21 instalada' as resultado;

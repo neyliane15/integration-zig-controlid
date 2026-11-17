@@ -5,7 +5,7 @@ import clsx from 'clsx'
 import { AlertTriangle, ArrowRight, CalendarCheck, Check, ListChecks, PlugZap, ShieldAlert, Users } from 'lucide-react'
 import type { PainelDoDia } from '@/tipos/banco'
 import { Botao, Cartao, CabecalhoPagina, ErroCarga, Esqueleto, FOCO, Indicador, Selo, Vazio } from '@/componentes/ui'
-import { ModalOcorrencia } from '@/componentes/dominio/Ocorrencias'
+import { LinhaOcorrenciaPonto, ModalOcorrencia } from '@/componentes/dominio/Ocorrencias'
 import { useAvisos } from '@/componentes/avisos'
 import { BotaoSincronizar, IconeIntegracao, SeloStatusIntegracao } from '@/componentes/integracoes/comum'
 import { useMudarStatusTarefa, usePainel, useTarefasDoPainel, type TarefaPainel } from '@/consultas/painel'
@@ -406,8 +406,25 @@ function CartaoOcorrencias({ o }: { o: NonNullable<PainelDoDia['ocorrencias']> }
     >
       <p className="mb-3 text-sm text-lavanda">
         <span className="numero text-creme">{o.advertencias}</span> advertência{o.advertencias === 1 ? '' : 's'} ·{' '}
-        <span className="numero text-creme">{o.suspensoes}</span> suspens{o.suspensoes === 1 ? 'ão' : 'ões'}
+        <span className="numero text-creme">{o.suspensoes}</span> suspens{o.suspensoes === 1 ? 'ão' : 'ões'} ·{' '}
+        <span className="numero text-creme">{o.faltas ?? 0}</span> falta{o.faltas === 1 ? '' : 's'} ·{' '}
+        <span className="numero text-creme">{o.atrasos ?? 0}</span> atraso{o.atrasos === 1 ? '' : 's'}
+        {(o.minutos_atraso ?? 0) > 0 && <> ({o.minutos_atraso} min)</>}
       </p>
+      {(o.ponto_recentes ?? []).length > 0 && (
+        <ul className="-mx-2 mb-2 flex flex-col" aria-label="Faltas e atrasos recentes">
+          {(o.ponto_recentes ?? []).slice(0, 5).map((x) => (
+            <li key={`${x.funcionario_id}-${x.data}-${x.tipo}`}>
+              <Link
+                to={`/funcionarios/${x.funcionario_id}?aba=ocorrencias`}
+                className={clsx('flex rounded-entrada px-2 py-2.5 transition-colors hover:bg-cartao-2', FOCO)}
+              >
+                <LinhaOcorrenciaPonto o={x} comNome />
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
       {o.recentes.length === 0 ? (
         <p className="flex items-center gap-2.5 rounded-entrada border border-sucesso/25 bg-sucesso/5 px-4 py-3 text-sm text-creme">
           <Check aria-hidden className="size-4 text-sucesso" /> Nenhuma advertência ou suspensão nos últimos 30 dias.

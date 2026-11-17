@@ -63,6 +63,8 @@ function FormularioEmpresa({ empresa, editavel }: { empresa: Empresa; editavel: 
     retencao: String(empresa.comissao_percentual_retencao).replace('.', ','),
     alarmeAtraso: empresa.ponto_alarme_atraso,
     janela: String(empresa.ponto_janela_duplicada_minutos),
+    prazo: String(empresa.ponto_alarme_prazo_dias ?? 2),
+    minimas: String(empresa.ponto_batidas_minimas ?? 4),
   })
   const [erro, setErro] = useState<string | null>(null)
   const mudar = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((a) => ({ ...a, [k]: v }))
@@ -78,6 +80,10 @@ function FormularioEmpresa({ empresa, editavel }: { empresa: Empresa; editavel: 
     if (!Number.isFinite(retencao) || retencao < 0 || retencao > 100) return setErro('Retenção: de 0 a 100%.')
     const janela = Number(f.janela)
     if (!Number.isInteger(janela) || janela < 0 || janela > 30) return setErro('Janela de duplicidade: de 0 a 30 minutos.')
+    const prazo = Number(f.prazo)
+    if (!Number.isInteger(prazo) || prazo < 1 || prazo > 93) return setErro('Prazo dos alarmes: de 1 a 93 dias.')
+    const minimas = Number(f.minimas)
+    if (!Number.isInteger(minimas) || minimas < 0 || minimas > 8) return setErro('Mínimo de batidas: de 0 a 8.')
     if (!/^\d{2}:\d{2}$/.test(f.virada_dia)) return setErro('Informe a virada do dia (HH:MM).')
     atualizar.mutate(
       {
@@ -93,6 +99,8 @@ function FormularioEmpresa({ empresa, editavel }: { empresa: Empresa; editavel: 
           comissao_percentual_retencao: retencao,
           ponto_alarme_atraso: f.alarmeAtraso,
           ponto_janela_duplicada_minutos: janela,
+          ponto_alarme_prazo_dias: prazo,
+          ponto_batidas_minimas: minimas,
         },
       },
       { onSuccess: () => avisos.sucesso('Configurações salvas.'), onError: avisos.erro },
@@ -179,6 +187,18 @@ function FormularioEmpresa({ empresa, editavel }: { empresa: Empresa; editavel: 
               onChange={(e) => mudar('janela', e.target.value)}
               disabled={ro}
             />
+          </Campo>
+        </div>
+        <div className="mt-5 grid gap-5 sm:grid-cols-2">
+          <Campo rotulo="Prazo dos alarmes de ponto (dias)" htmlFor="cfg-prazo" ajuda="Só os últimos dias ficam com alarme aberto. Padrão: 2 dias.">
+            <Entrada id="cfg-prazo" type="number" min={1} max={93} inputMode="numeric" className="numero" value={f.prazo} onChange={(e) => mudar('prazo', e.target.value)} disabled={ro} />
+          </Campo>
+          <Campo
+            rotulo="Mínimo de batidas por dia"
+            htmlFor="cfg-min"
+            ajuda="Quem bater menos que isso num dia sem horário previsto (folga, sem escala) gera alarme. Padrão: 4; 0 desliga."
+          >
+            <Entrada id="cfg-min" type="number" min={0} max={8} inputMode="numeric" className="numero" value={f.minimas} onChange={(e) => mudar('minimas', e.target.value)} disabled={ro} />
           </Campo>
         </div>
         <div className="mt-5">

@@ -1,8 +1,166 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 14 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 14 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000260_extras.sql, 20261006000270_reservas.sql. Não edite à mão.
 
 begin;
+-- (v3) retorno ganhou pontos_pendente/dias_pendentes: mudança de tipo de retorno exige drop (privilégios voltam na …0900)
+do $$
+begin
+  if exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+              where n.nspname = 'public' and p.proname = 'extras_listar'
+                and pg_get_function_result(p.oid) not like '%dias_pendentes%') then
+    drop function public.extras_listar(boolean, uuid);
+  end if;
+  if exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+              where n.nspname = 'public' and p.proname = 'diarias_listar'
+                and pg_get_function_result(p.oid) not like '%pontos_pendente%') then
+    drop function public.diarias_listar(date, date, text, uuid, uuid, boolean, uuid);
+  end if;
+end $$;
+
+create or replace function public.extras_listar(p_incluir_inativos boolean default false, p_empresa uuid default null)
+returns table (id uuid, nome text, funcao text, telefone text, documento text, pontos_padrao numeric, valor_diaria_centavos bigint,
+               ativo boolean, observacoes text, pontos_pendente boolean, dias_lancados int, ultimo_dia date, dias_pendentes int,
+               criado_em timestamptz)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  return query
+  select x.id, x.nome, x.funcao, x.telefone, x.documento, x.pontos_padrao, x.valor_diaria_centavos, x.ativo, x.observacoes,
+         x.pontos_pendente, coalesce(l.qtd, 0)::int, l.ultimo, coalesce(l.pend, 0)::int, x.criado_em
+    from public.extras x
+    left join lateral (select count(*) as qtd, max(d.data) as ultimo, count(*) filter (where d.pontos_pendente) as pend
+                         from public.diarias d where d.extra_id = x.id) l on true
+   where x.empresa_id = v_empresa and (coalesce(p_incluir_inativos, false) or x.ativo)
+   order by lower(x.nome), x.id;
+end $$;
+comment on function public.extras_listar(boolean, uuid) is '[api] Extras cadastrados da empresa (G A M).';
+
+-- ================================================================ RPCs de valor padrão (funcionário)
+create or replace function public.funcionario_definir_valor_diaria(p_funcionario uuid, p_valor_centavos bigint)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare f public.funcionarios;
+begin
+  f := public.funcionario_para_operar(p_funcionario);
+  if p_valor_centavos is null then
+    delete from public.funcionario_valores_diaria where funcionario_id = f.id;
+    return;
+  end if;
+  if p_valor_centavos < 0 or p_valor_centavos > 100000000 then raise exception 'Valor inválido' using errcode = '22023'; end if;
+  insert into public.funcionario_valores_diaria (funcionario_id, empresa_id, valor_diaria_centavos, atualizado_por, atualizado_em)
+  values (f.id, f.empresa_id, p_valor_centavos, public.meu_perfil_id(), now())
+  on conflict (funcionario_id) do update
+    set valor_diaria_centavos = excluded.valor_diaria_centavos, atualizado_por = excluded.atualizado_por,
+        atualizado_em = excluded.atualizado_em;
+end $$;
+comment on function public.funcionario_definir_valor_diaria(uuid, bigint) is
+  '[api] Define (ou remove, null) o valor padrão da diária do funcionário (G A M).';
+
+create or replace function public.funcionario_valores_diaria_listar(p_empresa uuid default null)
+returns table (funcionario_id uuid, valor_diaria_centavos bigint)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  return query select v.funcionario_id, v.valor_diaria_centavos from public.funcionario_valores_diaria v
+                where v.empresa_id = v_empresa order by v.funcionario_id;
+end $$;
+comment on function public.funcionario_valores_diaria_listar(uuid) is '[api] Valores padrão de diária da empresa (G A M).';
+
+-- ================================================================ RPCs de dias trabalhados (E.2)
+create or replace function public.diaria_validar_valores(p_empresa uuid, p_data date, p_pontos numeric, p_valor bigint,
+                                                         p_extra boolean)
+returns void language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_hoje date;
+begin
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  v_hoje := public.dia_de_trabalho(public.agora(), p_empresa);
+  if p_data < v_hoje - 366 or p_data > v_hoje + 62 then raise exception 'Data fora do limite' using errcode = '22023'; end if;
+  if p_extra and (p_pontos is null or p_pontos < 0 or p_pontos > 9999.99 or p_pontos <> round(p_pontos, 2)) then
+    raise exception 'Pontos inválidos' using errcode = '22023';
+  end if;
+  if p_valor is null then raise exception 'Informe o valor da diária' using errcode = '22023'; end if;
+  if p_valor < 0 or p_valor > 100000000 then raise exception 'Valor inválido' using errcode = '22023'; end if;
+end $$;
+comment on function public.diaria_validar_valores(uuid, date, numeric, bigint, boolean) is '[interno] Validação de dia trabalhado (E.2).';
+
+create or replace function public.diaria_checar_trava(p_empresa uuid, p_data date)
+returns void language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+begin
+  if public.comissao_periodo_fechado(p_empresa, p_data) then
+    raise exception 'Período de comissão já fechado' using errcode = '22023';
+  end if;
+end $$;
+comment on function public.diaria_checar_trava(uuid, date) is '[interno] Dia de extra em fechamento fechado é recusado (E.2).';
+
+create or replace function public.diaria_checar_duplicada(p_extra uuid, p_data date, p_ignorar uuid default null)
+returns void language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+begin
+  if exists (select 1 from public.diarias d where d.extra_id = p_extra and d.data = p_data
+                                              and (p_ignorar is null or d.id <> p_ignorar)) then
+    raise exception 'Extra já tem dia lançado em %', to_char(p_data, 'DD/MM/YYYY') using errcode = '23505';
+  end if;
+end $$;
+comment on function public.diaria_checar_duplicada(uuid, date, uuid) is '[interno] Um lançamento por extra por dia (E.2).';
+
+create or replace function public.diaria_lancar(p_data date, p_extra uuid default null, p_funcionario uuid default null,
+                                                p_pontos numeric default null, p_valor_centavos bigint default null,
+                                                p_funcao text default null, p_observacao text default null,
+                                                p_pago boolean default false, p_pago_em date default null)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare x public.extras; f public.funcionarios; v_empresa uuid; v_pontos numeric; v_valor bigint; v_funcao text;
+        v_nome text; v_pago boolean; v_id uuid; v_pend boolean := false;
+begin
+  if (p_extra is null) = (p_funcionario is null) then
+    raise exception 'Informe o extra ou o funcionário' using errcode = '22023';
+  end if;
+  if p_extra is not null then
+    x := public.extra_para_operar(p_extra);
+    if not x.ativo then raise exception 'Extra inativo' using errcode = '22023'; end if;
+    v_empresa := x.empresa_id; v_nome := x.nome;
+    v_pontos := coalesce(p_pontos, x.pontos_padrao);
+    v_pend := x.pontos_pendente and p_pontos is null;     -- (v3) extra sem pontuação: dia pendente (vale 0)
+    if v_pend then v_pontos := 0; end if;
+    v_valor := coalesce(p_valor_centavos, x.valor_diaria_centavos);
+    v_funcao := coalesce(nullif(btrim(p_funcao), ''), x.funcao);
+  else
+    f := public.funcionario_para_operar(p_funcionario);
+    if p_pontos is not null then raise exception 'Diária de funcionário não tem pontos' using errcode = '22023'; end if;
+    v_empresa := f.empresa_id; v_nome := f.nome;
+    v_valor := coalesce(p_valor_centavos,
+                        (select v.valor_diaria_centavos from public.funcionario_valores_diaria v where v.funcionario_id = f.id));
+    v_funcao := coalesce(nullif(btrim(p_funcao), ''), f.cargo);
+  end if;
+  perform public.diaria_validar_valores(v_empresa, p_data, v_pontos, v_valor, p_extra is not null);
+  if p_extra is not null then
+    perform public.diaria_checar_trava(v_empresa, p_data);
+    perform public.diaria_checar_duplicada(x.id, p_data);
+  end if;
+  v_pago := coalesce(p_pago, false);
+  insert into public.diarias (empresa_id, tipo, extra_id, funcionario_id, pessoa_nome, data, funcao, pontos, pontos_pendente,
+                              valor_centavos, observacao, pago, pago_em, criado_por, criado_por_nome)
+  values (v_empresa, case when p_extra is not null then 'extra' else 'funcionario' end, x.id, f.id, v_nome, p_data, v_funcao,
+          v_pontos, v_pend, v_valor, nullif(btrim(p_observacao), ''), v_pago,
+          case when v_pago then coalesce(p_pago_em, public.dia_de_trabalho(public.agora(), v_empresa)) end,
+          public.meu_perfil_id(), public.ponto_nome_autor())
+  returning id into v_id;
+  return v_id;
+end $$;
+comment on function public.diaria_lancar(date, uuid, uuid, numeric, bigint, text, text, boolean, date) is
+  '[api] Lança um dia trabalhado de extra (com pontos) ou diária de funcionário (G A M).';
+
+create or replace function public.diaria_para_operar(p_diaria uuid)
+returns public.diarias language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare d public.diarias;
+begin
+  select * into d from public.diarias where id = p_diaria;
+  if not found then raise exception 'Diária não encontrada' using errcode = 'P0002'; end if;
+  if public.pode_operar(d.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  return d;
+end $$;
+comment on function public.diaria_para_operar(uuid) is '[interno] Diária existente e operável (G A M).';
+
 create or replace function public.diaria_atualizar(p_diaria uuid, p_data date, p_pontos numeric, p_valor_centavos bigint,
                                                    p_funcao text, p_observacao text, p_pago boolean, p_pago_em date)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -300,175 +458,5 @@ begin
 end $$;
 comment on function public.reserva_ler_horario(text) is '[interno] Lê horário HH:MM[:SS].';
 
--- Converte um item jsonb (importação/ingestão) em campos de reserva; erro → exceção com o motivo (texto curto).
-create or replace function public.reserva_ler_item(p_item jsonb, p_chave_hora text,
-                                                   out data date, out horario time, out nome text, out pessoas int,
-                                                   out status text, out telefone text, out email text, out area text,
-                                                   out mesa text, out observacao text, out id_externo text)
-language plpgsql immutable set search_path = public, extensions, pg_temp as $$
-declare v text;
-begin
-  if p_item is null or jsonb_typeof(p_item) <> 'object' then raise exception 'item inválido'; end if;
-  data := public.reserva_ler_data(p_item ->> 'data');
-  if data is null then raise exception 'data inválida'; end if;
-  horario := public.reserva_ler_horario(p_item ->> p_chave_hora);
-  nome := nullif(btrim(coalesce(p_item ->> 'nome', p_item ->> 'nome_cliente', '')), '');
-  if nome is null then raise exception 'informe o nome'; end if;
-  v := btrim(coalesce(p_item ->> 'pessoas', ''));
-  if v = '' then pessoas := 1;
-  elsif v ~ '^\d{1,4}$' and v::int between 1 and 500 then pessoas := v::int;
-  else raise exception 'pessoas inválido';
-  end if;
-  status := coalesce(nullif(btrim(p_item ->> 'status'), ''), 'confirmada');
-  if status not in ('confirmada', 'pendente', 'cancelada', 'sentada', 'concluida', 'nao_compareceu') then
-    raise exception 'status inválido';
-  end if;
-  telefone := nullif(btrim(p_item ->> 'telefone'), '');
-  email := nullif(btrim(p_item ->> 'email'), '');
-  area := nullif(btrim(p_item ->> 'area'), '');
-  mesa := nullif(btrim(p_item ->> 'mesa'), '');
-  observacao := nullif(btrim(p_item ->> 'observacao'), '');
-  id_externo := nullif(btrim(p_item ->> 'id_externo'), '');
-end $$;
-comment on function public.reserva_ler_item(jsonb, text) is '[interno] Item de importação/ingestão de reserva → campos.';
-
--- ================================================================ RPCs (front)
-create or replace function public.reserva_criar(p_data date, p_horario time, p_nome_cliente text, p_pessoas int default 1,
-                                                p_telefone text default null, p_area text default null, p_mesa text default null,
-                                                p_observacao text default null, p_status text default 'confirmada',
-                                                p_email text default null, p_empresa uuid default null)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid; v_id uuid;
-begin
-  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
-  perform public.reserva_validar(p_data, p_nome_cliente, coalesce(p_pessoas, 1), coalesce(p_status, 'confirmada'));
-  insert into public.reservas (empresa_id, origem, data, horario, nome_cliente, pessoas, status, area, mesa, observacao,
-                               telefone, email, criado_por)
-  values (v_empresa, 'manual', p_data, p_horario, btrim(p_nome_cliente), coalesce(p_pessoas, 1), coalesce(p_status, 'confirmada'),
-          nullif(btrim(p_area), ''), nullif(btrim(p_mesa), ''), nullif(btrim(p_observacao), ''),
-          nullif(btrim(p_telefone), ''), nullif(btrim(p_email), ''), public.meu_perfil_id())
-  returning id into v_id;
-  return v_id;
-end $$;
-comment on function public.reserva_criar(date, time, text, int, text, text, text, text, text, text, uuid) is
-  '[api] Cria uma reserva manual (G A M).';
-
-create or replace function public.reserva_atualizar(p_reserva uuid, p_data date, p_horario time, p_nome_cliente text,
-                                                    p_pessoas int, p_telefone text, p_area text, p_mesa text,
-                                                    p_observacao text, p_status text, p_email text)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare r public.reservas;
-begin
-  r := public.reserva_para_operar(p_reserva);
-  if r.origem = 'tagme' then
-    raise exception 'Reserva da Tagme: só o status pode ser alterado' using errcode = '22023';
-  end if;
-  perform public.reserva_validar(p_data, p_nome_cliente, p_pessoas, p_status);
-  update public.reservas
-     set data = p_data, horario = p_horario, nome_cliente = btrim(p_nome_cliente), pessoas = p_pessoas, status = p_status,
-         area = nullif(btrim(p_area), ''), mesa = nullif(btrim(p_mesa), ''), observacao = nullif(btrim(p_observacao), ''),
-         telefone = nullif(btrim(p_telefone), ''), email = nullif(btrim(p_email), '')
-   where id = r.id;
-end $$;
-comment on function public.reserva_atualizar(uuid, date, time, text, int, text, text, text, text, text, text) is
-  '[api] Edita uma reserva manual/importada (G A M).';
-
-create or replace function public.reserva_mudar_status(p_reserva uuid, p_status text)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare r public.reservas;
-begin
-  r := public.reserva_para_operar(p_reserva);
-  if p_status is null or p_status not in ('confirmada', 'pendente', 'cancelada', 'sentada', 'concluida', 'nao_compareceu') then
-    raise exception 'Status de reserva inválido' using errcode = '22023';
-  end if;
-  update public.reservas set status = p_status where id = r.id and status is distinct from p_status;
-end $$;
-comment on function public.reserva_mudar_status(uuid, text) is '[api] Muda o status de uma reserva (G A M).';
-
-create or replace function public.reserva_cancelar(p_reserva uuid)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-begin
-  perform public.reserva_mudar_status(p_reserva, 'cancelada');
-end $$;
-comment on function public.reserva_cancelar(uuid) is '[api] Cancela uma reserva (G A M).';
-
-create or replace function public.reserva_excluir(p_reserva uuid)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare r public.reservas;
-begin
-  r := public.reserva_para_operar(p_reserva);
-  if r.origem = 'tagme' then raise exception 'Reserva da Tagme não pode ser excluída' using errcode = '22023'; end if;
-  delete from public.reservas where id = r.id;
-end $$;
-comment on function public.reserva_excluir(uuid) is '[api] Exclui uma reserva manual/importada (G A M).';
-
-create or replace function public.reservas_listar(p_inicio date, p_fim date default null, p_status text[] default null,
-                                                  p_empresa uuid default null)
-returns table (id uuid, origem text, data date, horario time, nome_cliente text, pessoas int, status text, area text, mesa text,
-               observacao text, telefone text, email text, criado_em timestamptz, atualizado_em timestamptz)
-language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid; v_operar boolean;
-begin
-  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
-  perform public.ponto_validar_periodo(p_inicio, coalesce(p_fim, p_inicio), 93);
-  v_operar := public.pode_operar(v_empresa) is true;
-  return query
-  select r.id, r.origem, r.data, r.horario, r.nome_cliente, r.pessoas, r.status, r.area, r.mesa, r.observacao,
-         case when v_operar then r.telefone end, case when v_operar then r.email end, r.criado_em, r.atualizado_em
-    from public.reservas r
-   where r.empresa_id = v_empresa and r.data between p_inicio and coalesce(p_fim, p_inicio)
-     and (p_status is null or r.status = any (p_status))
-   order by r.data, r.horario nulls last, r.nome_cliente, r.id;
-end $$;
-comment on function public.reservas_listar(date, date, text[], uuid) is
-  '[api] Reservas do período (L G A M; telefone/e-mail só para G A M).';
-
-create or replace function public.reservas_importar(p_linhas jsonb, p_empresa uuid default null)
-returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_empresa uuid; it record; c record; v_erros jsonb := '[]'::jsonb; v_ign int := 0; v_ins int := 0; v_atu int := 0;
-  v_ids text[] := '{}'; v_novo boolean;
-begin
-  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
-  if p_linhas is null or jsonb_typeof(p_linhas) <> 'array' then raise exception 'Lista de itens inválida' using errcode = '22023'; end if;
-  if jsonb_array_length(p_linhas) > 2000 then raise exception 'Lote maior que 2000 itens' using errcode = '22023'; end if;
-  for it in select e.valor, (e.ord - 1)::int as indice from jsonb_array_elements(p_linhas) with ordinality as e(valor, ord) loop
-    begin
-      select * into c from public.reserva_ler_item(it.valor, 'horario');
-      if c.id_externo is not null then
-        if c.id_externo = any (v_ids) then raise exception 'id repetido'; end if;
-        v_ids := v_ids || c.id_externo;
-      end if;
-    exception when others then
-      v_ign := v_ign + 1;
-      if jsonb_array_length(v_erros) < 20 then
-        v_erros := v_erros || jsonb_build_object('indice', it.indice, 'motivo', sqlerrm);
-      end if;
-      continue;
-    end;
-    if c.id_externo is null then
-      insert into public.reservas (empresa_id, origem, data, horario, nome_cliente, pessoas, status, area, mesa, observacao,
-                                   telefone, email, criado_por, importado_em)
-      values (v_empresa, 'importacao', c.data, c.horario, c.nome, c.pessoas, c.status, c.area, c.mesa, c.observacao,
-              c.telefone, c.email, public.meu_perfil_id(), public.agora());
-      v_ins := v_ins + 1;
-    else
-      insert into public.reservas as r (empresa_id, origem, id_externo, data, horario, nome_cliente, pessoas, status, area, mesa,
-                                        observacao, telefone, email, criado_por, importado_em)
-      values (v_empresa, 'importacao', c.id_externo, c.data, c.horario, c.nome, c.pessoas, c.status, c.area, c.mesa,
-              c.observacao, c.telefone, c.email, public.meu_perfil_id(), public.agora())
-      on conflict (empresa_id, origem, id_externo) do update
-        set data = excluded.data, horario = excluded.horario, nome_cliente = excluded.nome_cliente, pessoas = excluded.pessoas,
-            status = excluded.status, area = excluded.area, mesa = excluded.mesa, observacao = excluded.observacao,
-            telefone = excluded.telefone, email = excluded.email, importado_em = excluded.importado_em
-      returning (xmax = 0) into v_novo;
-      if v_novo then v_ins := v_ins + 1; else v_atu := v_atu + 1; end if;
-    end if;
-  end loop;
-  return jsonb_build_object('lidos', jsonb_array_length(p_linhas), 'gravados', v_ins + v_atu, 'ignorados', v_ign,
-                            'inseridos', v_ins, 'atualizados', v_atu, 'erros', v_erros);
-end $$;
-comment on function public.reservas_importar(jsonb, uuid) is '[api] Importa reservas de um CSV lido pelo front (G A M).';
-
 commit;
-select 'parte 14 de 20 instalada' as resultado;
+select 'parte 14 de 21 instalada' as resultado;

@@ -64,7 +64,7 @@ create table if not exists public.ponto_alarmes (
   empresa_id                 uuid not null references public.empresas (id) on delete cascade,
   funcionario_id             uuid not null references public.funcionarios (id) on delete cascade,
   data                       date not null,
-  tipo                       text not null check (tipo in ('batida_faltando', 'batidas_impares',
+  tipo                       text not null check (tipo in ('batida_faltando', 'batidas_impares', 'poucas_batidas',
                                                            'sem_batida_dia_escalado', 'atraso')),
   batida_esperada            text not null default ''
                              check (batida_esperada in ('', 'entrada', 'saida_intervalo', 'volta_intervalo', 'saida')),
@@ -82,6 +82,9 @@ create table if not exists public.ponto_alarmes (
   unique (funcionario_id, data, tipo, batida_esperada)
 );
 create index if not exists ponto_alarmes_empresa_idx on public.ponto_alarmes (empresa_id, status, data desc);
+alter table public.ponto_alarmes drop constraint if exists ponto_alarmes_tipo_check;
+alter table public.ponto_alarmes add constraint ponto_alarmes_tipo_check
+  check (tipo in ('batida_faltando', 'batidas_impares', 'poucas_batidas', 'sem_batida_dia_escalado', 'atraso'));
 create index if not exists ponto_alarmes_justificado_por_idx on public.ponto_alarmes (justificado_por);
 comment on table public.ponto_alarmes is '[api:leitura] Alarmes de ponto (gerados pela apuração; justificar/reabrir por RPC).';
 
@@ -420,6 +423,9 @@ declare
   v_ext_tol_e  int;
   v_ext_tol_f  int;
   v_ult_idx    int;
+  v_tol_atraso int;
+  v_chegada    timestamptz;
+  v_alarme_ok  boolean;
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -527,6 +533,15 @@ begin
                         else array['entrada', 'saida'] end;
         for i in 1 .. v_k loop
           v_slots := v_slots || public.ponto_instante_escala(p_data, v_ext_hor[i], e.fuso, e.virada_dia);
+        end loop;
+        -- horário de chegada da escala do dia: desloca os horários (o atraso é contado a partir dela)
+        if v_esc.chegada is not null then
+          v_desloc := public.ponto_instante_escala(p_data, v_esc.chegada, e.fuso, e.virada_dia) - v_slots[1];
+          for i in 1 .. v_k loop
+            v_slots[i] := v_slots[i] + v_desloc;
+          end loop;
+        end if;
+        for i in 1 .. v_k loop
           v_esperadas := v_esperadas || jsonb_build_object('batida', v_nomes[i], 'instante', v_slots[i]);
         end loop;
       end if;
@@ -615,9 +630,17 @@ begin
   end if;
 
   -- 6. Atraso: só se a 1ª batida corresponde à entrada (se a entrada faltou, o alarme é "batida faltando", não atraso).
+  -- Referência: a entrada prevista (jornada ou horário do RHiD, deslocada para a chegada da escala). Sem horários mas
+  -- escalado com chegada: a chegada da escala. Tolerância: a do horário do RHiD (CLT 10) ou a da jornada; sem nenhuma, 5.
+  v_tol_atraso := case when v_ext_prev is not null then coalesce(v_ext_tol_f, v_tol_bat)
+                       when j.id is not null then v_tol_bat else 5 end;
   if v_k > 0 and v_n > 0 and (v_melhor is null or 1 = any (v_melhor)) then
     v_atraso := greatest(0, floor(extract(epoch from (v_validas[1] - v_slots[1])) / 60)::int);
-    if v_atraso <= v_tol_bat then v_atraso := 0; end if;
+    if v_atraso <= v_tol_atraso then v_atraso := 0; end if;
+  elsif v_k = 0 and v_n > 0 and v_abono is null and v_esc.status = 'trabalha' and v_esc.chegada is not null then
+    v_chegada := public.ponto_instante_escala(p_data, v_esc.chegada, e.fuso, e.virada_dia);
+    v_atraso := greatest(0, floor(extract(epoch from (v_validas[1] - v_chegada)) / 60)::int);
+    if v_atraso <= v_tol_atraso or v_atraso > 6 * 60 then v_atraso := 0; end if;   -- > 6 h: outra escala, não atraso
   end if;
 
   -- 7. Situação
@@ -633,8 +656,10 @@ begin
   else v_situacao := 'incompleto';
   end if;
 
-  -- 8. Alarmes (§7.3) — dia abonado ou com falta registrada não gera alarme
-  if v_abono is null and v_falta is null then
+  -- 8. Alarmes (§7.3) — dia abonado ou com falta registrada não gera alarme; só os últimos ponto_alarme_prazo_dias
+  -- (padrão 2): dias mais antigos não têm alarme aberto (o que havia é resolvido automaticamente)
+  v_alarme_ok := p_data >= public.dia_de_trabalho(public.agora(), f.empresa_id) - e.ponto_alarme_prazo_dias;
+  if v_abono is null and v_falta is null and v_alarme_ok then
     if v_encerrado then
       if v_k > 0 and v_n = 0 then
         v_alarmes := v_alarmes || jsonb_build_object(
@@ -651,6 +676,15 @@ begin
               'detalhe', format('Faltou %s (%s)', v_rotulos ->> v_nomes[i], to_char(v_slots[i] at time zone e.fuso, 'HH24:MI')));
           end if;
         end loop;
+      elsif v_k = 0 and v_n > 0 and v_n < (case when j.id is not null and v_ext_prev is null
+                                              then coalesce((select max(x.batidas_esperadas) from public.jornada_dias x
+                                                              where x.jornada_id = j.id), e.ponto_batidas_minimas)
+                                              else e.ponto_batidas_minimas end) then
+        -- sem horário previsto no dia (folga, sem escala): alerta quem bateu menos que o mínimo — o da jornada (2 ou 4) ou,
+        -- sem jornada, o da empresa (ponto_batidas_minimas, padrão 4; 0 desliga)
+        v_alarmes := v_alarmes || jsonb_build_object(
+          'tipo', 'poucas_batidas', 'batida_esperada', '', 'horario_previsto', null, 'minutos', null,
+          'detalhe', format('%s %s no dia (menos que o mínimo de batidas)', v_n, case when v_n = 1 then 'batida' else 'batidas' end));
       elsif v_n % 2 = 1 then
         v_alarmes := v_alarmes || jsonb_build_object(
           'tipo', 'batidas_impares', 'batida_esperada', '', 'horario_previsto', null, 'minutos', null,
@@ -659,7 +693,7 @@ begin
     end if;
     if e.ponto_alarme_atraso and v_atraso > 0 then
       v_alarmes := v_alarmes || jsonb_build_object(
-        'tipo', 'atraso', 'batida_esperada', 'entrada', 'horario_previsto', v_slots[1], 'minutos', v_atraso,
+        'tipo', 'atraso', 'batida_esperada', 'entrada', 'horario_previsto', coalesce(v_slots[1], v_chegada), 'minutos', v_atraso,
         'detalhe', format('Entrada %s (%s min de atraso)', to_char(v_validas[1] at time zone e.fuso, 'HH24:MI'), v_atraso));
     end if;
   end if;
@@ -963,11 +997,14 @@ end $$;
 comment on function public.ponto_gatilho_empresa() is '[interno] Parâmetros de ponto da empresa mudaram → reapura 31 dias.';
 
 drop trigger if exists ponto_reapurar on public.empresas;
-create trigger ponto_reapurar after update of fuso, virada_dia, ponto_janela_duplicada_minutos, ponto_alarme_atraso on public.empresas
+create trigger ponto_reapurar after update of fuso, virada_dia, ponto_janela_duplicada_minutos, ponto_alarme_atraso,
+  ponto_alarme_prazo_dias, ponto_batidas_minimas on public.empresas
   for each row
   when (old.fuso is distinct from new.fuso or old.virada_dia is distinct from new.virada_dia
         or old.ponto_janela_duplicada_minutos is distinct from new.ponto_janela_duplicada_minutos
-        or old.ponto_alarme_atraso is distinct from new.ponto_alarme_atraso)
+        or old.ponto_alarme_atraso is distinct from new.ponto_alarme_atraso
+        or old.ponto_alarme_prazo_dias is distinct from new.ponto_alarme_prazo_dias
+        or old.ponto_batidas_minimas is distinct from new.ponto_batidas_minimas)
   execute function public.ponto_gatilho_empresa();
 
 -- Fuso/virada mudou → data_trabalho das batidas precisa ser recalculada (antes da reapuração acima).

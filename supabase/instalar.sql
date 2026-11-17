@@ -81,6 +81,11 @@ create table if not exists public.empresas (
   criado_em                       timestamptz not null default now(),
   atualizado_em                   timestamptz not null default now()
 );
+-- (ocorrências de ponto) alarmes só dos últimos N dias; alerta de quem bateu menos que o mínimo (0 = desligado)
+alter table public.empresas add column if not exists ponto_alarme_prazo_dias int not null default 2
+  check (ponto_alarme_prazo_dias between 1 and 93);
+alter table public.empresas add column if not exists ponto_batidas_minimas int not null default 4
+  check (ponto_batidas_minimas between 0 and 8);
 comment on table public.empresas is '[api:crud] Empresas (estabelecimentos/redes).';
 
 -- ========================================================================================= perfis
@@ -3352,7 +3357,7 @@ create table if not exists public.ponto_alarmes (
   empresa_id                 uuid not null references public.empresas (id) on delete cascade,
   funcionario_id             uuid not null references public.funcionarios (id) on delete cascade,
   data                       date not null,
-  tipo                       text not null check (tipo in ('batida_faltando', 'batidas_impares',
+  tipo                       text not null check (tipo in ('batida_faltando', 'batidas_impares', 'poucas_batidas',
                                                            'sem_batida_dia_escalado', 'atraso')),
   batida_esperada            text not null default ''
                              check (batida_esperada in ('', 'entrada', 'saida_intervalo', 'volta_intervalo', 'saida')),
@@ -3370,6 +3375,9 @@ create table if not exists public.ponto_alarmes (
   unique (funcionario_id, data, tipo, batida_esperada)
 );
 create index if not exists ponto_alarmes_empresa_idx on public.ponto_alarmes (empresa_id, status, data desc);
+alter table public.ponto_alarmes drop constraint if exists ponto_alarmes_tipo_check;
+alter table public.ponto_alarmes add constraint ponto_alarmes_tipo_check
+  check (tipo in ('batida_faltando', 'batidas_impares', 'poucas_batidas', 'sem_batida_dia_escalado', 'atraso'));
 create index if not exists ponto_alarmes_justificado_por_idx on public.ponto_alarmes (justificado_por);
 comment on table public.ponto_alarmes is '[api:leitura] Alarmes de ponto (gerados pela apuração; justificar/reabrir por RPC).';
 
@@ -3708,6 +3716,9 @@ declare
   v_ext_tol_e  int;
   v_ext_tol_f  int;
   v_ult_idx    int;
+  v_tol_atraso int;
+  v_chegada    timestamptz;
+  v_alarme_ok  boolean;
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -3815,6 +3826,15 @@ begin
                         else array['entrada', 'saida'] end;
         for i in 1 .. v_k loop
           v_slots := v_slots || public.ponto_instante_escala(p_data, v_ext_hor[i], e.fuso, e.virada_dia);
+        end loop;
+        -- horário de chegada da escala do dia: desloca os horários (o atraso é contado a partir dela)
+        if v_esc.chegada is not null then
+          v_desloc := public.ponto_instante_escala(p_data, v_esc.chegada, e.fuso, e.virada_dia) - v_slots[1];
+          for i in 1 .. v_k loop
+            v_slots[i] := v_slots[i] + v_desloc;
+          end loop;
+        end if;
+        for i in 1 .. v_k loop
           v_esperadas := v_esperadas || jsonb_build_object('batida', v_nomes[i], 'instante', v_slots[i]);
         end loop;
       end if;
@@ -3903,9 +3923,17 @@ begin
   end if;
 
   -- 6. Atraso: só se a 1ª batida corresponde à entrada (se a entrada faltou, o alarme é "batida faltando", não atraso).
+  -- Referência: a entrada prevista (jornada ou horário do RHiD, deslocada para a chegada da escala). Sem horários mas
+  -- escalado com chegada: a chegada da escala. Tolerância: a do horário do RHiD (CLT 10) ou a da jornada; sem nenhuma, 5.
+  v_tol_atraso := case when v_ext_prev is not null then coalesce(v_ext_tol_f, v_tol_bat)
+                       when j.id is not null then v_tol_bat else 5 end;
   if v_k > 0 and v_n > 0 and (v_melhor is null or 1 = any (v_melhor)) then
     v_atraso := greatest(0, floor(extract(epoch from (v_validas[1] - v_slots[1])) / 60)::int);
-    if v_atraso <= v_tol_bat then v_atraso := 0; end if;
+    if v_atraso <= v_tol_atraso then v_atraso := 0; end if;
+  elsif v_k = 0 and v_n > 0 and v_abono is null and v_esc.status = 'trabalha' and v_esc.chegada is not null then
+    v_chegada := public.ponto_instante_escala(p_data, v_esc.chegada, e.fuso, e.virada_dia);
+    v_atraso := greatest(0, floor(extract(epoch from (v_validas[1] - v_chegada)) / 60)::int);
+    if v_atraso <= v_tol_atraso or v_atraso > 6 * 60 then v_atraso := 0; end if;   -- > 6 h: outra escala, não atraso
   end if;
 
   -- 7. Situação
@@ -3921,8 +3949,10 @@ begin
   else v_situacao := 'incompleto';
   end if;
 
-  -- 8. Alarmes (§7.3) — dia abonado ou com falta registrada não gera alarme
-  if v_abono is null and v_falta is null then
+  -- 8. Alarmes (§7.3) — dia abonado ou com falta registrada não gera alarme; só os últimos ponto_alarme_prazo_dias
+  -- (padrão 2): dias mais antigos não têm alarme aberto (o que havia é resolvido automaticamente)
+  v_alarme_ok := p_data >= public.dia_de_trabalho(public.agora(), f.empresa_id) - e.ponto_alarme_prazo_dias;
+  if v_abono is null and v_falta is null and v_alarme_ok then
     if v_encerrado then
       if v_k > 0 and v_n = 0 then
         v_alarmes := v_alarmes || jsonb_build_object(
@@ -3939,6 +3969,15 @@ begin
               'detalhe', format('Faltou %s (%s)', v_rotulos ->> v_nomes[i], to_char(v_slots[i] at time zone e.fuso, 'HH24:MI')));
           end if;
         end loop;
+      elsif v_k = 0 and v_n > 0 and v_n < (case when j.id is not null and v_ext_prev is null
+                                              then coalesce((select max(x.batidas_esperadas) from public.jornada_dias x
+                                                              where x.jornada_id = j.id), e.ponto_batidas_minimas)
+                                              else e.ponto_batidas_minimas end) then
+        -- sem horário previsto no dia (folga, sem escala): alerta quem bateu menos que o mínimo — o da jornada (2 ou 4) ou,
+        -- sem jornada, o da empresa (ponto_batidas_minimas, padrão 4; 0 desliga)
+        v_alarmes := v_alarmes || jsonb_build_object(
+          'tipo', 'poucas_batidas', 'batida_esperada', '', 'horario_previsto', null, 'minutos', null,
+          'detalhe', format('%s %s no dia (menos que o mínimo de batidas)', v_n, case when v_n = 1 then 'batida' else 'batidas' end));
       elsif v_n % 2 = 1 then
         v_alarmes := v_alarmes || jsonb_build_object(
           'tipo', 'batidas_impares', 'batida_esperada', '', 'horario_previsto', null, 'minutos', null,
@@ -3947,7 +3986,7 @@ begin
     end if;
     if e.ponto_alarme_atraso and v_atraso > 0 then
       v_alarmes := v_alarmes || jsonb_build_object(
-        'tipo', 'atraso', 'batida_esperada', 'entrada', 'horario_previsto', v_slots[1], 'minutos', v_atraso,
+        'tipo', 'atraso', 'batida_esperada', 'entrada', 'horario_previsto', coalesce(v_slots[1], v_chegada), 'minutos', v_atraso,
         'detalhe', format('Entrada %s (%s min de atraso)', to_char(v_validas[1] at time zone e.fuso, 'HH24:MI'), v_atraso));
     end if;
   end if;
@@ -4251,11 +4290,14 @@ end $$;
 comment on function public.ponto_gatilho_empresa() is '[interno] Parâmetros de ponto da empresa mudaram → reapura 31 dias.';
 
 drop trigger if exists ponto_reapurar on public.empresas;
-create trigger ponto_reapurar after update of fuso, virada_dia, ponto_janela_duplicada_minutos, ponto_alarme_atraso on public.empresas
+create trigger ponto_reapurar after update of fuso, virada_dia, ponto_janela_duplicada_minutos, ponto_alarme_atraso,
+  ponto_alarme_prazo_dias, ponto_batidas_minimas on public.empresas
   for each row
   when (old.fuso is distinct from new.fuso or old.virada_dia is distinct from new.virada_dia
         or old.ponto_janela_duplicada_minutos is distinct from new.ponto_janela_duplicada_minutos
-        or old.ponto_alarme_atraso is distinct from new.ponto_alarme_atraso)
+        or old.ponto_alarme_atraso is distinct from new.ponto_alarme_atraso
+        or old.ponto_alarme_prazo_dias is distinct from new.ponto_alarme_prazo_dias
+        or old.ponto_batidas_minimas is distinct from new.ponto_batidas_minimas)
   execute function public.ponto_gatilho_empresa();
 
 -- Fuso/virada mudou → data_trabalho das batidas precisa ser recalculada (antes da reapuração acima).
@@ -5836,6 +5878,11 @@ begin
     v_fim := coalesce(p_fim, v_atual);
     perform public.ponto_validar_periodo(v_ini, v_fim, 93);
     v_emp := v_emp + 1;
+    -- alarmes de dias que já passaram do prazo da empresa (padrão 2 dias) saem da lista: resolvidos automaticamente
+    update public.ponto_alarmes a
+       set status = 'resolvido', resolvido_automaticamente = true, resolvido_em = public.agora()
+     where a.empresa_id = e.id and a.status = 'aberto'
+       and a.data < v_atual - (select em.ponto_alarme_prazo_dias from public.empresas em where em.id = e.id);
     for f in
       select fu.id from public.funcionarios fu
        where fu.empresa_id = e.id
@@ -5921,11 +5968,13 @@ begin
    where i.empresa_id = v_empresa and i.tipo = 'Tip' and i.data_operacao between least(v_mes, v_ontem) and v_hoje;
 
   -- ponto (ao vivo para hoje)
+  -- escalados: dia de trabalho na escala rotativa, ou com horário previsto (jornada / horário do RHiD)
   select count(*) filter (where c.batidas_validas % 2 = 1),
-         count(*) filter (where c.batidas_esperadas > 0)
+         count(*) filter (where c.batidas_esperadas > 0 or c.previsto_minutos > 0 or esc.status = 'trabalha')
     into v_presentes, v_escalados
     from public.funcionarios f
     cross join lateral public.ponto_calcular_dia(f.id, v_hoje) c
+    cross join lateral public.escala_status_ponto(f.id, v_hoje) esc
    where f.empresa_id = v_empresa and f.ativo and not c.fora_do_vinculo;
 
   select jsonb_build_object(
@@ -6327,29 +6376,7 @@ end $$;
 comment on function public.ocorrencias_contagem(uuid, uuid) is '[api] Contagem de ocorrências por funcionário (G A M).';
 
 -- Resumo sem checagem (usado pelo painel, que já resolveu a empresa).
-create or replace function public.ocorrencias_resumo_empresa(p_empresa uuid, p_dias int)
-returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  with h as (select public.dia_de_trabalho(public.agora(), p_empresa) as hoje),
-       o as (select x.*, f.nome as funcionario_nome
-               from public.funcionario_ocorrencias x
-               join public.funcionarios f on f.id = x.funcionario_id, h
-              where x.empresa_id = p_empresa and x.data between h.hoje - p_dias + 1 and h.hoje)
-  select jsonb_build_object(
-    'desde', h.hoje - p_dias + 1, 'ate', h.hoje,
-    'advertencias', (select count(*) from o where o.tipo = 'advertencia'),
-    'suspensoes', (select count(*) from o where o.tipo = 'suspensao'),
-    'suspensos_hoje', (select count(distinct s.funcionario_id) from public.funcionario_ocorrencias s
-                        where s.empresa_id = p_empresa and s.tipo = 'suspensao'
-                          and h.hoje between s.suspensao_inicio and s.suspensao_fim),
-    'recentes', coalesce((select jsonb_agg(jsonb_build_object(
-                    'id', r.id, 'funcionario_id', r.funcionario_id, 'funcionario_nome', r.funcionario_nome, 'tipo', r.tipo,
-                    'data', r.data, 'motivo', r.motivo, 'dias_suspensao', r.dias_suspensao,
-                    'suspensao_inicio', r.suspensao_inicio, 'suspensao_fim', r.suspensao_fim)
-                  order by r.data desc, r.criado_em desc, r.id)
-                  from (select * from o order by o.data desc, o.criado_em desc, o.id limit 10) r), '[]'::jsonb))
-  from h
-$$;
-comment on function public.ocorrencias_resumo_empresa(uuid, int) is '[interno] Resumo de ocorrências (adendo O.4), sem checagem.';
+-- ocorrencias_resumo_empresa(empresa, dias): definida em …0330_ocorrencias_ponto.sql (inclui faltas e atrasos do ponto).
 
 create or replace function public.ocorrencias_resumo(p_dias int default 30, p_empresa uuid default null)
 returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
@@ -9848,6 +9875,132 @@ comment on function public.ingestao_rhid_horarios(uuid, jsonb) is
   '[servico] Previsto por dia da apuração do RHiD (horário, folga, feriado) → ponto_previsto_externo + reapuração.';
 
 -- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000320_rhid_horarios.sql
+
+-- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 20261006000330_ocorrencias_ponto.sql
+-- =====================================================================================================
+-- 20261006000330_ocorrencias_ponto.sql — faltas e atrasos nas ocorrências
+-- Ocorrências passam a mostrar, além de advertências e suspensões:
+--   · faltas: as registradas no sistema (funcionario_faltas, com/sem justificativa) e os dias de ponto "ausente"
+--     (previsto pela jornada / horário do RHiD, encerrado, sem batida) que ainda não foram registrados;
+--   · atrasos: ponto_dias.atraso_minutos > 0 — 1ª batida × entrada prevista (deslocada para a chegada da escala do dia).
+-- Idempotente.
+-- =====================================================================================================
+
+-- "4h00" a partir de minutos (para o previsto de um dia de falta)
+create or replace function public.minutos_em_horas(p_minutos int) returns text
+language sql immutable set search_path = public, extensions, pg_temp as $$
+  select case when p_minutos is null then null
+              else (p_minutos / 60)::text || 'h' || lpad((p_minutos % 60)::text, 2, '0') end
+$$;
+comment on function public.minutos_em_horas(int) is '[interno] Minutos em texto "7h20".';
+
+-- Faltas e atrasos de uma empresa no período (opcional: um funcionário). Sem checagem (uso interno).
+create or replace function public.ocorrencias_ponto_empresa(p_empresa uuid, p_inicio date, p_fim date,
+                                                            p_funcionario uuid default null)
+returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  with e as (select em.fuso from public.empresas em where em.id = p_empresa),
+  faltas as (
+    select x.data, x.funcionario_id, f.nome as funcionario_nome,
+           case x.tipo when 'justificada' then 'falta_justificada' else 'falta_injustificada' end as tipo,
+           null::int as minutos, null::text as chegada, null::text as previsto, x.motivo, 'registrada'::text as origem
+      from public.funcionario_faltas x
+      join public.funcionarios f on f.id = x.funcionario_id
+     where x.empresa_id = p_empresa and x.data between p_inicio and p_fim
+       and (p_funcionario is null or x.funcionario_id = p_funcionario)
+  ),
+  ausencias as (
+    select d.data, d.funcionario_id, f.nome, 'falta'::text, null::int, null::text,
+           public.minutos_em_horas(d.previsto_minutos), null::text, 'ponto'::text
+      from public.ponto_dias d
+      join public.funcionarios f on f.id = d.funcionario_id
+     where d.empresa_id = p_empresa and d.data between p_inicio and p_fim and d.encerrado and d.situacao = 'ausente'
+       and (p_funcionario is null or d.funcionario_id = p_funcionario)
+       and not exists (select 1 from public.funcionario_faltas x where x.funcionario_id = d.funcionario_id and x.data = d.data)
+  ),
+  atrasos as (
+    select d.data, d.funcionario_id, f.nome, 'atraso'::text, d.atraso_minutos,
+           to_char(d.primeira_batida at time zone e.fuso, 'HH24:MI'),
+           to_char((d.primeira_batida - make_interval(mins => d.atraso_minutos)) at time zone e.fuso, 'HH24:MI'),
+           null::text, 'ponto'::text
+      from public.ponto_dias d
+      join public.funcionarios f on f.id = d.funcionario_id
+      cross join e
+     where d.empresa_id = p_empresa and d.data between p_inicio and p_fim and d.atraso_minutos > 0
+       and d.primeira_batida is not null
+       and (p_funcionario is null or d.funcionario_id = p_funcionario)
+  ),
+  tudo as (select * from faltas union all select * from ausencias union all select * from atrasos)
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'data', t.data, 'funcionario_id', t.funcionario_id, 'funcionario_nome', t.funcionario_nome, 'tipo', t.tipo,
+           'minutos', t.minutos, 'chegada', t.chegada, 'previsto', t.previsto, 'motivo', t.motivo, 'origem', t.origem)
+           order by t.data desc, t.funcionario_nome, t.tipo), '[]'::jsonb)
+    from tudo t
+$$;
+comment on function public.ocorrencias_ponto_empresa(uuid, date, date, uuid) is
+  '[interno] Faltas (registradas e dias ausentes do ponto) e atrasos de uma empresa no período, sem checagem.';
+
+
+-- API: faltas e atrasos (G A M). Com p_funcionario: a empresa é a do funcionário.
+create or replace function public.ocorrencias_ponto(p_inicio date, p_fim date, p_funcionario uuid default null,
+                                                    p_empresa uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  if p_inicio is null or p_fim is null or p_fim < p_inicio or p_fim - p_inicio > 366 then
+    raise exception 'Período inválido (máximo de 366 dias)' using errcode = '22023';
+  end if;
+  if p_funcionario is not null then
+    select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
+    if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
+    if not public.pode_operar(v_empresa) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  else
+    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  end if;
+  return public.ocorrencias_ponto_empresa(v_empresa, p_inicio, p_fim, p_funcionario);
+end $$;
+comment on function public.ocorrencias_ponto(date, date, uuid, uuid) is
+  '[api] Faltas (registradas e dias ausentes do ponto) e atrasos no período (G A M).';
+
+-- Resumo (painel e aba): advertências/suspensões + faltas e atrasos (adendo O.4).
+create or replace function public.ocorrencias_resumo_empresa(p_empresa uuid, p_dias int)
+returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  with h as (select public.dia_de_trabalho(public.agora(), p_empresa) as hoje),
+       o as (select x.*, f.nome as funcionario_nome
+               from public.funcionario_ocorrencias x
+               join public.funcionarios f on f.id = x.funcionario_id, h
+              where x.empresa_id = p_empresa and x.data between h.hoje - p_dias + 1 and h.hoje),
+       pt as (select value as v
+                from h, jsonb_array_elements(public.ocorrencias_ponto_empresa(p_empresa, h.hoje - p_dias + 1, h.hoje)))
+  select jsonb_build_object(
+    'desde', h.hoje - p_dias + 1, 'ate', h.hoje,
+    'advertencias', (select count(*) from o where o.tipo = 'advertencia'),
+    'suspensoes', (select count(*) from o where o.tipo = 'suspensao'),
+    'suspensos_hoje', (select count(distinct s.funcionario_id) from public.funcionario_ocorrencias s
+                        where s.empresa_id = p_empresa and s.tipo = 'suspensao'
+                          and h.hoje between s.suspensao_inicio and s.suspensao_fim),
+    'faltas', (select count(*) from pt where pt.v ->> 'tipo' like 'falta%'),
+    'atrasos', (select count(*) from pt where pt.v ->> 'tipo' = 'atraso'),
+    'minutos_atraso', (select coalesce(sum((pt.v ->> 'minutos')::int), 0) from pt where pt.v ->> 'tipo' = 'atraso'),
+    'recentes', coalesce((select jsonb_agg(jsonb_build_object(
+                    'id', r.id, 'funcionario_id', r.funcionario_id, 'funcionario_nome', r.funcionario_nome, 'tipo', r.tipo,
+                    'data', r.data, 'motivo', r.motivo, 'dias_suspensao', r.dias_suspensao,
+                    'suspensao_inicio', r.suspensao_inicio, 'suspensao_fim', r.suspensao_fim)
+                  order by r.data desc, r.criado_em desc, r.id)
+                  from (select * from o order by o.data desc, o.criado_em desc, o.id limit 10) r), '[]'::jsonb),
+    'ponto_recentes', coalesce((select jsonb_agg(q.v) from (select pt.v from pt limit 10) q), '[]'::jsonb))
+  from h
+$$;
+comment on function public.ocorrencias_resumo_empresa(uuid, int) is
+  '[interno] Resumo de ocorrências (adendo O.4) com faltas e atrasos do ponto, sem checagem.';
+
+-- alarmes abertos de dias fora do prazo da empresa (padrão 2 dias): resolvidos automaticamente
+update public.ponto_alarmes a
+   set status = 'resolvido', resolvido_automaticamente = true, resolvido_em = public.agora()
+  from public.empresas em
+ where em.id = a.empresa_id and a.status = 'aberto'
+   and a.data < public.dia_de_trabalho(public.agora(), em.id) - em.ponto_alarme_prazo_dias;
+
+-- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000330_ocorrencias_ponto.sql
 
 -- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 20261006000900_permissoes.sql
 -- =====================================================================================================

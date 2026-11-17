@@ -1,9 +1,181 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 12 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 12 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000240_painel.sql, 20261006000250_ocorrencias.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000230_ingestao.sql, 20261006000240_painel.sql, 20261006000250_ocorrencias.sql. Não edite à mão.
 
 begin;
--- =====================================================================================================
+create or replace function public.ingestao_zig_faturamento(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig public.integracoes; x jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0; v_rem int;
+  v_erros jsonb := '[]'::jsonb;
+begin
+  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
+  p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_faturamento:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
+  delete from public.zig_faturamento where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
+  get diagnostics v_rem = row_count;
+  for x in select value from jsonb_array_elements(p_itens) loop
+    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
+    begin
+      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
+      if public.ingestao_texto(x -> 'paymentId') is null then raise exception 'paymentId ausente'; end if;
+      insert into public.zig_faturamento (empresa_id, loja_id_externo, data_operacao, event_id, event_date, payment_id,
+                                          payment_name, valor)
+      values (ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'eventId'),
+              left(public.ingestao_texto(x -> 'eventDate'), 10)::date,
+              (public.ingestao_texto(x -> 'paymentId'))::int,
+              coalesce(public.ingestao_texto(x -> 'paymentName'), 'Forma ' || public.ingestao_texto(x -> 'paymentId')),
+              public.ingestao_centavos(coalesce(x -> 'value', x -> 'valor', x -> 'totalValue')));
+      v_grav := v_grav + 1;
+    exception when others then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
+    end;
+  end loop;
+  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
+         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
+end $$;
+comment on function public.ingestao_zig_faturamento(uuid, text, date, jsonb) is '[servico] Substitui o faturamento do dia/loja (/erp/faturamento).';
+
+create or replace function public.ingestao_zig_faturamento_bandeiras(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig public.integracoes; x jsonb; v jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0; v_rem int;
+  v_erros jsonb := '[]'::jsonb; v_valores jsonb;
+begin
+  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
+  p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_faturamento_bandeiras:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
+  delete from public.zig_faturamento_bandeiras
+   where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
+  get diagnostics v_rem = row_count;
+  for x in select value from jsonb_array_elements(p_itens) loop
+    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
+    begin
+      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
+      if public.ingestao_texto(x -> 'paymentId') is null then raise exception 'paymentId ausente'; end if;
+      v_valores := case when jsonb_typeof(x -> 'values') = 'array' then x -> 'values' else '[]'::jsonb end;
+      for v in select value from jsonb_array_elements(v_valores) loop
+        insert into public.zig_faturamento_bandeiras (empresa_id, loja_id_externo, data_operacao, event_id, payment_id,
+                                                      payment_name, card_brand, valor)
+        values (ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'eventId'),
+                (public.ingestao_texto(x -> 'paymentId'))::int, public.ingestao_texto(x -> 'paymentName'),
+                coalesce(public.ingestao_texto(v -> 'cardBrand'), public.ingestao_texto(v -> 'brand')),
+                public.ingestao_centavos(coalesce(v -> 'totalValue', v -> 'value', v -> 'valor')));
+        v_grav := v_grav + 1;
+      end loop;
+    exception when others then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
+    end;
+  end loop;
+  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
+         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
+end $$;
+comment on function public.ingestao_zig_faturamento_bandeiras(uuid, text, date, jsonb) is '[servico] Substitui o faturamento por bandeira do dia/loja (cada values[] vira uma linha).';
+
+create or replace function public.ingestao_zig_compradores(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig public.integracoes; x jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0; v_rem int;
+  v_erros jsonb := '[]'::jsonb;
+begin
+  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
+  p_itens := public.ingestao_lista(p_itens);
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_compradores:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
+  delete from public.zig_compradores where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
+  get diagnostics v_rem = row_count;
+  for x in select value from jsonb_array_elements(p_itens) loop
+    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
+    begin
+      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
+      if public.ingestao_texto(x -> 'transactionId') is null then raise exception 'transactionId ausente'; end if;
+      -- LGPD: userDocument, userDocumentType, userPhone, userName, userEmail são descartados.
+      insert into public.zig_compradores (empresa_id, loja_id_externo, data_operacao, transaction_id, products_value, tip_value)
+      values (ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'transactionId'),
+              public.ingestao_centavos(x -> 'productsValue'), public.ingestao_centavos(x -> 'tipValue'));
+      v_grav := v_grav + 1;
+    exception when others then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
+    end;
+  end loop;
+  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
+         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
+end $$;
+comment on function public.ingestao_zig_compradores(uuid, text, date, jsonb) is '[servico] Substitui os compradores do dia/loja, sem dados pessoais.';
+
+-- ======================================================== apuração e exportação (§11.6)
+create or replace function public.ingestao_apurar_ponto(p_empresa uuid default null, p_inicio date default null,
+                                                        p_fim date default null)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  e record; f record; v_atual date; v_ini date; v_fim date;
+  v_emp int := 0; v_func int := 0; v_dias int := 0; v_n int;
+begin
+  if p_empresa is not null and not exists (select 1 from public.empresas where id = p_empresa) then
+    raise exception 'Empresa não encontrada' using errcode = 'P0002';
+  end if;
+  for e in
+    select em.id from public.empresas em
+     where (p_empresa is null and em.ativa) or em.id = p_empresa
+     order by em.id
+  loop
+    v_atual := public.dia_de_trabalho(public.agora(), e.id);
+    v_ini := coalesce(p_inicio, v_atual - 2);
+    v_fim := coalesce(p_fim, v_atual);
+    perform public.ponto_validar_periodo(v_ini, v_fim, 93);
+    v_emp := v_emp + 1;
+    -- alarmes de dias que já passaram do prazo da empresa (padrão 2 dias) saem da lista: resolvidos automaticamente
+    update public.ponto_alarmes a
+       set status = 'resolvido', resolvido_automaticamente = true, resolvido_em = public.agora()
+     where a.empresa_id = e.id and a.status = 'aberto'
+       and a.data < v_atual - (select em.ponto_alarme_prazo_dias from public.empresas em where em.id = e.id);
+    for f in
+      select fu.id from public.funcionarios fu
+       where fu.empresa_id = e.id
+         and (fu.data_admissao is null or fu.data_admissao <= v_fim)
+         and (fu.data_desligamento is null or fu.data_desligamento >= v_ini)
+       order by fu.id
+    loop
+      v_n := public.ponto_apurar(f.id, v_ini, v_fim);
+      if v_n > 0 then v_func := v_func + 1; end if;
+      v_dias := v_dias + v_n;
+    end loop;
+  end loop;
+  return jsonb_build_object('empresas', v_emp, 'funcionarios', v_func, 'dias', v_dias);
+end $$;
+comment on function public.ingestao_apurar_ponto(uuid, date, date) is '[servico] Rotina diária: apura todas as empresas ativas (padrão: dia atual − 2 até hoje).';
+
+create or replace function public.ingestao_fechamento_exportar(p_fechamento uuid)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_fech jsonb; v_itens jsonb;
+begin
+  select to_jsonb(fc) || jsonb_build_object('empresa_nome', e.nome) into v_fech
+    from public.comissao_fechamentos fc join public.empresas e on e.id = fc.empresa_id
+   where fc.id = p_fechamento;
+  if v_fech is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
+  select coalesce(jsonb_agg(to_jsonb(it) order by it.funcionario_nome, (it.tipo = 'extra'),
+                            coalesce(it.funcionario_id, it.extra_id) nulls last, it.id), '[]'::jsonb) into v_itens
+    from public.comissao_itens it where it.fechamento_id = p_fechamento;
+  -- (adendo extras v2, E.3.4) detalhe diário do rateio (vazio no modo período)
+  return jsonb_build_object('fechamento', v_fech, 'itens', v_itens,
+    'dias', coalesce((select jsonb_agg(to_jsonb(rd) order by rd.data) from public.comissao_rateio_dias rd
+                       where rd.fechamento_id = p_fechamento), '[]'::jsonb));
+end $$;
+comment on function public.ingestao_fechamento_exportar(uuid) is '[servico] Fechamento + itens (por nome) + dias do rateio para o CSV do N8N.';-- =====================================================================================================
 -- 20261006000240_painel.sql — backend-2
 -- painel_do_dia: resumo do dia de trabalho (faturamento, serviço, ponto, tarefas, sincronização). Contrato §10.7.
 -- + blocos reservas e ocorrencias (docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md, R.4).
@@ -51,11 +223,13 @@ begin
    where i.empresa_id = v_empresa and i.tipo = 'Tip' and i.data_operacao between least(v_mes, v_ontem) and v_hoje;
 
   -- ponto (ao vivo para hoje)
+  -- escalados: dia de trabalho na escala rotativa, ou com horário previsto (jornada / horário do RHiD)
   select count(*) filter (where c.batidas_validas % 2 = 1),
-         count(*) filter (where c.batidas_esperadas > 0)
+         count(*) filter (where c.batidas_esperadas > 0 or c.previsto_minutos > 0 or esc.status = 'trabalha')
     into v_presentes, v_escalados
     from public.funcionarios f
     cross join lateral public.ponto_calcular_dia(f.id, v_hoje) c
+    cross join lateral public.escala_status_ponto(f.id, v_hoje) esc
    where f.empresa_id = v_empresa and f.ativo and not c.fora_do_vinculo;
 
   select jsonb_build_object(
@@ -278,203 +452,5 @@ begin
 end $$;
 comment on function public.ocorrencia_validar(uuid, text, date, text, int, date) is '[interno] Validação de ocorrência (adendo O.3).';
 
--- Ressincroniza os abonos 'suspensao' de uma ocorrência e reapura os dias afetados (antigos e novos).
-create or replace function public.ocorrencia_sincronizar_abonos(p_ocorrencia uuid, p_antigo_inicio date, p_antigo_fim date)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare o public.funcionario_ocorrencias; v_existe boolean; v_conflito date; v_ini date; v_fim date;
-begin
-  select * into o from public.funcionario_ocorrencias where id = p_ocorrencia;
-  v_existe := found;
-  delete from public.ponto_abonos where ocorrencia_id = p_ocorrencia;
-  if v_existe and o.tipo = 'suspensao' then
-    select a.data into v_conflito
-      from public.ponto_abonos a
-     where a.funcionario_id = o.funcionario_id and a.data between o.suspensao_inicio and o.suspensao_fim
-     order by a.data limit 1;
-    if v_conflito is not null then
-      raise exception 'Já existe abono para o funcionário em %', to_char(v_conflito, 'DD/MM/YYYY') using errcode = '22023';
-    end if;
-    -- (adendo extras v3, §E.7.2) dia com falta registrada não recebe suspensão
-    select g::date into v_conflito from generate_series(o.suspensao_inicio, o.suspensao_fim, interval '1 day') g
-     where public.ponto_falta_do_dia(o.funcionario_id, g::date) is not null order by g limit 1;
-    if v_conflito is not null then
-      raise exception 'Dia com falta em %: remova a falta antes', to_char(v_conflito, 'DD/MM/YYYY') using errcode = '22023';
-    end if;
-    insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por, ocorrencia_id)
-    select o.empresa_id, o.funcionario_id, g::date, 'suspensao', left('Suspensão: ' || o.motivo, 500), public.meu_perfil_id(), o.id
-      from generate_series(o.suspensao_inicio, o.suspensao_fim, interval '1 day') g;
-  end if;
-  v_ini := least(p_antigo_inicio, case when o.tipo = 'suspensao' then o.suspensao_inicio end);
-  v_fim := greatest(p_antigo_fim, case when o.tipo = 'suspensao' then o.suspensao_fim end);
-  if v_ini is not null and o.funcionario_id is not null then
-    perform public.ponto_apurar(o.funcionario_id, v_ini, v_fim);
-  end if;
-end $$;
-comment on function public.ocorrencia_sincronizar_abonos(uuid, date, date) is
-  '[interno] Abonos ''suspensao'' da ocorrência (um por dia) + reapuração (adendo O.3).';
-
--- ================================================================ RPCs
-create or replace function public.ocorrencia_criar(p_funcionario uuid, p_tipo text, p_data date, p_motivo text,
-                                                   p_descricao text default null, p_dias_suspensao int default null,
-                                                   p_suspensao_inicio date default null)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare f public.funcionarios; v record; v_id uuid;
-begin
-  f := public.funcionario_para_operar(p_funcionario);
-  select * into v from public.ocorrencia_validar(f.empresa_id, p_tipo, p_data, p_motivo, p_dias_suspensao, p_suspensao_inicio);
-  insert into public.funcionario_ocorrencias (empresa_id, funcionario_id, tipo, data, motivo, descricao, dias_suspensao,
-                                              suspensao_inicio, suspensao_fim, criado_por, criado_por_nome)
-  values (f.empresa_id, f.id, v.tipo, p_data, btrim(p_motivo), nullif(btrim(p_descricao), ''), v.dias, v.inicio, v.fim,
-          public.meu_perfil_id(), public.ponto_nome_autor())
-  returning id into v_id;
-  perform public.ocorrencia_sincronizar_abonos(v_id, null, null);
-  return v_id;
-end $$;
-comment on function public.ocorrencia_criar(uuid, text, date, text, text, int, date) is
-  '[api] Registra advertência/suspensão do funcionário (G A M). Suspensão gera abonos e reapura.';
-
-create or replace function public.ocorrencia_atualizar(p_ocorrencia uuid, p_tipo text, p_data date, p_motivo text,
-                                                       p_descricao text, p_dias_suspensao int default null,
-                                                       p_suspensao_inicio date default null)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare o public.funcionario_ocorrencias; v record;
-begin
-  o := public.ocorrencia_para_operar(p_ocorrencia);
-  select * into v from public.ocorrencia_validar(o.empresa_id, p_tipo, p_data, p_motivo, p_dias_suspensao, p_suspensao_inicio);
-  update public.funcionario_ocorrencias
-     set tipo = v.tipo, data = p_data, motivo = btrim(p_motivo), descricao = nullif(btrim(p_descricao), ''),
-         dias_suspensao = v.dias, suspensao_inicio = v.inicio, suspensao_fim = v.fim
-   where id = o.id;
-  perform public.ocorrencia_sincronizar_abonos(o.id, o.suspensao_inicio, o.suspensao_fim);
-end $$;
-comment on function public.ocorrencia_atualizar(uuid, text, date, text, text, int, date) is
-  '[api] Edita uma ocorrência (G A M); ressincroniza abonos de suspensão e reapura.';
-
-create or replace function public.ocorrencia_excluir(p_ocorrencia uuid)
-returns text[] language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare o public.funcionario_ocorrencias; v_caminhos text[];
-begin
-  o := public.ocorrencia_para_operar(p_ocorrencia);
-  select coalesce(array_agg(a.caminho order by a.criado_em, a.id), array[]::text[]) into v_caminhos
-    from public.funcionario_ocorrencia_anexos a where a.ocorrencia_id = o.id;
-  delete from public.funcionario_ocorrencias where id = o.id;     -- anexos e abonos em cascata
-  if o.tipo = 'suspensao' then
-    perform public.ponto_apurar(o.funcionario_id, o.suspensao_inicio, o.suspensao_fim);
-  end if;
-  return v_caminhos;
-end $$;
-comment on function public.ocorrencia_excluir(uuid) is
-  '[api] Exclui a ocorrência (G A M); devolve os caminhos dos anexos para remover do Storage.';
-
-create or replace function public.ocorrencia_adicionar_anexo(p_ocorrencia uuid, p_caminho text, p_nome_arquivo text default null)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare o public.funcionario_ocorrencias; v text := nullif(btrim(coalesce(p_caminho, '')), ''); v_existe boolean := true; v_id uuid;
-begin
-  o := public.ocorrencia_para_operar(p_ocorrencia);
-  if v is null or position(o.empresa_id::text || '/ocorrencias/' || o.id::text || '/' in v) <> 1
-     or v !~* ('^' || o.empresa_id::text || '/ocorrencias/' || o.id::text || '/[^/]+\.(jpg|jpeg|png|webp|pdf)$') then
-    raise exception 'Anexo inválido' using errcode = '22023';
-  end if;
-  if (select count(*) from public.funcionario_ocorrencia_anexos a where a.ocorrencia_id = o.id) >= 10 then
-    raise exception 'Limite de 10 anexos por ocorrência' using errcode = '22023';
-  end if;
-  if exists (select 1 from public.funcionario_ocorrencia_anexos a where a.caminho = v) then
-    raise exception 'Anexo já registrado' using errcode = '23505';
-  end if;
-  if to_regclass('storage.objects') is not null then
-    execute 'select exists (select 1 from storage.objects where bucket_id = $1 and name = $2)'
-      into v_existe using 'funcionarios-documentos', v;
-  end if;
-  if not v_existe then
-    raise exception 'Anexo não encontrado no armazenamento' using errcode = 'P0002';
-  end if;
-  insert into public.funcionario_ocorrencia_anexos (empresa_id, ocorrencia_id, caminho, nome_arquivo, criado_por)
-  values (o.empresa_id, o.id, v, nullif(btrim(p_nome_arquivo), ''), public.meu_perfil_id())
-  returning id into v_id;
-  return v_id;
-end $$;
-comment on function public.ocorrencia_adicionar_anexo(uuid, text, text) is
-  '[api] Registra um anexo já enviado ao Storage (bucket funcionarios-documentos) (G A M).';
-
-create or replace function public.ocorrencia_remover_anexo(p_anexo uuid)
-returns text language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare a public.funcionario_ocorrencia_anexos;
-begin
-  select * into a from public.funcionario_ocorrencia_anexos where id = p_anexo;
-  if not found then raise exception 'Anexo não encontrado' using errcode = 'P0002'; end if;
-  if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  delete from public.funcionario_ocorrencia_anexos where id = a.id;
-  return a.caminho;
-end $$;
-comment on function public.ocorrencia_remover_anexo(uuid) is '[api] Remove o registro do anexo e devolve o caminho no Storage (G A M).';
-
-create or replace function public.ocorrencias_listar(p_funcionario uuid)
-returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare f public.funcionarios;
-begin
-  f := public.funcionario_para_operar(p_funcionario);
-  return coalesce((
-    select jsonb_agg(jsonb_build_object(
-             'id', o.id, 'funcionario_id', o.funcionario_id, 'tipo', o.tipo, 'data', o.data, 'motivo', o.motivo,
-             'descricao', o.descricao, 'dias_suspensao', o.dias_suspensao, 'suspensao_inicio', o.suspensao_inicio,
-             'suspensao_fim', o.suspensao_fim, 'criado_por_nome', o.criado_por_nome, 'criado_em', o.criado_em,
-             'atualizado_em', o.atualizado_em,
-             'anexos', coalesce((select jsonb_agg(jsonb_build_object('id', a.id, 'caminho', a.caminho,
-                                                                     'nome_arquivo', a.nome_arquivo, 'criado_em', a.criado_em)
-                                                  order by a.criado_em, a.id)
-                                   from public.funcionario_ocorrencia_anexos a where a.ocorrencia_id = o.id), '[]'::jsonb))
-           order by o.data desc, o.criado_em desc, o.id)
-      from public.funcionario_ocorrencias o where o.funcionario_id = f.id), '[]'::jsonb);
-end $$;
-comment on function public.ocorrencias_listar(uuid) is '[api] Ocorrências do funcionário com anexos (G A M).';
-
-create or replace function public.ocorrencias_contagem(p_funcionario uuid default null, p_empresa uuid default null)
-returns table (funcionario_id uuid, advertencias int, suspensoes int, dias_suspensao int, ultima_data date)
-language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid;
-begin
-  if p_funcionario is not null then
-    v_empresa := (public.funcionario_para_operar(p_funcionario)).empresa_id;
-  else
-    v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
-  end if;
-  return query
-  select o.funcionario_id,
-         (count(*) filter (where o.tipo = 'advertencia'))::int,
-         (count(*) filter (where o.tipo = 'suspensao'))::int,
-         coalesce(sum(o.dias_suspensao), 0)::int,
-         max(o.data)
-    from public.funcionario_ocorrencias o
-   where o.empresa_id = v_empresa and (p_funcionario is null or o.funcionario_id = p_funcionario)
-   group by o.funcionario_id
-   order by o.funcionario_id;
-end $$;
-comment on function public.ocorrencias_contagem(uuid, uuid) is '[api] Contagem de ocorrências por funcionário (G A M).';
-
--- Resumo sem checagem (usado pelo painel, que já resolveu a empresa).
-create or replace function public.ocorrencias_resumo_empresa(p_empresa uuid, p_dias int)
-returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  with h as (select public.dia_de_trabalho(public.agora(), p_empresa) as hoje),
-       o as (select x.*, f.nome as funcionario_nome
-               from public.funcionario_ocorrencias x
-               join public.funcionarios f on f.id = x.funcionario_id, h
-              where x.empresa_id = p_empresa and x.data between h.hoje - p_dias + 1 and h.hoje)
-  select jsonb_build_object(
-    'desde', h.hoje - p_dias + 1, 'ate', h.hoje,
-    'advertencias', (select count(*) from o where o.tipo = 'advertencia'),
-    'suspensoes', (select count(*) from o where o.tipo = 'suspensao'),
-    'suspensos_hoje', (select count(distinct s.funcionario_id) from public.funcionario_ocorrencias s
-                        where s.empresa_id = p_empresa and s.tipo = 'suspensao'
-                          and h.hoje between s.suspensao_inicio and s.suspensao_fim),
-    'recentes', coalesce((select jsonb_agg(jsonb_build_object(
-                    'id', r.id, 'funcionario_id', r.funcionario_id, 'funcionario_nome', r.funcionario_nome, 'tipo', r.tipo,
-                    'data', r.data, 'motivo', r.motivo, 'dias_suspensao', r.dias_suspensao,
-                    'suspensao_inicio', r.suspensao_inicio, 'suspensao_fim', r.suspensao_fim)
-                  order by r.data desc, r.criado_em desc, r.id)
-                  from (select * from o order by o.data desc, o.criado_em desc, o.id limit 10) r), '[]'::jsonb))
-  from h
-$$;
-comment on function public.ocorrencias_resumo_empresa(uuid, int) is '[interno] Resumo de ocorrências (adendo O.4), sem checagem.';
-
 commit;
-select 'parte 12 de 20 instalada' as resultado;
+select 'parte 12 de 21 instalada' as resultado;
