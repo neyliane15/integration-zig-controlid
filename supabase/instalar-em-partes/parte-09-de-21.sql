@@ -1,8 +1,32 @@
 -- Meu Dia de Gerente — instalação do banco, PARTE 09 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql, 20261006000210_zig.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql. Não edite à mão.
 
 begin;
+create or replace function public.ponto_gatilho_jornada()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_jornada uuid;
+  v_empresa uuid;
+  v_atual   date;
+  f         record;
+begin
+  if tg_table_name = 'jornadas' then
+    v_jornada := coalesce(new.id, old.id);
+  else
+    v_jornada := coalesce(new.jornada_id, old.jornada_id);
+  end if;
+  select j.empresa_id into v_empresa from public.jornadas j where j.id = v_jornada;
+  if v_empresa is null then return null; end if;
+  v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
+  for f in
+    select distinct fj.funcionario_id from public.funcionario_jornadas fj
+     where fj.jornada_id = v_jornada
+  loop
+    perform public.ponto_apurar(f.funcionario_id, v_atual - 31, v_atual);
+  end loop;
+  return null;
+end $$;
 comment on function public.ponto_gatilho_jornada() is '[interno] §7.8: jornada/jornada_dias mudou → reapura 31 dias dos funcionários dessa jornada.';
 
 drop trigger if exists ponto_reapurar on public.jornada_dias;
@@ -468,26 +492,7 @@ begin
   if public.pode_administrar(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   delete from public.banco_horas_lancamentos where id = p_lancamento;
 end $$;
-comment on function public.banco_horas_excluir_lancamento(uuid) is '[api] Exclui lançamento do banco de horas (administrador).';-- =====================================================================================================
--- 20261006000210_zig.sql — backend-2
--- Zig: lojas, itens vendidos (saída de produtos), faturamento, bandeiras, compradores e RPCs de vendas.
--- Contrato: §6 (DDL), §8 (regras), §10.5 (RPCs). Idempotente.
--- =====================================================================================================
-
--- ===================================================================== zig_lojas
-create table if not exists public.zig_lojas (
-  id               uuid primary key default gen_random_uuid(),
-  empresa_id       uuid not null references public.empresas (id) on delete cascade,
-  integracao_id    uuid not null references public.integracoes (id) on delete cascade,
-  loja_id_externo  text not null,
-  nome             text not null,
-  sincronizar      boolean not null default true,
-  visto_em         timestamptz not null default now(),
-  criado_em        timestamptz not null default now(),
-  unique (empresa_id, loja_id_externo)
-);
-create index if not exists zig_lojas_integracao_idx on public.zig_lojas (integracao_id);
-comment on table public.zig_lojas is '[api:crud] Lojas da Zig. authenticated (administrador) só altera `sincronizar`.';
+comment on function public.banco_horas_excluir_lancamento(uuid) is '[api] Exclui lançamento do banco de horas (administrador).';
 
 commit;
 select 'parte 09 de 21 instalada' as resultado;

@@ -280,7 +280,10 @@ begin
   -- escalado com chegada: a chegada da escala. Tolerância: a do horário do RHiD (CLT 10) ou a da jornada; sem nenhuma, 5.
   v_tol_atraso := case when v_ext_prev is not null then coalesce(v_ext_tol_f, v_tol_bat)
                        when j.id is not null then v_tol_bat else 5 end;
-  if v_k > 0 and v_n > 0 and (v_melhor is null or 1 = any (v_melhor)) then
+  -- Quem está na escala rotativa só tem atraso no dia em que a escala informa a chegada (o horário do RHiD costuma ser
+  -- genérico, ex.: 08:00 para todos; sem a chegada do dia não dá para saber o atraso).
+  if v_k > 0 and v_n > 0 and (v_melhor is null or 1 = any (v_melhor))
+     and (v_esc.status is null or v_esc.chegada is not null) then
     v_atraso := greatest(0, floor(extract(epoch from (v_validas[1] - v_slots[1])) / 60)::int);
     if v_atraso <= v_tol_atraso then v_atraso := 0; end if;
   elsif v_k = 0 and v_n > 0 and v_abono is null and v_esc.status = 'trabalha' and v_esc.chegada is not null then
@@ -597,31 +600,6 @@ comment on function public.ponto_gatilho_funcionario_jornada() is '[interno] §7
 drop trigger if exists ponto_reapurar on public.funcionario_jornadas;
 create trigger ponto_reapurar after insert or update or delete on public.funcionario_jornadas
   for each row execute function public.ponto_gatilho_funcionario_jornada();
-
-create or replace function public.ponto_gatilho_jornada()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_jornada uuid;
-  v_empresa uuid;
-  v_atual   date;
-  f         record;
-begin
-  if tg_table_name = 'jornadas' then
-    v_jornada := coalesce(new.id, old.id);
-  else
-    v_jornada := coalesce(new.jornada_id, old.jornada_id);
-  end if;
-  select j.empresa_id into v_empresa from public.jornadas j where j.id = v_jornada;
-  if v_empresa is null then return null; end if;
-  v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
-  for f in
-    select distinct fj.funcionario_id from public.funcionario_jornadas fj
-     where fj.jornada_id = v_jornada
-  loop
-    perform public.ponto_apurar(f.funcionario_id, v_atual - 31, v_atual);
-  end loop;
-  return null;
-end $$;
 
 commit;
 select 'parte 08 de 21 instalada' as resultado;

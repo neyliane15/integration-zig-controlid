@@ -3,6 +3,27 @@
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000210_zig.sql, 20261006000220_comissoes.sql. Não edite à mão.
 
 begin;
+-- =====================================================================================================
+-- 20261006000210_zig.sql — backend-2
+-- Zig: lojas, itens vendidos (saída de produtos), faturamento, bandeiras, compradores e RPCs de vendas.
+-- Contrato: §6 (DDL), §8 (regras), §10.5 (RPCs). Idempotente.
+-- =====================================================================================================
+
+-- ===================================================================== zig_lojas
+create table if not exists public.zig_lojas (
+  id               uuid primary key default gen_random_uuid(),
+  empresa_id       uuid not null references public.empresas (id) on delete cascade,
+  integracao_id    uuid not null references public.integracoes (id) on delete cascade,
+  loja_id_externo  text not null,
+  nome             text not null,
+  sincronizar      boolean not null default true,
+  visto_em         timestamptz not null default now(),
+  criado_em        timestamptz not null default now(),
+  unique (empresa_id, loja_id_externo)
+);
+create index if not exists zig_lojas_integracao_idx on public.zig_lojas (integracao_id);
+comment on table public.zig_lojas is '[api:crud] Lojas da Zig. authenticated (administrador) só altera `sincronizar`.';
+
 -- ============================================================== zig_vendas_itens
 create table if not exists public.zig_vendas_itens (
   id                 bigint generated always as identity primary key,
@@ -480,21 +501,6 @@ returns numeric language sql stable security definer set search_path = public, e
     (select f.pontos_comissao from public.funcionarios f where f.id = p_funcionario))
 $$;
 comment on function public.comissao_pontos_vigentes(uuid, date) is '[interno] Mesma regra de pontos_vigentes (§5), sem checagem de papel.';
-
--- comissao_calcular (§9 / adendo E.3 / presença v3 §E.7) está em …0290_comissao_presenca.sql (usa faltas e escala).
-
--- Carrega o fechamento e checa permissão de operação (G A M) e status rascunho.
-create or replace function public.comissao_rascunho_para_editar(p_fechamento uuid)
-returns public.comissao_fechamentos language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare fc public.comissao_fechamentos;
-begin
-  select * into fc from public.comissao_fechamentos where id = p_fechamento;
-  if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-  if public.pode_operar(fc.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  if fc.status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
-  return fc;
-end $$;
-comment on function public.comissao_rascunho_para_editar(uuid) is '[interno] Fechamento em rascunho editável pelo usuário?';
 
 commit;
 select 'parte 10 de 21 instalada' as resultado;

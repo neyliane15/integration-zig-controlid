@@ -118,4 +118,12 @@ select teste.erro('leitura não vê ocorrências do ponto',
 select teste.como('ocp.ger@teste.local');
 select teste.ok('painel: 2 escalados hoje (Ana e Bia pela escala), 0 presentes',
   (select (p -> 'ponto' ->> 'escalados_hoje', p -> 'ponto' ->> 'presentes_agora') = ('2', '0') from (select public.painel_do_dia() p) x));
+
+-- na escala, mas sem chegada no dia: sem atraso (o horário do RHiD 08:00 não serve de referência)
+select teste.como_dono();
+update public.escala_membros set chegada_padrao = null where funcionario_id = 'e8200000-0000-4000-8000-000000000301';
+select public.ponto_apurar('e8200000-0000-4000-8000-000000000301', '2026-11-16', '2026-11-16');
+select teste.ok('Ana 16/11 na escala sem chegada: sem atraso (não compara com as 08:00 do RHiD)',
+  (select atraso_minutos = 0 and previsto_minutos = 440 from public.ponto_dias
+    where funcionario_id = 'e8200000-0000-4000-8000-000000000301' and data = '2026-11-16'));
 rollback;
