@@ -210,6 +210,58 @@ select teste.ok('batidas antigas continuam no ponto (integração inativa)',
   exists (select 1 from public.ponto_batidas where integracao_id = 'e7900000-0000-4000-8000-000000000102'
             and funcionario_id = 'e7900000-0000-4000-8000-000000000301'));
 
+-- ------------------------------------------------ "Ligar funcionários" no RHiD (ponto_afd_pendentes / ponto_afd_ligar)
+-- Elis vem do RHiD sem ficha e bate ponto; o gerente liga o CPF ao provisório "Outro 1" (sem CPF), renomeando e gravando o CPF.
+select teste.como_servico();
+select public.ingestao_rhid_pessoas('e7900000-0000-4000-8000-000000000101', $$[
+  {"cpf": 52998224725, "name": "ANA SOUZA"}, {"cpf": 11144477735, "name": "BRUNO LIMA", "registration": "2"},
+  {"cpf": 4567891230, "name": "CARLA DIAS"}, {"cpf": 15350946056, "name": "DAVI ROCHA"},
+  {"cpf": 39053344705, "name": "ELIS DA COSTA"}
+]$$);
+insert into r_bat select 5, public.ingestao_rhid_batidas('e7900000-0000-4000-8000-000000000101', '55', $$[
+  {"nsr": 300, "instante": "2026-10-05T17:02:00-03:00", "cpf": "39053344705"},
+  {"nsr": 301, "instante": "2026-10-05T21:00:00-03:00", "cpf": "39053344705"}
+]$$);
+select teste.ok('RHiD: 2 batidas da Elis gravadas sem funcionário',
+  (select (r ->> 'gravados')::int = 2 and (r ->> 'sem_funcionario')::int = 2 from r_bat where n = 5));
+select teste.como('rhid.ger.a@teste.local');
+create temp table pend_rhid on commit drop as
+select * from public.ponto_afd_pendentes('e7900000-0000-4000-8000-000000000101');
+grant select on pend_rhid to authenticated, service_role, anon;
+select teste.ok('pendentes do RHiD: só a Elis, 2 marcações em 05/10, nome sugerido "Elis da Costa"',
+  (select count(*) = 1 and bool_and(cpf = '39053344705' and quantidade = 2 and primeira = '2026-10-05' and ultima = '2026-10-05'
+                                    and nome_sugerido = 'Elis da Costa') from pend_rhid));
+create temp table lig_rhid on commit drop as
+select public.ponto_afd_ligar((select controlid_usuario_id from pend_rhid), 'e7900000-0000-4000-8000-000000000304', true, true) as r;
+grant select on lig_rhid to authenticated, service_role, anon;
+select teste.ok('ligar no RHiD: renomeia "Outro 1" → "Elis da Costa", grava o CPF e leva as 2 batidas',
+  (select r ->> 'nome' = 'Elis da Costa' and (r ->> 'renomeado')::boolean and (r ->> 'documento_cadastrado')::boolean
+          and (r ->> 'batidas')::int = 2 from lig_rhid)
+  and (select nome = 'Elis da Costa' and cpf = '39053344705' from public.funcionarios where id = 'e7900000-0000-4000-8000-000000000304')
+  and (select count(*) = 2 from public.ponto_batidas where integracao_id = 'e7900000-0000-4000-8000-000000000101'
+         and pessoa_externa = '39053344705' and funcionario_id = 'e7900000-0000-4000-8000-000000000304'));
+select teste.ok('vínculo manual gravado no usuário do RHiD',
+  (select funcionario_id = 'e7900000-0000-4000-8000-000000000304' and vinculo = 'manual'
+     from public.controlid_usuarios where integracao_id = 'e7900000-0000-4000-8000-000000000101' and user_id_externo = '39053344705'));
+select teste.ok('dia 05/10 da Elis apurado com as 2 batidas',
+  (select batidas_validas = 2 from public.ponto_dias where funcionario_id = 'e7900000-0000-4000-8000-000000000304' and data = '2026-10-05'));
+select teste.ok('pendentes do RHiD vazio depois de ligar',
+  not exists (select 1 from public.ponto_afd_pendentes('e7900000-0000-4000-8000-000000000101')));
+select teste.como('rhid.adm.b@teste.local');
+select teste.erro('admin de outra empresa não lista pendentes do RHiD',
+  $$select * from public.ponto_afd_pendentes('e7900000-0000-4000-8000-000000000101')$$, 'Sem permissão', '42501');
+select teste.como_dono();
+insert into public.integracoes (id, empresa_id, tipo, nome) values
+  ('e7900000-0000-4000-8000-000000000103', 'e7900000-0000-4000-8000-00000000000a', 'controlid_acesso', 'Catraca');
+insert into public.controlid_usuarios (id, empresa_id, integracao_id, user_id_externo, nome) values
+  ('e7900000-0000-4000-8000-000000000401', 'e7900000-0000-4000-8000-00000000000a', 'e7900000-0000-4000-8000-000000000103', '7', 'PORTARIA');
+select teste.como('rhid.ger.a@teste.local');
+select teste.erro('pendentes recusa integração que não é relógio REP/RHiD',
+  $$select * from public.ponto_afd_pendentes('e7900000-0000-4000-8000-000000000103')$$, 'Tipo de integração incompatível', '22023');
+select teste.erro('ligar recusa usuário de integração que não é relógio REP/RHiD',
+  $$select public.ponto_afd_ligar('e7900000-0000-4000-8000-000000000401', 'e7900000-0000-4000-8000-000000000302')$$,
+  'Tipo de integração incompatível', '22023');
+
 -- ------------------------------------------------------------------ painel
 select teste.ok('painel mostra a integração RHiD na sincronização',
   (select bool_or(x ->> 'tipo' = 'rhid')

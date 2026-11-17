@@ -67,7 +67,7 @@ export function PaginaIntegracao() {
     { id: 'configuracao', rotulo: admin ? 'Configuração' : 'Parâmetros' },
     ...(i.tipo === 'zig' ? [{ id: 'lojas' as Aba, rotulo: 'Lojas' }] : []),
     ...(ehControlId || ehRhid ? [{ id: 'usuarios' as Aba, rotulo: porArquivo || ehRhid ? 'Pessoas do relógio' : 'Usuários do equipamento' }] : []),
-    ...(ehRep ? [{ id: 'ligar' as Aba, rotulo: 'Ligar funcionários' }] : []),
+    ...(ehRep || ehRhid ? [{ id: 'ligar' as Aba, rotulo: 'Ligar funcionários' }] : []),
     ...(ehControlId && !porArquivo ? [{ id: 'envio' as Aba, rotulo: 'Envio' }] : []),
   ]
 
@@ -196,7 +196,7 @@ export function PaginaIntegracao() {
         </div>
       )}
 
-      {aba === 'ligar' && <LigarFuncionariosAfd integracaoId={i.id} />}
+      {aba === 'ligar' && <LigarFuncionariosAfd integracaoId={i.id} origem={ehRhid ? 'rhid' : 'afd'} />}
 
       {importarAfd && <ModalImportarAfd aberto integracaoId={i.id} aoFechar={() => setImportarAfd(false)} />}
 

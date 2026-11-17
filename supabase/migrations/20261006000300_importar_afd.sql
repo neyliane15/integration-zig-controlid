@@ -236,7 +236,7 @@ comment on function public.ponto_importar_afd(uuid, jsonb, jsonb, text) is
   '[api] Importa marcações do AFD (lido no navegador) e empregados (tipo 5) num relógio REP — mesma regra da ingestão (G A M).';
 
 -- ------------------------------------------------------------- ligar funcionários (CPF do AFD)
--- Liga o CPF/PIS do AFD (usuário do equipamento) a um funcionário — inclusive provisório da escala ("Garçom 1") —,
+-- Liga o CPF/PIS do AFD ou do RHiD (usuário do equipamento) a um funcionário — inclusive provisório da escala ("Garçom 1") —,
 -- opcionalmente renomeando-o com o nome do AFD e gravando o CPF/PIS na ficha. As batidas pendentes passam ao funcionário
 -- e os dias são reapurados (gatilho §7.8).
 create or replace function public.ponto_afd_ligar(
@@ -255,7 +255,10 @@ begin
   if not found then raise exception 'Usuário do equipamento não encontrado' using errcode = 'P0002'; end if;
   if not public.pode_operar(v.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
   select i.tipo into v_tipo from public.integracoes i where i.id = v.integracao_id;
-  if v_tipo is distinct from 'controlid_rep' then raise exception 'Tipo de integração incompatível' using errcode = '22023'; end if;
+  -- relógio REP (rede ou arquivo) ou RHiD (nuvem): os dois guardam os CPFs/PIS em controlid_usuarios
+  if v_tipo is null or v_tipo not in ('controlid_rep', 'rhid') then
+    raise exception 'Tipo de integração incompatível' using errcode = '22023';
+  end if;
   if p_funcionario is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
   select * into f from public.funcionarios where id = p_funcionario;
   if not found then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
@@ -291,7 +294,7 @@ begin
                  where b.integracao_id = v.integracao_id and b.pessoa_externa = v.user_id_externo and b.funcionario_id = f.id));
 end $$;
 comment on function public.ponto_afd_ligar(uuid, uuid, boolean, boolean) is
-  '[api] Liga o CPF/PIS do AFD a um funcionário (renomear e gravar o documento na ficha são opcionais) (G A M).';
+  '[api] Liga o CPF/PIS do AFD/RHiD (relógio controlid_rep ou rhid) a um funcionário (renomear e gravar o documento na ficha são opcionais) (G A M).';
 
 -- Usuários do relógio (CPF/PIS) com batidas ainda sem funcionário — a lista do "Ligar funcionários".
 create or replace function public.ponto_afd_pendentes(p_integracao uuid)
@@ -304,6 +307,7 @@ begin
   select * into ig from public.integracoes where id = p_integracao;
   if not found then raise exception 'Integração não encontrada' using errcode = 'P0002'; end if;
   if not public.pode_operar(ig.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if ig.tipo not in ('controlid_rep', 'rhid') then raise exception 'Tipo de integração incompatível' using errcode = '22023'; end if;
   return query
   select c.id, c.cpf, c.pis, c.nome, public.nome_proprio(c.nome), count(b.id)::int, min(b.data_trabalho), max(b.data_trabalho)
     from public.controlid_usuarios c
@@ -315,4 +319,4 @@ begin
    order by count(b.id) desc, c.nome nulls last, c.user_id_externo;
 end $$;
 comment on function public.ponto_afd_pendentes(uuid) is
-  '[api] CPF/PIS do relógio sem funcionário, com as batidas pendentes (G A M).';
+  '[api] CPF/PIS do relógio (controlid_rep ou rhid) sem funcionário, com as batidas pendentes (G A M).';

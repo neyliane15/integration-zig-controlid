@@ -421,7 +421,8 @@ function rotuloFuncionario(f: Funcionario, provisorio: boolean): string {
   return extras.length ? `${f.nome} — ${extras.join(' · ')}` : f.nome
 }
 
-export function LigarFuncionariosAfd({ integracaoId }: { integracaoId: string }) {
+/** `origem`: de onde vieram os CPFs (AFD do REP/arquivo ou pessoas do RHiD) — só muda o texto; a regra é a mesma (…0300). */
+export function LigarFuncionariosAfd({ integracaoId, origem = 'afd' }: { integracaoId: string; origem?: 'afd' | 'rhid' }) {
   const pendentes = usePendentesRelogio(integracaoId)
   const funcionarios = useFuncionarios()
   const provisorios = useProvisoriosEscala()
@@ -443,19 +444,27 @@ export function LigarFuncionariosAfd({ integracaoId }: { integracaoId: string })
   return (
     <div className="flex flex-col gap-3" data-teste="ligar-funcionarios">
       <p className="text-sm text-lavanda">
-        Escolha quem é cada pessoa do AFD. Vale ligar aos provisórios da escala (ex.: “Garçom 1”) e já trocar o nome pelo do AFD. As marcações guardadas passam
-        para o funcionário e os dias são recalculados.
+        Escolha quem é cada pessoa {origem === 'rhid' ? 'do RHiD' : 'do AFD'}. Vale ligar aos provisórios da escala (ex.: “Garçom 1”) e já trocar o nome pelo{' '}
+        {origem === 'rhid' ? 'do RHiD' : 'do AFD'}. As marcações guardadas passam para o funcionário e os dias são recalculados.
       </p>
       <ul className="flex flex-col gap-3">
         {linhas.map((p) => (
-          <LinhaLigar key={p.controlid_usuario_id} p={p} opcoes={lista} />
+          <LinhaLigar key={p.controlid_usuario_id} p={p} opcoes={lista} origem={origem} />
         ))}
       </ul>
     </div>
   )
 }
 
-function LinhaLigar({ p, opcoes }: { p: UsuarioRelogioPendente; opcoes: { f: Funcionario; provisorio: boolean }[] }) {
+function LinhaLigar({
+  p,
+  opcoes,
+  origem,
+}: {
+  p: UsuarioRelogioPendente
+  opcoes: { f: Funcionario; provisorio: boolean }[]
+  origem: 'afd' | 'rhid'
+}) {
   const id = useId()
   const avisos = useAvisos()
   const ligar = useLigarFuncionarioAfd()
@@ -491,7 +500,7 @@ function LinhaLigar({ p, opcoes }: { p: UsuarioRelogioPendente; opcoes: { f: Fun
     <li className="rounded-entrada border border-borda bg-entrada/60 p-4" data-teste="pendente-afd" data-documento={p.cpf ?? p.pis ?? ''}>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="font-semibold break-words text-creme">{p.nome ?? '(sem nome no AFD)'}</p>
+          <p className="font-semibold break-words text-creme">{p.nome ?? (origem === 'rhid' ? '(sem nome no RHiD)' : '(sem nome no AFD)')}</p>
           <p className="numero text-xs text-lavanda">
             {tipoDoc} {formatarDocumento(p.cpf ?? p.pis, p.cpf ? 'cpf' : 'pis')}
           </p>

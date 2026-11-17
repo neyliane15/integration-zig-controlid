@@ -959,7 +959,7 @@ baixar; o arquivo vem em Latin-1, às vezes num .zip com a assinatura .p7s). O n
   Registra `sync_execucoes` (`controlid_batidas`, gatilho `manual`, `detalhes.origem = 'arquivo'`). Retorno:
   `{lidas, gravadas, duplicadas, ignoradas, sem_funcionario: [{cpf, pis, nome, quantidade, controlid_usuario_id}], dias_reapurados,
   periodo: {inicio, fim}, empregados: {lidos, novos, atualizados, vinculados_automaticamente}, execucao_id, erros?}`.
-- `ponto_afd_pendentes(p_integracao uuid)` `[api]` G A M — CPF/PIS do relógio sem funcionário (nome, `nome_sugerido`, quantidade, primeira/última data).
+- `ponto_afd_pendentes(p_integracao uuid)` `[api]` G A M — relógio `controlid_rep` ou `rhid` (outro tipo: `Tipo de integração incompatível`) — CPF/PIS do relógio sem funcionário (nome, `nome_sugerido`, quantidade, primeira/última data).
 - `ponto_afd_ligar(p_controlid_usuario uuid, p_funcionario uuid, p_renomear boolean default false, p_cadastrar_documento boolean default false)`
   `[api]` G A M — liga o CPF a um funcionário (inclusive provisório da escala), opcionalmente renomeando-o com o nome do AFD
   (`nome_proprio`: "CARLA DE SOUZA" → "Carla de Souza") e gravando o CPF/PIS na ficha (`CPF já cadastrado em outro funcionário`, 23505).
@@ -1658,7 +1658,7 @@ ao gerado a partir das migrações.
 - `n8n/cenario-revisao2.test.mjs` (dentro de `npm run test:integracao`): mocks controlados `n8n/mocks/cenario-revisao2.mjs` (REP com AFD que
   atravessa a meia-noite, batida esquecida e duplicada; Zig com Tip de dois garçons e balcão) → workflows reais → banco local → RPCs
   chamadas como master/administrador/gerente. Valores conferidos à mão (ponto, alarme, banco de horas, ranking, comissão 3845 − 20% = 3076
-  → 2051 + 1025), reimportação idempotente, fila + agendador simultâneos e CSV do e-mail sem fórmula.
+  no rateio diário com a presença do adendo §E.7.1: D-2 só Zeca (Yara sem batida) 1688, D-1 10:5 → 925 + 463; Zeca 2613, Yara 463), reimportação idempotente, fila + agendador simultâneos e CSV do e-mail sem fórmula.
 - `npm run test:fuzz` (`MDG_FUZZ_BANCO=1`, banco `MDG_PG_BANCO`, padrão `mdg_local`; `MDG_FUZZ_SEMENTE` muda a semente):
   `web/src/lib/comissao.fuzz.test.ts` (200 fechamentos aleatórios: `comissao_calcular` = `calcularComissao` centavo a centavo; a parte
   só-JS, 3.000 casos contra uma referência independente, roda sempre no `npm test`) e `web/src/lib/ponto.fuzz.test.ts` (~880 dias aleatórios

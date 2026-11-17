@@ -45,8 +45,9 @@ O NSR é por relógio, e as batidas por arquivo usam `id_externo = NSR` na integ
 com `integracao_trocar_para_rhid` e não importar mais o AFD à mão; a 1ª sincronização relê `dias_retroativos` dias (padrão 7) e
 só grava o que faltava. A apuração também ignora batidas a menos de `ponto_janela_duplicada_minutos` uma da outra.
 
-Pendência conhecida: `ponto_afd_ligar`/`ponto_afd_pendentes` (…0300, "Ligar funcionários") aceitam só `controlid_rep`; para `rhid`
-o vínculo manual usa `funcionario_vincular_controlid` (aba "Pessoas do relógio" / Funcionários → vínculos).
+"Ligar funcionários": `ponto_afd_pendentes`/`ponto_afd_ligar` (…0300) aceitam `controlid_rep` **e** `rhid` (mesma semântica: CPFs com
+batidas sem funcionário; ligar CPF → funcionário, opcionalmente renomeando e gravando o CPF na ficha). Outro tipo →
+`Tipo de integração incompatível` (22023). No front, a aba "Ligar funcionários" aparece no detalhe da integração RHiD.
 
 ## H.3 N8N — "MDG · RHiD · Importar" (`n8n/rhid/workflows/rhid-importar.json`, pacote `07-rhid-importar.json`)
 
