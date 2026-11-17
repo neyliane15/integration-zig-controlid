@@ -32,8 +32,8 @@ select public.ingestao_rhid_batidas('e8000000-0000-4000-8000-000000000101', '2',
   {"nsr": 5, "instante": "2026-11-15T08:10:00-03:00", "cpf": "52998224725"},
   {"nsr": 6, "instante": "2026-11-15T19:02:00-03:00", "cpf": "52998224725"},
   {"nsr": 7, "instante": "2026-11-16T11:09:00-03:00", "cpf": "52998224725"}]$$);
-select teste.ok('sem previsto do RHiD: 11/11 sem escala, saldo = trabalhado',
-  (select situacao = 'sem_escala' or (previsto_minutos = 0 and saldo_minutos = 401)
+select teste.ok('sem previsto do RHiD nem jornada: 11/11 saldo 0 (não há como saber a hora extra)',
+  (select previsto_minutos = 0 and trabalhado_minutos = 401 and saldo_minutos = 0
      from public.ponto_dias where funcionario_id = 'e8000000-0000-4000-8000-000000000301' and data = '2026-11-11'));
 
 create temp table r_h (n int, r jsonb);
@@ -92,9 +92,9 @@ select teste.ok('3ª ingestão: 1 gravado, 1 apagado', (select r ->> 'gravados' 
 select teste.ok('11/11: trabalhado 6h41 vs previsto 6h45 (−4 min ≤ 10) → saldo 0',
   (select previsto_minutos = 405 and saldo_minutos = 0
      from public.ponto_dias where funcionario_id = 'e8000000-0000-4000-8000-000000000301' and data = '2026-11-11'));
-select teste.ok('15/11 sem horário no RHiD: previsto apagado, volta a valer jornada/escala (sem escala: saldo = trabalhado)',
+select teste.ok('15/11 sem horário no RHiD: previsto apagado, volta a valer jornada/escala (sem nenhuma: saldo 0)',
   not exists (select 1 from public.ponto_previsto_externo where funcionario_id = 'e8000000-0000-4000-8000-000000000301' and data = '2026-11-15')
-  and (select previsto_minutos = 0 and saldo_minutos = 652
+  and (select previsto_minutos = 0 and saldo_minutos = 0
          from public.ponto_dias where funcionario_id = 'e8000000-0000-4000-8000-000000000301' and data = '2026-11-15'));
 
 -- saída repetida vale a última; entrada repetida vale a primeira (janela 5 min)

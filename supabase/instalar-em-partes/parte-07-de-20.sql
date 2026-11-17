@@ -454,8 +454,11 @@ begin
     else
       v_saldo := v_trab - v_prev;
     end if;
+  elsif j.id is null and v_ext_prev is null and v_esc.status is distinct from 'folga'
+        and v_esc.status is distinct from 'ferias' then
+    v_saldo := 0;   -- sem horário previsto (sem jornada nem horário do RHiD): não há como saber a hora extra
   else
-    v_saldo := v_trab;
+    v_saldo := v_trab;   -- folga/feriado (ou dia fora da jornada) trabalhado: tudo extra
   end if;
 
   -- Quais slots foram batidos (0 < n < k): menor Σ|batida − slot|; empate → combinação lexicograficamente menor (§7.3).

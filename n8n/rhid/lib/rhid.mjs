@@ -529,7 +529,10 @@ export async function importarHorariosRhid(config, entrada, sessao, deps) {
     if (!id) { avisos.push(`CPF …${cpf.slice(-2)} ligado, mas não está nas pessoas do RHiD`); continue }
     try {
       const corpo = await sessao.chamar((token) => ({ method: 'GET', url: urlRhid(sessao.base, '/apuracao_ponto', { idPerson: id, dataIni: janela.dataIni, dataFinal: janela.dataFinal }), headers: cabecalhosRhid(token), timeoutMs: deps.timeoutMs || 120000 }), `RHiD apuração ${id}`)
-      dias = dias.concat(diasApuracaoRhid(corpo, cpf, await toleranciaDo(turnoPorCpf.get(cpf))))
+      const turno = turnoPorCpf.get(cpf)
+      const doDia = diasApuracaoRhid(corpo, cpf, await toleranciaDo(turno))
+      // sem horário (turno) no RHiD: nenhum dia vale, nem feriado — o RHiD não apura essa pessoa
+      dias = dias.concat(turno ? doDia : doDia.map((x) => ({ cpf, data: x.data, sem_horario: true })))
       pessoas++
     } catch (e) {
       falhas.push(`pessoa ${id}: ${e && e.message ? e.message : String(e)}`.slice(0, 200))

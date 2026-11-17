@@ -180,7 +180,7 @@ update public.empresas set fuso = 'America/Manaus' where id = 'e2000000-0000-400
 select teste.ok('após trocar o fuso para Manaus a mesma batida vai para o dia 01', (select data_trabalho from public.ponto_batidas
    where instante = '2026-10-02 08:30:00Z') = '2026-10-01');
 
--- sem escala vigente: sem_escala; batidas viram hora extra
+-- sem escala vigente: sem_escala; sem horário previsto o saldo é 0
 select teste.ok('antes de vigorar a jornada (agosto): sem_escala',
   (select (situacao, previsto_minutos) = ('sem_escala'::text, 0)
      from public.ponto_calcular_dia('e2000000-0000-4000-8000-000000000301', '2026-08-15')));
