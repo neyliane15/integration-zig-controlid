@@ -62,7 +62,7 @@ export type SituacaoDia =
   /** adendo extras v3 (§E.7.2) */
   | 'falta_justificada'
   | 'falta_injustificada'
-export type TipoAlarme = 'batida_faltando' | 'batidas_impares' | 'sem_batida_dia_escalado' | 'atraso'
+export type TipoAlarme = 'batida_faltando' | 'batidas_impares' | 'poucas_batidas' | 'sem_batida_dia_escalado' | 'atraso'
 export type BatidaEsperada = 'entrada' | 'saida_intervalo' | 'volta_intervalo' | 'saida'
 export type StatusAlarme = 'aberto' | 'justificado' | 'resolvido'
 export type AcaoAjuste = 'incluir' | 'desconsiderar' | 'restaurar'
@@ -95,6 +95,10 @@ export interface Empresa {
   comissao_percentual_retencao: number
   ponto_alarme_atraso: boolean
   ponto_janela_duplicada_minutos: number
+  /** alarmes só dos últimos N dias (padrão 2) */
+  ponto_alarme_prazo_dias: number
+  /** alerta quem bateu menos que isso num dia sem horário previsto (padrão 4; 0 desliga) */
+  ponto_batidas_minimas: number
   ativa: boolean
   criado_em: InstanteISO
   atualizado_em: InstanteISO
@@ -695,6 +699,28 @@ export interface ResumoOcorrencias {
   suspensoes: number
   suspensos_hoje: number
   recentes: OcorrenciaRecente[]
+  /** faltas (registradas + dias ausentes do ponto) e atrasos no período */
+  faltas: number
+  atrasos: number
+  minutos_atraso: number
+  ponto_recentes: OcorrenciaPonto[]
+}
+
+/** `ocorrencias_ponto`: falta registrada, dia ausente no ponto ou atraso na entrada. */
+export type TipoOcorrenciaPonto = 'falta' | 'falta_justificada' | 'falta_injustificada' | 'atraso'
+export interface OcorrenciaPonto {
+  data: DataISO
+  funcionario_id: Uuid
+  funcionario_nome: string
+  tipo: TipoOcorrenciaPonto
+  /** minutos de atraso */
+  minutos: number | null
+  /** atraso: hora da 1ª batida (HH:MM) */
+  chegada: string | null
+  /** atraso: entrada prevista (HH:MM); falta do ponto: horas previstas ("7h20") */
+  previsto: string | null
+  motivo: string | null
+  origem: 'registrada' | 'ponto'
 }
 
 /** `comissao_detalhe` (adendo E.3.4). */
@@ -1429,6 +1455,10 @@ export interface Rpcs {
   ocorrencias_listar: { args: { p_funcionario: Uuid }; retorno: Ocorrencia[] }
   ocorrencias_contagem: { args: { p_funcionario?: Uuid | null; p_empresa?: Uuid | null }; retorno: ContagemOcorrencias[] }
   ocorrencias_resumo: { args: { p_dias?: number; p_empresa?: Uuid | null }; retorno: ResumoOcorrencias }
+  ocorrencias_ponto: {
+    args: { p_inicio: DataISO; p_fim: DataISO; p_funcionario?: Uuid | null; p_empresa?: Uuid | null }
+    retorno: OcorrenciaPonto[]
+  }
   // extras (adendo E)
   extra_criar: {
     args: {

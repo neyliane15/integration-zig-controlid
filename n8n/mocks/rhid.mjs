@@ -15,6 +15,9 @@
 //   GET  /report/afd_coletor_marcacao/download671?…  → 99000001: os MESMOS registros tipo 7 (o banco deduplica por CPF+instante)
 //   Regras: dataIni/dataFinal obrigatórias e ≤ 90 dias (400 "Data range bigger than 90 days"), limit ≤ 50000, nsrInicial ≥.
 //   O corpo do AFD vem como STRING JSON ("…\r\n…"), como a API declara (produces application/json).
+//   GET  /apuracao_ponto?idPerson=&dataIni=&dataFinal=  → string JSON (lista): 08:00-13:00/13:30-15:50 (440 min), domingo folga,
+//        15/11 feriado; idPerson desconhecido → 400
+//   GET  /shift/4 → tolerâncias CLT (10/10); outro id → 400
 //   POST /__mock/rhid/expirar → invalida os tokens (a próxima chamada recebe 401 e o cliente faz login de novo).
 
 import { readFileSync } from 'node:fs'
@@ -91,7 +94,7 @@ export function criarTratadorRhid({ marcacoes, funcionarios }) {
   function pessoas() {
     const lista = funcionarios.map((f, i) => ({
       id: 1000 + i, cpf: Number(f.cpf), pis: 0, name: f.nome.toUpperCase(), registration: String(f.matricula).padStart(4, '0'),
-      idDepartment: 10, idCompany: 1, status: 1, admissionDate: '2025-01-02', socialName: null, photo: null,
+      idDepartment: 10, idCompany: 1, idShift: 4, status: 1, admissionDate: '2025-01-02', socialName: null, photo: null,
     }))
     lista.push({ id: 1999, cpf: 9876543210, pis: 0, name: 'PESSOA SO NO RHID', registration: '9999', idDepartment: 10, idCompany: 1, status: 1, socialName: null, photo: null })
     return lista
@@ -115,13 +118,50 @@ export function criarTratadorRhid({ marcacoes, funcionarios }) {
     const auth = String(req.headers.authorization || '')
     if (!auth.startsWith('Bearer ') || !estado.tokens.has(auth.slice(7))) return [401, 'Unauthorized']
     if (req.method !== 'GET') return [405, { code: 405, error: 'Method not allowed' }]
-    if (rota === '/person') { const r = pessoas(); return [200, { totalRecords: r.length, records: r }] }
+    // como o RHiD real: /device sem start/length, e qualquer lista com length > 100, respondem 500 "Request Error" (HTML)
+    const pagina = (lista) => {
+      const temPag = url.searchParams.has('start') && url.searchParams.has('length')
+      const start = Number(url.searchParams.get('start') || 0), length = Number(url.searchParams.get('length') || 0)
+      if (temPag && length > 100) return null
+      return temPag ? lista.slice(start, start + length) : lista
+    }
+    const REQUEST_ERROR = [500, '<?xml version="1.0" encoding="utf-8"?><html><head><title>Request Error</title></head></html>']
+    if (rota === '/person') { const r = pessoas(); const p = pagina(r); return p ? [200, { totalRecords: r.length, records: p }] : REQUEST_ERROR }
     if (rota === '/device') {
+      // como o RHiD real: sem start/length a API (WCF) responde 500 "Request Error" em HTML
       const r = [
         { id: RHID_MOCK.rep, name: 'REP MACAW', serial: '00004004330000001', model: 1, status: 'online', numberOfPeople: 5, linkedCompanyId: 1, deviceCode: null, firstSyncPIS: null },
         { id: 56, name: 'iD Face Portaria', serial: '0M0100/000123', model: 3, status: 'online', numberOfPeople: 5, deviceCode: '01234567', statusAuth: 'A', firstSyncPIS: null },
       ]
-      return [200, { totalRecords: r.length, records: r }]
+      if (!url.searchParams.has('start') || !url.searchParams.has('length')) return REQUEST_ERROR
+      const p = pagina(r)
+      return p ? [200, { totalRecords: r.length, records: p }] : REQUEST_ERROR
+    }
+    if (rota.startsWith('/shift/')) {
+      const id = Number(rota.slice(7))
+      if (id !== 4) return [400, '"Horário não encontrado"']
+      return [200, { id: 4, name: '08:00 - 15:50', type: 1, cycles: 7,
+        tolerancias: [{ code: 'tolerancia_clt', value: true }, { code: 'lim_min_diario_horas_extras', value: 10 }, { code: 'lim_min_diario_faltas', value: 10 }],
+        horarios: [] }]
+    }
+    if (rota === '/apuracao_ponto') {
+      // como o RHiD real: corpo = string JSON (lista serializada), um objeto por dia; domingo = folga; 15/11 = feriado
+      const q = url.searchParams
+      const ini = q.get('dataIni'), fim = q.get('dataFinal'), id = Number(q.get('idPerson'))
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(ini || '') || !/^\d{4}-\d{2}-\d{2}$/.test(fim || '') || fim < ini) return [400, 'Invalid date']
+      if (dias(ini, fim) > 90) return [400, 'Data range bigger than 90 days']
+      const p = pessoas().find((x) => x.id === id)
+      if (!p) return [400, '"Pessoa não encontrada"']
+      const lista = []
+      for (let d = ini; d <= fim; d = dataIso(new Date(Date.parse(d + 'T00:00:00Z') + 86400000))) {
+        const domingo = new Date(d + 'T00:00:00Z').getUTCDay() === 0
+        const feriado = d.slice(5) === '11-15'
+        lista.push({ idPerson: id, name: p.name, date: `${d}T00:00:00`, dateTimeStr: d.replace(/-/g, ''),
+          strHorarioContratualSimples: feriado ? '' : '08:00-13:00\r\n13:30-15:50', horasUteis: feriado ? 0 : 440, folga: domingo && !feriado,
+          isHoliday: feriado ? 1 : 0, holiday: feriado ? { name: 'Proclamação da República', folga: false } : null,
+          totalHorasTrabalhadas: 0, saldoBancoCredDeb: 0, listAfdtManutencao: [] })
+      }
+      return [200, JSON.stringify(JSON.stringify(lista)), { 'content-type': 'application/json; charset=utf-8' }]
     }
     const afd = rota === '/report/afd/download671'
     const coletor = rota === '/report/afd_coletor_marcacao/download671'

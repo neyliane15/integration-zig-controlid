@@ -1,107 +1,8 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 14 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 15 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000260_extras.sql, 20261006000270_reservas.sql, 20261006000280_escala.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000270_reservas.sql, 20261006000280_escala.sql. Não edite à mão.
 
 begin;
-comment on function public.gastos_periodo(date, date, uuid) is
-  '[api] Gastos do período: diárias (extras e funcionários, pagas/a pagar) e comissões (fechadas/previstas), por pessoa e por dia (G A M).';-- =====================================================================================================
--- 20261006000270_reservas.sql — backend (adendo extras/ocorrências/reservas, seção R)
--- Reservas do dia: cadastro manual, importação de CSV (front) e ingestão genérica da Tagme (N8N, tipo de integração
--- 'tagme' ajustado em …0120). Telefone/e-mail são dados pessoais: só G A M (leitura lê por reservas_listar, sem eles).
--- Idempotente.
--- =====================================================================================================
-
-create table if not exists public.reservas (
-  id             uuid primary key default gen_random_uuid(),
-  empresa_id     uuid not null references public.empresas (id) on delete cascade,
-  integracao_id  uuid references public.integracoes (id) on delete set null,
-  origem         text not null check (origem in ('tagme', 'manual', 'importacao')),
-  id_externo     text,
-  data           date not null,
-  horario        time,
-  nome_cliente   text not null check (btrim(nome_cliente) <> ''),
-  pessoas        int not null default 1 check (pessoas between 1 and 500),
-  status         text not null default 'confirmada'
-                 check (status in ('confirmada', 'pendente', 'cancelada', 'sentada', 'concluida', 'nao_compareceu')),
-  area           text,
-  mesa           text,
-  observacao     text,
-  telefone       text,
-  email          text,
-  criado_por     uuid references public.perfis (id) on delete set null,
-  criado_em      timestamptz not null default now(),
-  atualizado_em  timestamptz not null default now(),
-  importado_em   timestamptz,
-  constraint reservas_externa_uk unique (empresa_id, origem, id_externo),
-  constraint reservas_tagme_id check (origem <> 'tagme' or id_externo is not null)
-);
-create index if not exists reservas_empresa_dia_idx on public.reservas (empresa_id, data, horario);
-create index if not exists reservas_integracao_idx on public.reservas (integracao_id);
-create index if not exists reservas_criado_por_idx on public.reservas (criado_por);
-comment on table public.reservas is
-  '[api:leitura] Reservas (Tagme, manuais, importadas). Select direto só G A M; leitura via reservas_listar (sem telefone/e-mail).';
-
-alter table public.reservas enable row level security;
-drop policy if exists reservas_ler on public.reservas;
-create policy reservas_ler on public.reservas for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-
-drop trigger if exists tocar_atualizado_em on public.reservas;
-create trigger tocar_atualizado_em before update on public.reservas
-  for each row execute function public.tocar_atualizado_em();
-
--- ================================================================ auxiliares
-create or replace function public.reserva_validar(p_data date, p_nome text, p_pessoas int, p_status text)
-returns void language plpgsql immutable set search_path = public, extensions, pg_temp as $$
-begin
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  if nullif(btrim(coalesce(p_nome, '')), '') is null then raise exception 'Informe o nome do cliente' using errcode = '22023'; end if;
-  if p_pessoas is null or p_pessoas < 1 or p_pessoas > 500 then
-    raise exception 'Número de pessoas inválido' using errcode = '22023';
-  end if;
-  if p_status is null or p_status not in ('confirmada', 'pendente', 'cancelada', 'sentada', 'concluida', 'nao_compareceu') then
-    raise exception 'Status de reserva inválido' using errcode = '22023';
-  end if;
-end $$;
-comment on function public.reserva_validar(date, text, int, text) is '[interno] Validação de reserva (adendo R.3).';
-
-create or replace function public.reserva_para_operar(p_reserva uuid)
-returns public.reservas language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare r public.reservas;
-begin
-  select * into r from public.reservas where id = p_reserva;
-  if not found then raise exception 'Reserva não encontrada' using errcode = 'P0002'; end if;
-  if public.pode_operar(r.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  return r;
-end $$;
-comment on function public.reserva_para_operar(uuid) is '[interno] Reserva existente e operável (G A M).';
-
--- Data 'AAAA-MM-DD' ou 'DD/MM/AAAA' → date (null se inválida).
-create or replace function public.reserva_ler_data(p_texto text)
-returns date language plpgsql immutable set search_path = public, extensions, pg_temp as $$
-declare t text := btrim(coalesce(p_texto, ''));
-begin
-  if t ~ '^\d{4}-\d{2}-\d{2}$' then return to_date(t, 'YYYY-MM-DD')::date
-    + case when to_char(to_date(t, 'YYYY-MM-DD'), 'YYYY-MM-DD') = t then 0 else null end;
-  elsif t ~ '^\d{2}/\d{2}/\d{4}$' then return to_date(t, 'DD/MM/YYYY')::date
-    + case when to_char(to_date(t, 'DD/MM/YYYY'), 'DD/MM/YYYY') = t then 0 else null end;
-  end if;
-  return null;
-exception when others then return null;
-end $$;
-comment on function public.reserva_ler_data(text) is '[interno] Lê data AAAA-MM-DD ou DD/MM/AAAA.';
-
--- Horário 'HH:MM' ou 'HH:MM:SS' → time. Vazio → null; inválido → exceção 'horário inválido'.
-create or replace function public.reserva_ler_horario(p_texto text)
-returns time language plpgsql immutable set search_path = public, extensions, pg_temp as $$
-declare t text := btrim(coalesce(p_texto, ''));
-begin
-  if t = '' then return null; end if;
-  if t !~ '^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$' then raise exception 'horário inválido'; end if;
-  return t::time;
-end $$;
-comment on function public.reserva_ler_horario(text) is '[interno] Lê horário HH:MM[:SS].';
-
 -- Converte um item jsonb (importação/ingestão) em campos de reserva; erro → exceção com o motivo (texto curto).
 create or replace function public.reserva_ler_item(p_item jsonb, p_chave_hora text,
                                                    out data date, out horario time, out nome text, out pessoas int,
@@ -473,5 +374,74 @@ drop trigger if exists a_antes on public.escala_setores;
 create trigger a_antes before insert or update on public.escala_setores
   for each row execute function public.escala_setores_antes();
 
+create or replace function public.escala_membros_antes()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  select s.empresa_id into v_empresa from public.escala_setores s where s.id = new.setor_id;
+  if v_empresa is null then raise exception 'Setor não encontrado' using errcode = 'P0002'; end if;
+  new.empresa_id := v_empresa;
+  if not exists (select 1 from public.funcionarios f where f.id = new.funcionario_id and f.empresa_id = v_empresa) then
+    raise exception 'Funcionário de outra empresa' using errcode = '22023';
+  end if;
+  return new;
+end $$;
+comment on function public.escala_membros_antes() is '[interno] Gatilho: empresa do membro = do setor; funcionário da mesma empresa.';
+drop trigger if exists a_antes on public.escala_membros;
+create trigger a_antes before insert or update on public.escala_membros
+  for each row execute function public.escala_membros_antes();
+
+create or replace function public.escala_ajustes_antes()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare m record;
+begin
+  select x.empresa_id, x.funcionario_id into m from public.escala_membros x where x.id = new.membro_id;
+  if m.empresa_id is null then raise exception 'Funcionário fora da escala' using errcode = '22023'; end if;
+  new.empresa_id := m.empresa_id;
+  new.funcionario_id := m.funcionario_id;
+  return new;
+end $$;
+comment on function public.escala_ajustes_antes() is '[interno] Gatilho: empresa/funcionário do ajuste = do membro.';
+drop trigger if exists a_antes on public.escala_ajustes;
+create trigger a_antes before insert or update on public.escala_ajustes
+  for each row execute function public.escala_ajustes_antes();
+
+drop trigger if exists tocar_atualizado_em on public.escala_config;
+create trigger tocar_atualizado_em before update on public.escala_config
+  for each row execute function public.tocar_atualizado_em();
+drop trigger if exists tocar_atualizado_em on public.escala_setores;
+create trigger tocar_atualizado_em before update on public.escala_setores
+  for each row execute function public.tocar_atualizado_em();
+drop trigger if exists tocar_atualizado_em on public.escala_membros;
+create trigger tocar_atualizado_em before update on public.escala_membros
+  for each row execute function public.tocar_atualizado_em();
+drop trigger if exists tocar_atualizado_em on public.escala_ajustes;
+create trigger tocar_atualizado_em before update on public.escala_ajustes
+  for each row execute function public.tocar_atualizado_em();
+
+-- ================================================================ regra do rodízio (§S.2)
+-- Membros com a posição k (0-based) e o tamanho n do caminho; p_setor restringe a um setor (usado pelo ponto).
+create or replace function public.escala_membros_rodizio(p_empresa uuid, p_setor uuid default null)
+returns table (id uuid, funcionario_id uuid, setor_id uuid, caminho smallint, posicao smallint, k int, n int,
+               folgas_base smallint[], chegada_padrao time, fase_setor int, data_admissao date, data_desligamento date)
+language sql stable security definer rows 40 set search_path = public, extensions, pg_temp set jit = off as $$
+  select m.id, m.funcionario_id, m.setor_id, m.caminho, m.posicao,
+         (row_number() over (partition by m.setor_id, m.caminho order by m.posicao, m.id) - 1)::int,
+         (count(*) over (partition by m.setor_id, m.caminho))::int,
+         m.folgas_base, m.chegada_padrao, s.fase, f.data_admissao, f.data_desligamento
+    from public.escala_membros m
+    join public.escala_setores s on s.id = m.setor_id
+    join public.funcionarios f on f.id = m.funcionario_id
+   where m.empresa_id = p_empresa and (p_setor is null or m.setor_id = p_setor)
+$$;
+comment on function public.escala_membros_rodizio(uuid, uuid) is '[interno] Membros com posição (k) e tamanho (n) do caminho.';
+
+-- Número da semana (w) do dia em relação à âncora.
+create or replace function public.escala_semana_num(p_data date, p_ancora date)
+returns int language sql immutable set search_path = public, extensions, pg_temp as $$
+  select ((p_data - (extract(isodow from p_data)::int - 1)) - p_ancora) / 7
+$$;
+comment on function public.escala_semana_num(date, date) is '[interno] Semana do dia contada a partir da âncora (semana 0).';
+
 commit;
-select 'parte 14 de 20 instalada' as resultado;
+select 'parte 15 de 21 instalada' as resultado;

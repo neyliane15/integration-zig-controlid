@@ -4,6 +4,8 @@
 begin;
 set local app.agora = '2026-10-06 12:00:00-03';
 select teste.como_dono();
+-- testes com datas antigas: alarmes sem o prazo de 2 dias da empresa (revertido no rollback)
+alter table public.empresas alter column ponto_alarme_prazo_dias set default 31;
 insert into public.empresas (id, nome, ponto_alarme_atraso) values ('e2600000-0000-4000-8000-00000000000a', 'Teste ponto rev', true);
 insert into auth.users (id, email, raw_user_meta_data) values ('e2600000-0000-4000-8000-000000000a03', 'r26.lei@teste.local', '{"nome":"Leitura"}');
 update public.perfis set papel = 'leitura', empresa_id = 'e2600000-0000-4000-8000-00000000000a' where id = 'e2600000-0000-4000-8000-000000000a03';

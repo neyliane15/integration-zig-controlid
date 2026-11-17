@@ -858,11 +858,14 @@ Não grava nada. Fonte única da verdade usada por `ponto_apurar` e `ponto_espel
    - Senão `previsto = jd.minutos_previstos`, `esperadas = jd.batidas_esperadas` (2 ou 4).
 3. **Batidas**: `ponto_batidas` de F com `data_trabalho = D` e `desconsiderada = false`, ordenadas por `instante, id`.
    **Duplicadas**: uma batida a menos de `empresas.ponto_janela_duplicada_minutos` (padrão 2) da última batida **válida** é
-   duplicada (ignorada). `n` = nº de válidas.
+   duplicada. Repetição da **entrada** (válidas em nº ímpar) → vale a primeira; repetição da **saída** (nº par) → vale a
+   última e a anterior vira duplicada (como no RHiD). `n` = nº de válidas.
 4. **Trabalhado**: pares (1ª,2ª), (3ª,4ª)…; `trabalhado = Σ floor(extract(epoch from (b2 − b1)) / 60)`. Com `n` ímpar a última fica sem par
    e não conta.
 5. **Saldo**: `bruto = trabalhado − previsto`. Se `previsto > 0` e `|bruto| ≤ jornada.tolerancia_diaria_minutos` → `saldo = 0`; senão `saldo = bruto`.
-   Dia sem escala/folga/abono com batidas → `saldo = trabalhado` (hora extra). Dia escalado sem batida e encerrado → `saldo = −previsto`.
+   Dia de folga/feriado/abono (ou fora dos dias da jornada) com batidas → `saldo = trabalhado` (hora extra). Sem horário
+   previsto nenhum (sem jornada, sem horário do RHiD, fora da escala ou escalado sem jornada) → `saldo = 0` (não há como
+   saber a hora extra). Dia escalado sem batida e encerrado → `saldo = −previsto`.
    Dia **não encerrado** (D ≥ dia de trabalho atual) → `saldo = 0` (provisório; não entra no banco).
 6. **Atraso** (`atraso_minutos`): com `esperadas > 0` e `n > 0`: `max(0, floor((primeira − E1)/60s))` se maior que
    `tolerancia_batida_minutos`, senão 0. (E1 = instante previsto da entrada, §2.4.) *(Revisão 1)* Com `0 < n < esperadas`, só há

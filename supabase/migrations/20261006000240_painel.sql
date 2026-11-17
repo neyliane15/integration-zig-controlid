@@ -46,11 +46,13 @@ begin
    where i.empresa_id = v_empresa and i.tipo = 'Tip' and i.data_operacao between least(v_mes, v_ontem) and v_hoje;
 
   -- ponto (ao vivo para hoje)
+  -- escalados: dia de trabalho na escala rotativa, ou com horário previsto (jornada / horário do RHiD)
   select count(*) filter (where c.batidas_validas % 2 = 1),
-         count(*) filter (where c.batidas_esperadas > 0)
+         count(*) filter (where c.batidas_esperadas > 0 or c.previsto_minutos > 0 or esc.status = 'trabalha')
     into v_presentes, v_escalados
     from public.funcionarios f
     cross join lateral public.ponto_calcular_dia(f.id, v_hoje) c
+    cross join lateral public.escala_status_ponto(f.id, v_hoje) esc
    where f.empresa_id = v_empresa and f.ativo and not c.fora_do_vinculo;
 
   select jsonb_build_object(

@@ -4,6 +4,8 @@
 begin;
 set local app.agora = '2026-11-13 12:00:00-03';   -- sexta; âncora dos testes = seg 02/11/2026
 select teste.como_dono();
+-- testes com datas antigas: alarmes sem o prazo de 2 dias da empresa (revertido no rollback)
+alter table public.empresas alter column ponto_alarme_prazo_dias set default 31;
 insert into public.empresas (id, nome, fuso, virada_dia, ponto_alarme_atraso) values
   ('e7600000-0000-4000-8000-00000000000a', 'Escala A', 'America/Sao_Paulo', '05:00', true),
   ('e7600000-0000-4000-8000-00000000000b', 'Escala B', 'America/Manaus', '05:00', false);

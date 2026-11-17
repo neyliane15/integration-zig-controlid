@@ -5,6 +5,8 @@ begin;
 -- Relógio fixo, duas empresas (A = SP, B = Manaus), usuários de todos os papéis, jornada "Salão noite" (só sábado).
 set local app.agora = '2026-10-06 12:00:00-03';
 select teste.como_dono();
+-- testes com datas antigas: alarmes sem o prazo de 2 dias da empresa (revertido no rollback)
+alter table public.empresas alter column ponto_alarme_prazo_dias set default 31;
 insert into public.empresas (id, nome, fuso, virada_dia) values
   ('e2000000-0000-4000-8000-00000000000a', 'Teste b2 A', 'America/Sao_Paulo', '05:00'),
   ('e2000000-0000-4000-8000-00000000000b', 'Teste b2 B', 'America/Manaus', '05:00');
@@ -159,7 +161,9 @@ select teste.ok('contagem por funcionário',
   = array['e2000000-0000-4000-8000-000000000301/0/1/2/2026-10-02', 'e2000000-0000-4000-8000-000000000304/1/0/0/2026-10-01']);
 select teste.ok('contagem de um funcionário', (select count(*) from public.ocorrencias_contagem('e2000000-0000-4000-8000-000000000304')) = 1
   and (select count(*) from public.ocorrencias_contagem('e2000000-0000-4000-8000-000000000302')) = 0);
-select teste.ok('resumo 30 dias', (public.ocorrencias_resumo() - 'recentes')
+select teste.ok('resumo traz faltas e atrasos do ponto', (select jsonb_typeof(r -> 'faltas') = 'number' and jsonb_typeof(r -> 'atrasos') = 'number'
+  and jsonb_typeof(r -> 'minutos_atraso') = 'number' and jsonb_typeof(r -> 'ponto_recentes') = 'array' from (select public.ocorrencias_resumo() r) x));
+select teste.ok('resumo 30 dias', (public.ocorrencias_resumo() - 'recentes' - 'ponto_recentes' - 'faltas' - 'atrasos' - 'minutos_atraso')
   = '{"desde": "2026-09-07", "ate": "2026-10-06", "advertencias": 1, "suspensoes": 1, "suspensos_hoje": 0}'::jsonb
   and jsonb_array_length(public.ocorrencias_resumo() -> 'recentes') = 2
   and (public.ocorrencias_resumo() -> 'recentes' -> 0 ->> 'funcionario_nome') = 'Ana Souza');

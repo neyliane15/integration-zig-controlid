@@ -36,6 +36,8 @@ export type DadosEmpresa = Partial<
     | 'comissao_percentual_retencao'
     | 'ponto_alarme_atraso'
     | 'ponto_janela_duplicada_minutos'
+    | 'ponto_alarme_prazo_dias'
+    | 'ponto_batidas_minimas'
     | 'ativa'
   >
 >

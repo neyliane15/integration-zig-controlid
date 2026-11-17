@@ -467,6 +467,11 @@ begin
     v_fim := coalesce(p_fim, v_atual);
     perform public.ponto_validar_periodo(v_ini, v_fim, 93);
     v_emp := v_emp + 1;
+    -- alarmes de dias que já passaram do prazo da empresa (padrão 2 dias) saem da lista: resolvidos automaticamente
+    update public.ponto_alarmes a
+       set status = 'resolvido', resolvido_automaticamente = true, resolvido_em = public.agora()
+     where a.empresa_id = e.id and a.status = 'aberto'
+       and a.data < v_atual - (select em.ponto_alarme_prazo_dias from public.empresas em where em.id = e.id);
     for f in
       select fu.id from public.funcionarios fu
        where fu.empresa_id = e.id

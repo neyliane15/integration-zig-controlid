@@ -1,85 +1,8 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 16 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 17 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000280_escala.sql, 20261006000290_comissao_presenca.sql. Não edite à mão.
 
 begin;
-create or replace function public.escala_definir_membros(p_setor uuid, p_membros jsonb)
-returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  s public.escala_setores; v_afetados uuid[]; v_lista uuid[]; x jsonb; i int := 0;
-  v_func uuid; v_folgas smallint[]; v_cheg time; v_cam smallint; v_pos smallint;
-begin
-  s := public.escala_setor_para_operar(p_setor);
-  if p_membros is null or jsonb_typeof(p_membros) <> 'array' then
-    raise exception 'Lista de membros inválida' using errcode = '22023';
-  end if;
-  begin
-    select coalesce(array_agg((e ->> 'funcionario_id')::uuid), '{}') into v_lista from jsonb_array_elements(p_membros) e;
-  exception when others then
-    raise exception 'Lista de membros inválida' using errcode = '22023';
-  end;
-  if exists (select 1 from unnest(v_lista) u where u is null) then
-    raise exception 'Lista de membros inválida' using errcode = '22023';
-  end if;
-  if (select count(distinct u) from unnest(v_lista) u) <> coalesce(array_length(v_lista, 1), 0) then
-    raise exception 'Funcionário repetido na lista' using errcode = '22023';
-  end if;
-  v_afetados := public.escala_funcionarios_dos_setores(array[p_setor])
-             || public.escala_funcionarios_dos_setores(
-                  (select coalesce(array_agg(distinct m.setor_id), '{}') from public.escala_membros m where m.funcionario_id = any (v_lista)))
-             || v_lista;
-  delete from public.escala_membros where setor_id = p_setor and not (funcionario_id = any (v_lista));
-  update public.escala_membros set caminho = null, posicao = null where setor_id = p_setor;
-  for x in select * from jsonb_array_elements(p_membros) loop
-    i := i + 1;
-    begin
-      v_func := (x ->> 'funcionario_id')::uuid;
-      v_folgas := case when jsonb_typeof(x -> 'folgas_base') = 'array'
-                       then array(select jsonb_array_elements_text(x -> 'folgas_base')::smallint) else '{}'::smallint[] end;
-      v_cheg := nullif(x ->> 'chegada_padrao', '')::time;
-      v_cam := (x ->> 'caminho')::smallint;
-      v_pos := (x ->> 'posicao')::smallint;
-    exception when others then
-      raise exception 'Lista de membros inválida' using errcode = '22023';
-    end;
-    perform public.escala_gravar_membro(p_setor, v_func, v_folgas, v_cheg, v_cam, v_pos, i);
-  end loop;
-  perform public.escala_reapurar(s.empresa_id, v_afetados, (select c.ancora from public.escala_config c where c.empresa_id = s.empresa_id));
-  return i;
-end $$;
-comment on function public.escala_definir_membros(uuid, jsonb) is '[api] Substitui a lista de membros do setor (ordem e caminhos) e reapura.';
-
-create or replace function public.escala_remover_membro(p_funcionario uuid)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare m public.escala_membros; v_func uuid[];
-begin
-  m := public.escala_membro_para_operar(p_funcionario);
-  v_func := public.escala_funcionarios_dos_setores(array[m.setor_id]);
-  delete from public.escala_membros where id = m.id;
-  perform public.escala_reapurar(m.empresa_id, v_func, (select c.ancora from public.escala_config c where c.empresa_id = m.empresa_id));
-end $$;
-comment on function public.escala_remover_membro(uuid) is '[api] Tira o funcionário da escala (apaga seus ajustes) e reapura.';
-
-create or replace function public.escala_adicionar_funcionario(p_setor uuid, p_nome text, p_cargo text default null,
-                                                               p_folgas_base smallint[] default '{}', p_chegada_padrao time default null,
-                                                               p_caminho smallint default null, p_posicao smallint default null)
-returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare s public.escala_setores; v_nome text; v_func uuid;
-begin
-  s := public.escala_setor_para_operar(p_setor);
-  v_nome := nullif(btrim(coalesce(p_nome, '')), '');
-  if v_nome is null then raise exception 'Informe o nome' using errcode = '22023'; end if;
-  insert into public.funcionarios (empresa_id, nome, cargo, pontos_comissao)
-  values (s.empresa_id, v_nome, nullif(btrim(coalesce(p_cargo, '')), ''), 0)
-  returning id into v_func;
-  perform public.escala_gravar_membro(p_setor, v_func, p_folgas_base, p_chegada_padrao, p_caminho, p_posicao, null);
-  perform public.escala_reapurar(s.empresa_id, public.escala_funcionarios_dos_setores(array[p_setor]),
-                                 (select c.ancora from public.escala_config c where c.empresa_id = s.empresa_id));
-  return v_func;
-end $$;
-comment on function public.escala_adicionar_funcionario(uuid, text, text, smallint[], time, smallint, smallint) is
-  '[api] Cadastra um funcionário e o põe num setor da escala; retorna o id do funcionário.';
-
 -- Modelo do cliente (docs/referencias/escala-macaw-v3.html), §S.7.8.
 create or replace function public.escala_aplicar_modelo_macaw(p_empresa uuid default null, p_ancora date default null)
 returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -409,5 +332,91 @@ comment on function public.escala_semana(date, uuid) is '[api] Semana base e sem
 alter table public.comissao_fechamentos add column if not exists extras_sem_pontuacao int not null default 0;
 alter table public.comissao_itens add column if not exists pontos_pendente boolean not null default false;
 
+-- ================================================================ faltas (§E.7.2)
+create table if not exists public.funcionario_faltas (
+  id               uuid primary key default gen_random_uuid(),
+  empresa_id       uuid not null references public.empresas (id) on delete cascade,
+  funcionario_id   uuid not null references public.funcionarios (id) on delete cascade,
+  data             date not null,
+  tipo             text not null check (tipo in ('justificada', 'injustificada')),
+  motivo           text,
+  anexo_caminho    text unique,
+  anexo_nome       text,
+  criado_por       uuid references public.perfis (id) on delete set null,
+  criado_por_nome  text not null,
+  criado_em        timestamptz not null default now(),
+  atualizado_em    timestamptz not null default now(),
+  unique (funcionario_id, data),
+  constraint funcionario_faltas_motivo check (tipo = 'injustificada' or btrim(coalesce(motivo, '')) <> '')
+);
+create index if not exists funcionario_faltas_empresa_idx on public.funcionario_faltas (empresa_id, data);
+create index if not exists funcionario_faltas_criado_por_idx on public.funcionario_faltas (criado_por);
+comment on table public.funcionario_faltas is
+  '[api:leitura] Faltas do funcionário (justificada/injustificada) por dia, com anexo opcional. Só G A M; escrita por RPC.';
+
+alter table public.funcionario_faltas enable row level security;
+drop policy if exists funcionario_faltas_ler on public.funcionario_faltas;
+create policy funcionario_faltas_ler on public.funcionario_faltas for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+drop trigger if exists a_empresa on public.funcionario_faltas;
+create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.funcionario_faltas
+  for each row execute function public.ponto_empresa_do_funcionario();
+drop trigger if exists tocar_atualizado_em on public.funcionario_faltas;
+create trigger tocar_atualizado_em before update on public.funcionario_faltas
+  for each row execute function public.tocar_atualizado_em();
+
+-- Substitui o esqueleto da …0200 (usado por ponto_calcular_dia, ponto_abonar, ocorrências e escala).
+create or replace function public.ponto_falta_do_dia(p_funcionario uuid, p_data date) returns text
+language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  select fl.tipo from public.funcionario_faltas fl where fl.funcionario_id = p_funcionario and fl.data = p_data
+$$;
+comment on function public.ponto_falta_do_dia(uuid, date) is '[interno] Tipo da falta do funcionário no dia (null = sem falta).';
+
+-- ================================================================ recálculo de rascunhos
+create or replace function public.comissao_recalcular_rascunhos(p_empresa uuid, p_inicio date, p_fim date,
+                                                                p_funcionario uuid default null)
+returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare r record; v_n int := 0;
+begin
+  for r in
+    select f.id from public.comissao_fechamentos f
+     where f.empresa_id = p_empresa and f.status = 'rascunho'
+       and (p_inicio is null or f.data_fim >= p_inicio) and (p_fim is null or f.data_inicio <= p_fim)
+       and (p_funcionario is null or exists (select 1 from public.comissao_itens it
+                                              where it.fechamento_id = f.id and it.funcionario_id = p_funcionario))
+     order by f.id
+  loop
+    perform public.comissao_calcular(r.id);
+    v_n := v_n + 1;
+  end loop;
+  return v_n;
+end $$;
+comment on function public.comissao_recalcular_rascunhos(uuid, date, date, uuid) is
+  '[interno] Recalcula os rascunhos de comissão da empresa que cruzam o período (fechados nunca).';
+
+-- Desligamento/admissão mudou → rascunhos em que o funcionário tem item são recalculados (§E.7.3).
+create or replace function public.comissao_gatilho_funcionario_vinculo()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+begin
+  perform public.comissao_recalcular_rascunhos(new.empresa_id, null, null, new.id);
+  return null;
+end $$;
+comment on function public.comissao_gatilho_funcionario_vinculo() is '[interno] Mudança de admissão/desligamento → recalcula rascunhos.';
+drop trigger if exists zz_comissao_vinculo on public.funcionarios;
+create trigger zz_comissao_vinculo after update of data_admissao, data_desligamento on public.funcionarios
+  for each row
+  when (old.data_admissao is distinct from new.data_admissao or old.data_desligamento is distinct from new.data_desligamento)
+  execute function public.comissao_gatilho_funcionario_vinculo();
+
+-- ================================================================ RPCs de faltas
+create or replace function public.falta_json(p_falta uuid)
+returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  select jsonb_build_object('id', fl.id, 'funcionario_id', fl.funcionario_id, 'funcionario_nome', f.nome, 'data', fl.data,
+                            'tipo', fl.tipo, 'motivo', fl.motivo, 'anexo_caminho', fl.anexo_caminho, 'anexo_nome', fl.anexo_nome,
+                            'criado_por_nome', fl.criado_por_nome, 'criado_em', fl.criado_em, 'atualizado_em', fl.atualizado_em)
+    from public.funcionario_faltas fl join public.funcionarios f on f.id = fl.funcionario_id
+   where fl.id = p_falta
+$$;
+
 commit;
-select 'parte 16 de 20 instalada' as resultado;
+select 'parte 17 de 21 instalada' as resultado;

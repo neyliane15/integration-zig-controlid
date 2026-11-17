@@ -32,6 +32,8 @@ export const chaves = {
   // adendo extras / ocorrências / reservas
   ocorrencias: (funcionarioId: Id) => ['ocorrencias', funcionarioId ?? null] as const,
   ocorrenciasContagem: (empresaId: Id) => ['ocorrencias-contagem', empresaId ?? null] as const,
+  ocorrenciasPonto: (empresaId: Id, funcionarioId: Id, inicio: string, fim: string) =>
+    ['ocorrencias-ponto', empresaId ?? null, funcionarioId ?? null, inicio, fim] as const,
   extras: (empresaId: Id, incluirInativos: boolean) => ['extras', empresaId ?? null, incluirInativos] as const,
   diarias: (empresaId: Id, inicio: string, fim: string, tipo: string | null = null) => ['diarias', empresaId ?? null, inicio, fim, tipo] as const,
   valoresDiaria: (empresaId: Id) => ['valores-diaria', empresaId ?? null] as const,
@@ -68,6 +70,7 @@ export type FamiliaConsulta =
   | 'empresas'
   | 'ocorrencias'
   | 'ocorrencias-contagem'
+  | 'ocorrencias-ponto'
   | 'extras'
   | 'diarias'
   | 'valores-diaria'
@@ -84,7 +87,7 @@ export function invalidar(qc: QueryClient, ...familias: FamiliaConsulta[]): Prom
 
 /** §14.8: toda mutação de ponto invalida painel, ponto-dia, espelho, alarmes, banco-horas (e extrato). */
 export function invalidarPonto(qc: QueryClient): Promise<void> {
-  return invalidar(qc, 'painel', 'ponto-dia', 'espelho', 'alarmes', 'banco-horas', 'extrato')
+  return invalidar(qc, 'painel', 'ponto-dia', 'espelho', 'alarmes', 'banco-horas', 'extrato', 'ocorrencias-ponto')
 }
 
 /** §14.8: toda mutação de tarefas invalida painel e tarefas. */

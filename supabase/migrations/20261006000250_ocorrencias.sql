@@ -338,29 +338,7 @@ end $$;
 comment on function public.ocorrencias_contagem(uuid, uuid) is '[api] Contagem de ocorrências por funcionário (G A M).';
 
 -- Resumo sem checagem (usado pelo painel, que já resolveu a empresa).
-create or replace function public.ocorrencias_resumo_empresa(p_empresa uuid, p_dias int)
-returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  with h as (select public.dia_de_trabalho(public.agora(), p_empresa) as hoje),
-       o as (select x.*, f.nome as funcionario_nome
-               from public.funcionario_ocorrencias x
-               join public.funcionarios f on f.id = x.funcionario_id, h
-              where x.empresa_id = p_empresa and x.data between h.hoje - p_dias + 1 and h.hoje)
-  select jsonb_build_object(
-    'desde', h.hoje - p_dias + 1, 'ate', h.hoje,
-    'advertencias', (select count(*) from o where o.tipo = 'advertencia'),
-    'suspensoes', (select count(*) from o where o.tipo = 'suspensao'),
-    'suspensos_hoje', (select count(distinct s.funcionario_id) from public.funcionario_ocorrencias s
-                        where s.empresa_id = p_empresa and s.tipo = 'suspensao'
-                          and h.hoje between s.suspensao_inicio and s.suspensao_fim),
-    'recentes', coalesce((select jsonb_agg(jsonb_build_object(
-                    'id', r.id, 'funcionario_id', r.funcionario_id, 'funcionario_nome', r.funcionario_nome, 'tipo', r.tipo,
-                    'data', r.data, 'motivo', r.motivo, 'dias_suspensao', r.dias_suspensao,
-                    'suspensao_inicio', r.suspensao_inicio, 'suspensao_fim', r.suspensao_fim)
-                  order by r.data desc, r.criado_em desc, r.id)
-                  from (select * from o order by o.data desc, o.criado_em desc, o.id limit 10) r), '[]'::jsonb))
-  from h
-$$;
-comment on function public.ocorrencias_resumo_empresa(uuid, int) is '[interno] Resumo de ocorrências (adendo O.4), sem checagem.';
+-- ocorrencias_resumo_empresa(empresa, dias): definida em …0330_ocorrencias_ponto.sql (inclui faltas e atrasos do ponto).
 
 create or replace function public.ocorrencias_resumo(p_dias int default 30, p_empresa uuid default null)
 returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$

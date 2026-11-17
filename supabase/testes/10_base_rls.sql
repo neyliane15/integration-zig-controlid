@@ -35,6 +35,8 @@ select teste.erro('leitura: dia_de_trabalho_atual de outra empresa',
 
 -- resolver_empresa é [interno]: testado como dono vestindo claims de leitura (regressão do bug NULL)
 select teste.como_dono();
+-- testes com datas antigas: alarmes sem o prazo de 2 dias da empresa (revertido no rollback)
+alter table public.empresas alter column ponto_alarme_prazo_dias set default 31;
 select set_config('request.jwt.claims',
   json_build_object('sub', (select id from auth.users where email = 'b1.leitura1@teste.local'), 'role', 'authenticated')::text, true);
 select teste.ok('resolver_empresa ler (null → própria)',

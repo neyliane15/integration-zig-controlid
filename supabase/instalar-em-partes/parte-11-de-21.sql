@@ -1,144 +1,8 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 10 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 11 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000220_comissoes.sql, 20261006000230_ingestao.sql. Não edite à mão.
 
 begin;
-create policy comissao_itens_ler on public.comissao_itens for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-alter table public.comissao_rateio_dias enable row level security;
-alter table public.comissao_rateio_itens_dia enable row level security;
-drop policy if exists comissao_rateio_dias_ler on public.comissao_rateio_dias;
-create policy comissao_rateio_dias_ler on public.comissao_rateio_dias for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-drop policy if exists comissao_rateio_itens_dia_ler on public.comissao_rateio_itens_dia;
-create policy comissao_rateio_itens_dia_ler on public.comissao_rateio_itens_dia for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-
--- ================================================================ gatilhos
--- Em cascata (pg_trigger_depth() > 1) só passa: exclusão quando a empresa/fechamento já não existe,
--- ou UPDATE que apenas anula FKs (funcionário/perfil excluído → on delete set null).
-create or replace function public.comissao_so_anula_fks(p_old jsonb, p_new jsonb, p_fks text[])
-returns boolean language sql immutable set search_path = public, extensions, pg_temp as $$
-  select not exists (
-    select 1 from jsonb_each(p_new) n
-     where n.key <> 'atualizado_em'
-       and n.value is distinct from p_old -> n.key
-       and not (n.key = any (p_fks) and n.value = 'null'::jsonb))
-$$;
-comment on function public.comissao_so_anula_fks(jsonb, jsonb, text[]) is '[interno] UPDATE só anula FKs?';
-
-create or replace function public.comissao_fechamentos_protecao()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-begin
-  if tg_op = 'INSERT' then
-    return new;
-  end if;
-  if old.status = 'fechado' then
-    if tg_op = 'DELETE' and pg_trigger_depth() > 1
-       and not exists (select 1 from public.empresas e where e.id = old.empresa_id) then
-      return old;
-    end if;
-    if tg_op = 'UPDATE' and pg_trigger_depth() > 1
-       and public.comissao_so_anula_fks(to_jsonb(old), to_jsonb(new), array['criado_por', 'fechado_por']) then
-      return new;
-    end if;
-    raise exception 'Fechamento já está fechado' using errcode = '22023';
-  end if;
-  if tg_op = 'DELETE' then return old; end if;
-  new.atualizado_em := now();
-  return new;
-end $$;
-comment on function public.comissao_fechamentos_protecao() is '[interno] Fechamento fechado é imutável (nem o master altera).';
-
-drop trigger if exists a_protecao on public.comissao_fechamentos;
-create trigger a_protecao before insert or update or delete on public.comissao_fechamentos
-  for each row execute function public.comissao_fechamentos_protecao();
-
-create or replace function public.comissao_itens_protecao()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_status text; v_empresa uuid; v_fech uuid;
-begin
-  v_fech := case when tg_op = 'DELETE' then old.fechamento_id else new.fechamento_id end;
-  select f.status, f.empresa_id into v_status, v_empresa from public.comissao_fechamentos f where f.id = v_fech;
-  if tg_op = 'INSERT' then
-    if v_empresa is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-    if v_status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
-    new.empresa_id := v_empresa;
-    return new;
-  end if;
-  if tg_op = 'UPDATE' and old.fechamento_id is distinct from new.fechamento_id then
-    raise exception 'Item não pode mudar de fechamento' using errcode = '22023';
-  end if;
-  if v_status = 'fechado' then
-    if tg_op = 'DELETE' and pg_trigger_depth() > 1
-       and not exists (select 1 from public.empresas e where e.id = old.empresa_id) then
-      return old;
-    end if;
-    if tg_op = 'UPDATE' and pg_trigger_depth() > 1
-       and public.comissao_so_anula_fks(to_jsonb(old), to_jsonb(new), array['funcionario_id', 'extra_id']) then
-      return new;
-    end if;
-    raise exception 'Fechamento já está fechado' using errcode = '22023';
-  end if;
-  -- fechamento inexistente (exclusão em cascata) ou rascunho: segue
-  if tg_op = 'DELETE' then return old; end if;
-  new.empresa_id := coalesce(v_empresa, old.empresa_id);
-  return new;
-end $$;
-comment on function public.comissao_itens_protecao() is '[interno] Itens de fechamento fechado são imutáveis; empresa_id do fechamento.';
-
-drop trigger if exists a_protecao on public.comissao_itens;
-create trigger a_protecao before insert or update or delete on public.comissao_itens
-  for each row execute function public.comissao_itens_protecao();
-
--- Detalhe do rateio: segue o status do fechamento (fechado = imutável); empresa_id do fechamento.
-create or replace function public.comissao_rateio_protecao()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_status text; v_empresa uuid; v_fech uuid;
-begin
-  v_fech := case when tg_op = 'DELETE' then old.fechamento_id else new.fechamento_id end;
-  select f.status, f.empresa_id into v_status, v_empresa from public.comissao_fechamentos f where f.id = v_fech;
-  if tg_op = 'INSERT' then
-    if v_empresa is null then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
-    if v_status = 'fechado' then raise exception 'Fechamento já está fechado' using errcode = '22023'; end if;
-    new.empresa_id := v_empresa;
-    return new;
-  end if;
-  if tg_op = 'UPDATE' and old.fechamento_id is distinct from new.fechamento_id then
-    raise exception 'Item não pode mudar de fechamento' using errcode = '22023';
-  end if;
-  if v_status = 'fechado' then
-    if tg_op = 'DELETE' and pg_trigger_depth() > 1
-       and not exists (select 1 from public.empresas e where e.id = old.empresa_id) then
-      return old;
-    end if;
-    raise exception 'Fechamento já está fechado' using errcode = '22023';
-  end if;
-  if tg_op = 'DELETE' then return old; end if;
-  new.empresa_id := coalesce(v_empresa, old.empresa_id);
-  return new;
-end $$;
-comment on function public.comissao_rateio_protecao() is '[interno] Detalhe do rateio de fechamento fechado é imutável.';
-
-drop trigger if exists a_protecao on public.comissao_rateio_dias;
-create trigger a_protecao before insert or update or delete on public.comissao_rateio_dias
-  for each row execute function public.comissao_rateio_protecao();
-drop trigger if exists a_protecao on public.comissao_rateio_itens_dia;
-create trigger a_protecao before insert or update or delete on public.comissao_rateio_itens_dia
-  for each row execute function public.comissao_rateio_protecao();
-
--- ================================================================ cálculo (§9)
-create or replace function public.comissao_pontos_vigentes(p_funcionario uuid, p_data date)
-returns numeric language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  select coalesce(
-    (select fp.pontos from public.funcionario_pontos fp
-      where fp.funcionario_id = p_funcionario and fp.vigente_desde <= p_data order by fp.vigente_desde desc limit 1),
-    (select fp.pontos from public.funcionario_pontos fp
-      where fp.funcionario_id = p_funcionario order by fp.vigente_desde limit 1),
-    (select f.pontos_comissao from public.funcionarios f where f.id = p_funcionario))
-$$;
-comment on function public.comissao_pontos_vigentes(uuid, date) is '[interno] Mesma regra de pontos_vigentes (§5), sem checagem de papel.';
-
 -- comissao_calcular (§9 / adendo E.3 / presença v3 §E.7) está em …0290_comissao_presenca.sql (usa faltas e escala).
 
 -- Carrega o fechamento e checa permissão de operação (G A M) e status rascunho.
@@ -534,5 +398,102 @@ begin
 end $$;
 comment on function public.ingestao_controlid_batidas(uuid, jsonb) is '[servico] Ingestão idempotente de batidas Control iD (§11.4).';
 
+-- ======================================================== Zig (§11.5)
+create or replace function public.ingestao_zig_lojas(p_integracao uuid, p_lojas jsonb)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig public.integracoes; x jsonb; v_idx int := -1; v_lidos int := 0; v_ign int := 0; v_ins int := 0; v_atu int := 0;
+  v_erros jsonb := '[]'::jsonb; v_id text; v_nome text; v_novo boolean;
+begin
+  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
+  p_lojas := public.ingestao_lista(p_lojas);
+  for x in select value from jsonb_array_elements(p_lojas) loop
+    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
+    v_id := case when jsonb_typeof(x) = 'object' then public.ingestao_texto(x -> 'id') end;
+    v_nome := case when jsonb_typeof(x) = 'object' then coalesce(public.ingestao_texto(x -> 'name'), public.ingestao_texto(x -> 'nome')) end;
+    if v_id is null then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', 'id ausente'); end if;
+      continue;
+    end if;
+    insert into public.zig_lojas as l (empresa_id, integracao_id, loja_id_externo, nome, visto_em)
+    values (ig.empresa_id, ig.id, v_id, coalesce(v_nome, v_id), public.agora())
+    on conflict (empresa_id, loja_id_externo) do update
+      set nome = coalesce(v_nome, l.nome), integracao_id = excluded.integracao_id, visto_em = excluded.visto_em
+    returning (xmax = 0) into v_novo;
+    if v_novo then v_ins := v_ins + 1; else v_atu := v_atu + 1; end if;
+  end loop;
+  return jsonb_build_object('lidos', v_lidos, 'gravados', v_ins + v_atu, 'ignorados', v_ign, 'inseridos', v_ins, 'atualizados', v_atu)
+         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
+end $$;
+comment on function public.ingestao_zig_lojas(uuid, jsonb) is '[servico] Upsert das lojas da Zig (preserva sincronizar).';
+
+create or replace function public.ingestao_zig_tipo(p_tipo text)
+returns text language sql immutable set search_path = public, extensions, pg_temp as $$
+  select coalesce((select t from unnest(array['Normal', 'Couvert', 'ZigCard', 'Entrance', 'Tip']) t
+                    where lower(t) = lower(btrim(p_tipo))), 'Outro')
+$$;
+comment on function public.ingestao_zig_tipo(text) is '[interno] type da Zig → tipo (desconhecido = Outro).';
+
+create or replace function public.ingestao_zig_saida_produtos(p_integracao uuid, p_loja text, p_data date, p_itens jsonb)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig public.integracoes; v_fuso text; x jsonb; v_idx int := -1; v_lidos int := 0; v_grav int := 0; v_ign int := 0;
+  v_rem int; v_erros jsonb := '[]'::jsonb; v_unit bigint; v_qtd numeric; v_desc bigint; v_tipo_orig text;
+begin
+  ig := public.ingestao_integracao_validar(p_integracao, array['zig']);
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  perform public.ingestao_loja_validar(ig.empresa_id, p_loja);
+  p_itens := public.ingestao_lista(p_itens);
+  select e.fuso into v_fuso from public.empresas e where e.id = ig.empresa_id;
+
+  -- (revisão 2) Serializa cargas simultâneas do mesmo dia/loja (agendador × "Sincronizar agora"): sem isto, duas
+  -- transações apagavam o dia ao mesmo tempo e AMBAS inseriam o lote → itens duplicados (serviço e comissão em dobro).
+  perform pg_advisory_xact_lock(hashtextextended('mdg:zig_vendas_itens:' || ig.empresa_id || ':' || p_loja || ':' || p_data, 0));
+  delete from public.zig_vendas_itens where empresa_id = ig.empresa_id and loja_id_externo = p_loja and data_operacao = p_data;
+  get diagnostics v_rem = row_count;
+
+  for x in select value from jsonb_array_elements(p_itens) loop
+    v_idx := v_idx + 1; v_lidos := v_lidos + 1;
+    begin
+      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
+      if public.ingestao_texto(x -> 'transactionId') is null then raise exception 'transactionId ausente'; end if;
+      v_unit := public.ingestao_centavos(x -> 'unitValue');
+      v_qtd := coalesce((public.ingestao_texto(x -> 'count'))::numeric, 0);
+      v_desc := public.ingestao_centavos(x -> 'discountValue');
+      v_tipo_orig := public.ingestao_texto(x -> 'type');
+      insert into public.zig_vendas_itens (
+        empresa_id, loja_id_externo, data_operacao, transaction_id, transaction_date, event_id, event_date, invoice_id,
+        product_id, product_sku, product_name, product_category, tipo, tipo_original, unit_value, quantidade,
+        fractional_amount, fraction_unit, discount_value, valor_total, employee_name, additions)
+      values (
+        ig.empresa_id, p_loja, p_data, public.ingestao_texto(x -> 'transactionId'),
+        public.ingestao_ler_instante(x ->> 'transactionDate', v_fuso),
+        public.ingestao_texto(x -> 'eventId'),
+        left(public.ingestao_texto(x -> 'eventDate'), 10)::date,
+        public.ingestao_texto(x -> 'invoiceId'),
+        public.ingestao_texto(x -> 'productId'), public.ingestao_texto(x -> 'productSku'),
+        public.ingestao_texto(x -> 'productName'), public.ingestao_texto(x -> 'productCategory'),
+        public.ingestao_zig_tipo(v_tipo_orig), v_tipo_orig, v_unit, v_qtd,
+        (public.ingestao_texto(x -> 'fractionalAmount'))::numeric, public.ingestao_texto(x -> 'fractionUnit'),
+        v_desc, round(v_unit * v_qtd)::bigint - v_desc,
+        public.ingestao_texto(x -> 'employeeName'),
+        case when jsonb_typeof(x -> 'additions') = 'array' then x -> 'additions' else '[]'::jsonb end);
+      v_grav := v_grav + 1;
+    exception when others then
+      v_ign := v_ign + 1;
+      if jsonb_array_length(v_erros) < 20 then v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm); end if;
+    end;
+  end loop;
+
+  if ig.cursor ->> 'ultimo_dia' is null or p_data > (ig.cursor ->> 'ultimo_dia')::date then
+    update public.integracoes set cursor = cursor || jsonb_build_object('ultimo_dia', p_data) where id = ig.id;
+  end if;
+
+  return jsonb_build_object('lidos', v_lidos, 'gravados', v_grav, 'ignorados', v_ign, 'removidos', v_rem)
+         || case when jsonb_array_length(v_erros) > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
+end $$;
+comment on function public.ingestao_zig_saida_produtos(uuid, text, date, jsonb) is '[servico] Substitui os itens vendidos do dia/loja (/erp/saida-produtos).';
+
 commit;
-select 'parte 10 de 20 instalada' as resultado;
+select 'parte 11 de 21 instalada' as resultado;

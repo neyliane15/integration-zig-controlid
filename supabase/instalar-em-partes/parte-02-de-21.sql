@@ -1,9 +1,9 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 02 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 02 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000110_cadastros.sql, 20261006000120_integracoes_sync.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000100_base.sql, 20261006000110_cadastros.sql, 20261006000120_integracoes_sync.sql. Não edite à mão.
 
 begin;
--- =====================================================================================================
+comment on function public.tornar_master(text) is '[interno] Torna um usuário existente master (só pelo SQL Editor).';-- =====================================================================================================
 -- 20261006000110_cadastros.sql  (backend-1)
 -- funcionarios, funcionario_pontos, jornadas, jornada_dias, funcionario_jornadas, perfis.funcionario_id,
 -- meu_funcionario(), pontos_vigentes(), gatilhos e RLS. Idempotente.
@@ -447,7 +447,7 @@ create table if not exists public.sync_execucoes (
   tipo                 text not null check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                          'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
                          'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar',
-                         'rhid_pessoas', 'rhid_batidas')),
+                         'rhid_pessoas', 'rhid_batidas', 'rhid_horarios')),
   gatilho              text not null check (gatilho in ('agendado', 'manual', 'webhook')),
   workflow             text not null,
   n8n_execution_id     text,
@@ -472,7 +472,7 @@ alter table public.sync_execucoes add constraint sync_execucoes_tipo_check
   check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                   'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
                   'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar',
-                  'rhid_pessoas', 'rhid_batidas'));
+                  'rhid_pessoas', 'rhid_batidas', 'rhid_horarios'));
 
 -- ====================================================================================== gatilhos
 -- Parâmetros padrão por tipo (§11.1); as chaves informadas prevalecem.
@@ -511,4 +511,4 @@ $$;
 comment on function public.integracao_envio_padrao(text, text) is '[api] Padrões de parametros.envio por tipo/modelo.';
 
 commit;
-select 'parte 02 de 20 instalada' as resultado;
+select 'parte 02 de 21 instalada' as resultado;

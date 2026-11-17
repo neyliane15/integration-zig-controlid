@@ -1,219 +1,8 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 07 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 08 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql. Não edite à mão.
 
 begin;
--- ======================================================= banco_horas_lancamentos
-create table if not exists public.banco_horas_lancamentos (
-  id               uuid primary key default gen_random_uuid(),
-  empresa_id       uuid not null references public.empresas (id) on delete cascade,
-  funcionario_id   uuid not null references public.funcionarios (id) on delete cascade,
-  data             date not null,
-  tipo             text not null check (tipo in ('saldo_inicial', 'ajuste', 'compensacao', 'pagamento')),
-  minutos          int not null,
-  motivo           text not null check (btrim(motivo) <> ''),
-  criado_por       uuid references public.perfis (id) on delete set null,
-  criado_por_nome  text not null,
-  criado_em        timestamptz not null default now()
-);
-create unique index if not exists banco_horas_saldo_inicial_uk on public.banco_horas_lancamentos (funcionario_id, data)
-  where tipo = 'saldo_inicial';
-create index if not exists banco_horas_empresa_idx on public.banco_horas_lancamentos (empresa_id, data);
-create index if not exists banco_horas_funcionario_idx on public.banco_horas_lancamentos (funcionario_id, data);
-create index if not exists banco_horas_criado_por_idx on public.banco_horas_lancamentos (criado_por);
-comment on table public.banco_horas_lancamentos is '[api:leitura] Lançamentos manuais do banco de horas (saldo inicial, ajustes, compensações, pagamentos).';
-
--- ========================================================================= RLS
-alter table public.ponto_batidas enable row level security;
-alter table public.ponto_dias enable row level security;
-alter table public.ponto_alarmes enable row level security;
-alter table public.ponto_ajustes enable row level security;
-alter table public.ponto_abonos enable row level security;
-alter table public.banco_horas_lancamentos enable row level security;
-
-drop policy if exists ponto_batidas_ler on public.ponto_batidas;
-create policy ponto_batidas_ler on public.ponto_batidas for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
-drop policy if exists ponto_dias_ler on public.ponto_dias;
-create policy ponto_dias_ler on public.ponto_dias for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
-drop policy if exists ponto_alarmes_ler on public.ponto_alarmes;
-create policy ponto_alarmes_ler on public.ponto_alarmes for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
-drop policy if exists ponto_ajustes_ler on public.ponto_ajustes;
-create policy ponto_ajustes_ler on public.ponto_ajustes for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-drop policy if exists ponto_abonos_ler on public.ponto_abonos;
-create policy ponto_abonos_ler on public.ponto_abonos for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
-drop policy if exists banco_horas_ler on public.banco_horas_lancamentos;
-create policy banco_horas_ler on public.banco_horas_lancamentos for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_leitura()));
-
--- ================================================================ auxiliares
-create or replace function public.ponto_validar_periodo(p_inicio date, p_fim date, p_max_dias int)
-returns void language plpgsql immutable set search_path = public, extensions, pg_temp as $$
-begin
-  if p_inicio is null or p_fim is null or p_fim < p_inicio then
-    raise exception 'Período inválido' using errcode = '22023';
-  end if;
-  if p_fim - p_inicio + 1 > p_max_dias then
-    raise exception 'Período máximo de % dias', p_max_dias using errcode = '22023';
-  end if;
-end $$;
-comment on function public.ponto_validar_periodo(date, date, int) is '[interno] Valida período (Período inválido / Período máximo de N dias).';
-
-create or replace function public.ponto_nome_autor()
-returns text language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  select coalesce((select p.nome from public.perfis p where p.id = auth.uid()), 'Sistema')
-$$;
-comment on function public.ponto_nome_autor() is '[interno] Nome do perfil logado ou ''Sistema''.';
-
--- resolver_empresa (b1) + checagem nula-segura do nível (defesa em profundidade).
-create or replace function public.ponto_resolver_empresa(p_empresa uuid, p_nivel text)
-returns uuid language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare v uuid;
-begin
-  v := public.resolver_empresa(p_empresa, p_nivel);
-  if (case p_nivel when 'ler' then public.pode_ler(v) when 'operar' then public.pode_operar(v)
-                   when 'administrar' then public.pode_administrar(v) end) is not true then
-    raise exception 'Sem permissão' using errcode = '42501';
-  end if;
-  return v;
-end $$;
-comment on function public.ponto_resolver_empresa(uuid, text) is '[interno] resolver_empresa com checagem nula-segura do nível.';
-
--- Instante do horário de escala t no dia de trabalho D (§2.4).
-create or replace function public.ponto_instante_escala(p_data date, p_hora time, p_fuso text, p_virada time)
-returns timestamptz language sql stable set search_path = public, extensions, pg_temp as $$
-  select ((p_data + p_hora) + (case when p_hora < p_virada then interval '1 day' else interval '0' end)) at time zone p_fuso
-$$;
-comment on function public.ponto_instante_escala(date, time, text, time) is '[interno] Instante de um horário de escala no dia de trabalho (§2.4).';
-
-create or replace function public.ponto_fmt_minutos(p_minutos bigint)
-returns text language sql immutable set search_path = public, extensions, pg_temp as $$
-  select case when p_minutos < 0 then '-' else '' end
-      || (abs(p_minutos) / 60)::text || 'h' || lpad((abs(p_minutos) % 60)::text, 2, '0')
-$$;
-comment on function public.ponto_fmt_minutos(bigint) is '[interno] Minutos como 7h30 / -3h26.';
-
--- Funcionário dentro do vínculo na data?
-create or replace function public.ponto_no_vinculo(p_admissao date, p_desligamento date, p_data date)
-returns boolean language sql immutable set search_path = public, extensions, pg_temp as $$
-  select (p_admissao is null or p_data >= p_admissao) and (p_desligamento is null or p_data <= p_desligamento)
-$$;
-comment on function public.ponto_no_vinculo(date, date, date) is '[interno] Data dentro do vínculo (admissão/desligamento).';
-
--- ============================================== gatilhos das tabelas de ponto
-create or replace function public.ponto_empresa_do_funcionario()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid;
-begin
-  if new.funcionario_id is not null then
-    select f.empresa_id into v_empresa from public.funcionarios f where f.id = new.funcionario_id;
-    if v_empresa is null then
-      raise exception 'Funcionário não encontrado' using errcode = 'P0002';
-    end if;
-    if tg_table_name = 'ponto_abonos' and new.empresa_id is not null and new.empresa_id <> v_empresa then
-      raise exception 'Funcionário de outra empresa' using errcode = '22023';
-    end if;
-    new.empresa_id := v_empresa;
-  end if;
-  return new;
-end $$;
-comment on function public.ponto_empresa_do_funcionario() is '[interno] Gatilho: empresa_id preenchido a partir do funcionário.';
-
-drop trigger if exists a_empresa on public.ponto_dias;
-create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.ponto_dias
-  for each row execute function public.ponto_empresa_do_funcionario();
-drop trigger if exists a_empresa on public.ponto_alarmes;
-create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.ponto_alarmes
-  for each row execute function public.ponto_empresa_do_funcionario();
-drop trigger if exists a_empresa on public.ponto_ajustes;
-create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.ponto_ajustes
-  for each row execute function public.ponto_empresa_do_funcionario();
-drop trigger if exists a_empresa on public.ponto_abonos;
-create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.ponto_abonos
-  for each row execute function public.ponto_empresa_do_funcionario();
-drop trigger if exists a_empresa on public.banco_horas_lancamentos;
-create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.banco_horas_lancamentos
-  for each row execute function public.ponto_empresa_do_funcionario();
-
-drop trigger if exists tocar_atualizado_em on public.ponto_alarmes;
-create trigger tocar_atualizado_em before update on public.ponto_alarmes
-  for each row execute function public.tocar_atualizado_em();
-
-create or replace function public.ponto_batidas_antes()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid;
-begin
-  if tg_op = 'INSERT' then
-    if new.funcionario_id is not null then
-      select f.empresa_id into v_empresa from public.funcionarios f where f.id = new.funcionario_id;
-      if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-      if new.empresa_id is null then new.empresa_id := v_empresa;
-      elsif new.empresa_id <> v_empresa then raise exception 'Funcionário de outra empresa' using errcode = '22023';
-      end if;
-    end if;
-    if new.integracao_id is not null then
-      select i.empresa_id into v_empresa from public.integracoes i where i.id = new.integracao_id;
-      if v_empresa is null then raise exception 'Integração não encontrada' using errcode = 'P0002'; end if;
-      if new.empresa_id is null then new.empresa_id := v_empresa;
-      elsif new.empresa_id <> v_empresa then raise exception 'Integração de outra empresa' using errcode = '22023';
-      end if;
-    end if;
-    -- regra ponto_batidas_origem (§6)
-    if not ((new.origem = 'manual' and new.funcionario_id is not null and new.motivo is not null and new.id_externo is null)
-         or (new.origem <> 'manual' and new.id_externo is not null and new.integracao_id is not null)) then
-      raise exception 'Batida inválida para a origem %', new.origem using errcode = '23514';
-    end if;
-    new.data_trabalho := public.dia_de_trabalho(new.instante, new.empresa_id);
-    return new;
-  end if;
-
-  -- UPDATE: batidas são imutáveis; só desconsiderada/motivo (RPC), funcionario_id (vínculo, §7.8)
-  -- e integracao_id → null (exclusão da integração) podem mudar.
-  if new.origem is distinct from old.origem or new.id_externo is distinct from old.id_externo
-     or new.pessoa_externa is distinct from old.pessoa_externa or new.empresa_id is distinct from old.empresa_id
-     or (new.instante is distinct from old.instante and old.origem <> 'manual')
-     or (new.integracao_id is distinct from old.integracao_id and new.integracao_id is not null) then
-    raise exception 'Batida importada não pode ser alterada' using errcode = '22023';
-  end if;
-  if new.funcionario_id is not null and new.funcionario_id is distinct from old.funcionario_id then
-    select f.empresa_id into v_empresa from public.funcionarios f where f.id = new.funcionario_id;
-    if v_empresa is distinct from new.empresa_id then
-      raise exception 'Funcionário de outra empresa' using errcode = '22023';
-    end if;
-  end if;
-  -- sempre derivada (também quando fuso/virada da empresa mudam)
-  new.data_trabalho := public.dia_de_trabalho(new.instante, new.empresa_id);
-  return new;
-end $$;
-comment on function public.ponto_batidas_antes() is '[interno] Gatilho de ponto_batidas: empresa, regra de origem, data_trabalho e imutabilidade.';
-
-drop trigger if exists a_antes on public.ponto_batidas;
-create trigger a_antes before insert or update on public.ponto_batidas
-  for each row execute function public.ponto_batidas_antes();
-
--- ============================================================ cálculo de um dia
--- (adendo escala) Status da escala rotativa no dia: a função real é definida em …0280_escala.sql. Aqui só um esqueleto
--- (criado se ainda não existir) para que a apuração funcione antes da …0280 numa instalação/atualização em andamento.
-do $$
-begin
-  if to_regprocedure('public.escala_status_ponto(uuid, date)') is null then
-    execute $f$create function public.escala_status_ponto(p_funcionario uuid, p_data date, out status text, out chegada time)
-      language sql stable security definer set search_path = public, extensions, pg_temp as
-      'select null::text, null::time'$f$;
-    execute $c$comment on function public.escala_status_ponto(uuid, date) is '[interno] Status da escala no dia (esqueleto; ver …0280).'$c$;
-  end if;
-  -- (adendo extras v3, §E.7.2) falta do funcionário no dia: a função real é definida em …0290_comissao_presenca.sql.
-  if to_regprocedure('public.ponto_falta_do_dia(uuid, date)') is null then
-    execute $f$create function public.ponto_falta_do_dia(p_funcionario uuid, p_data date) returns text
-      language sql stable security definer set search_path = public, extensions, pg_temp as 'select null::text'$f$;
-    execute $c$comment on function public.ponto_falta_do_dia(uuid, date) is '[interno] Falta do funcionário no dia (esqueleto; ver …0290).'$c$;
-  end if;
-end $$;
-
 -- §7.2/§7.3. Não grava nada. Retorna 0 linhas se o funcionário não existe; fora_do_vinculo = true se D fora do vínculo.
 create or replace function public.ponto_calcular_dia(p_funcionario uuid, p_data date)
 returns table (
@@ -275,6 +64,14 @@ declare
   v_esc        record;
   v_desloc     interval;
   v_falta      text;
+  v_ext_prev   int;
+  v_ext_hor    time[];
+  v_ext_tol_e  int;
+  v_ext_tol_f  int;
+  v_ult_idx    int;
+  v_tol_atraso int;
+  v_chegada    timestamptz;
+  v_alarme_ok  boolean;
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -364,7 +161,40 @@ begin
     end if;
   end if;
 
-  -- 3. Batidas (duplicadas: a menos de N minutos da última válida)
+  -- (adendo RHiD §R.9) previsto importado do RHiD (apuração do RHiD por dia: horário contratual, folga, feriado):
+  -- prevalece sobre jornada e escala. Folga/feriado = previsto 0 (o trabalhado vira saldo positivo, como no RHiD).
+  if v_abono is null and v_falta is distinct from 'justificada' then
+    select x.previsto_minutos, x.horarios, x.tolerancia_extra_minutos, x.tolerancia_falta_minutos
+      into v_ext_prev, v_ext_hor, v_ext_tol_e, v_ext_tol_f
+      from public.ponto_previsto_externo_dia(f.id, p_data) x;
+    if v_ext_prev is not null then
+      v_prev := v_ext_prev;
+      v_k := 0;
+      v_slots := '{}';
+      v_nomes := '{}';
+      v_esperadas := '[]'::jsonb;
+      if v_prev > 0 and coalesce(array_length(v_ext_hor, 1), 0) in (2, 4) then
+        v_k := array_length(v_ext_hor, 1);
+        v_nomes := case when v_k = 4 then array['entrada', 'saida_intervalo', 'volta_intervalo', 'saida']
+                        else array['entrada', 'saida'] end;
+        for i in 1 .. v_k loop
+          v_slots := v_slots || public.ponto_instante_escala(p_data, v_ext_hor[i], e.fuso, e.virada_dia);
+        end loop;
+        -- horário de chegada da escala do dia: desloca os horários (o atraso é contado a partir dela)
+        if v_esc.chegada is not null then
+          v_desloc := public.ponto_instante_escala(p_data, v_esc.chegada, e.fuso, e.virada_dia) - v_slots[1];
+          for i in 1 .. v_k loop
+            v_slots[i] := v_slots[i] + v_desloc;
+          end loop;
+        end if;
+        for i in 1 .. v_k loop
+          v_esperadas := v_esperadas || jsonb_build_object('batida', v_nomes[i], 'instante', v_slots[i]);
+        end loop;
+      end if;
+    end if;
+  end if;
+
+  -- 3. Batidas (duplicadas: a menos de N minutos da última válida; entrada repetida vale a 1ª, saída repetida vale a última)
   for b in
     select pb.id, pb.instante, pb.origem, pb.desconsiderada, pb.motivo
       from public.ponto_batidas pb
@@ -374,11 +204,20 @@ begin
     v_dup := false;
     if not b.desconsiderada then
       if v_ultima is not null and b.instante - v_ultima < make_interval(mins => e.ponto_janela_duplicada_minutos) then
-        v_dup := true;
         v_dups := v_dups + 1;
+        if array_length(v_validas, 1) % 2 = 0 then
+          -- repetiu a SAÍDA (válidas em nº par): vale a última (como no RHiD); a anterior vira duplicada
+          v_batidas := jsonb_set(v_batidas, array[v_ult_idx::text, 'duplicada'], 'true'::jsonb);
+          v_validas[array_length(v_validas, 1)] := b.instante;
+          v_ultima := b.instante;
+          v_ult_idx := jsonb_array_length(v_batidas);
+        else
+          v_dup := true;   -- repetiu a ENTRADA: vale a primeira
+        end if;
       else
         v_validas := v_validas || b.instante;
         v_ultima := b.instante;
+        v_ult_idx := jsonb_array_length(v_batidas);
       end if;
     end if;
     v_batidas := v_batidas || jsonb_build_object('id', b.id, 'instante', b.instante, 'origem', b.origem,
@@ -399,13 +238,20 @@ begin
   elsif v_prev > 0 then
     if v_n = 0 then
       v_saldo := -v_prev;
-    elsif abs(v_trab - v_prev) <= v_tol_dia then
+    elsif v_ext_prev is not null and v_trab >= v_prev and v_trab - v_prev <= coalesce(v_ext_tol_e, v_tol_dia) then
+      v_saldo := 0;   -- tolerância do horário do RHiD (CLT: até 10 min/dia)
+    elsif v_ext_prev is not null and v_trab < v_prev and v_prev - v_trab <= coalesce(v_ext_tol_f, v_tol_dia) then
+      v_saldo := 0;
+    elsif v_ext_prev is null and abs(v_trab - v_prev) <= v_tol_dia then
       v_saldo := 0;
     else
       v_saldo := v_trab - v_prev;
     end if;
+  elsif j.id is null and v_ext_prev is null and v_esc.status is distinct from 'folga'
+        and v_esc.status is distinct from 'ferias' then
+    v_saldo := 0;   -- sem horário previsto (sem jornada nem horário do RHiD): não há como saber a hora extra
   else
-    v_saldo := v_trab;
+    v_saldo := v_trab;   -- folga/feriado (ou dia fora da jornada) trabalhado: tudo extra
   end if;
 
   -- Quais slots foram batidos (0 < n < k): menor Σ|batida − slot|; empate → combinação lexicograficamente menor (§7.3).
@@ -430,9 +276,21 @@ begin
   end if;
 
   -- 6. Atraso: só se a 1ª batida corresponde à entrada (se a entrada faltou, o alarme é "batida faltando", não atraso).
-  if v_k > 0 and v_n > 0 and (v_melhor is null or 1 = any (v_melhor)) then
+  -- Referência: a entrada prevista (jornada ou horário do RHiD, deslocada para a chegada da escala). Sem horários mas
+  -- escalado com chegada: a chegada da escala. Tolerância: a do horário do RHiD (CLT 10) ou a da jornada; sem nenhuma, 5.
+  v_tol_atraso := case when v_ext_prev is not null then coalesce(v_ext_tol_f, v_tol_bat)
+                       when j.id is not null then v_tol_bat else 5 end;
+  -- Quem é membro da escala rotativa só tem atraso no dia em que a escala informa a chegada — inclusive antes de a escala
+  -- começar (o horário do RHiD costuma ser genérico, ex.: 08:00 para todos; sem a chegada do dia não dá para saber).
+  if v_k > 0 and v_n > 0 and (v_melhor is null or 1 = any (v_melhor))
+     and (v_esc.chegada is not null
+          or not exists (select 1 from public.escala_membros em where em.funcionario_id = f.id)) then
     v_atraso := greatest(0, floor(extract(epoch from (v_validas[1] - v_slots[1])) / 60)::int);
-    if v_atraso <= v_tol_bat then v_atraso := 0; end if;
+    if v_atraso <= v_tol_atraso then v_atraso := 0; end if;
+  elsif v_k = 0 and v_n > 0 and v_abono is null and v_esc.status = 'trabalha' and v_esc.chegada is not null then
+    v_chegada := public.ponto_instante_escala(p_data, v_esc.chegada, e.fuso, e.virada_dia);
+    v_atraso := greatest(0, floor(extract(epoch from (v_validas[1] - v_chegada)) / 60)::int);
+    if v_atraso <= v_tol_atraso or v_atraso > 6 * 60 then v_atraso := 0; end if;   -- > 6 h: outra escala, não atraso
   end if;
 
   -- 7. Situação
@@ -440,15 +298,18 @@ begin
   elsif not v_encerrado then v_situacao := 'em_andamento';
   elsif v_abono = 'suspensao' then v_situacao := 'suspenso';
   elsif v_abono is not null then v_situacao := 'abonado';
-  elsif v_k = 0 and v_n = 0 then
-    v_situacao := case when v_esc.status in ('folga', 'ferias') or j.id is not null then 'folga' else 'sem_escala' end;
+  elsif v_k = 0 and v_n = 0 and v_prev = 0 then
+    v_situacao := case when v_esc.status in ('folga', 'ferias') or j.id is not null or v_ext_prev is not null
+                       then 'folga' else 'sem_escala' end;
   elsif v_n = 0 then v_situacao := 'ausente';
   elsif v_n >= v_k and v_n % 2 = 0 then v_situacao := 'completo';
   else v_situacao := 'incompleto';
   end if;
 
-  -- 8. Alarmes (§7.3) — dia abonado ou com falta registrada não gera alarme
-  if v_abono is null and v_falta is null then
+  -- 8. Alarmes (§7.3) — dia abonado ou com falta registrada não gera alarme; só os últimos ponto_alarme_prazo_dias
+  -- (padrão 2): dias mais antigos não têm alarme aberto (o que havia é resolvido automaticamente)
+  v_alarme_ok := p_data >= public.dia_de_trabalho(public.agora(), f.empresa_id) - e.ponto_alarme_prazo_dias;
+  if v_abono is null and v_falta is null and v_alarme_ok then
     if v_encerrado then
       if v_k > 0 and v_n = 0 then
         v_alarmes := v_alarmes || jsonb_build_object(
@@ -465,6 +326,15 @@ begin
               'detalhe', format('Faltou %s (%s)', v_rotulos ->> v_nomes[i], to_char(v_slots[i] at time zone e.fuso, 'HH24:MI')));
           end if;
         end loop;
+      elsif v_k = 0 and v_n > 0 and v_n < (case when j.id is not null and v_ext_prev is null
+                                              then coalesce((select max(x.batidas_esperadas) from public.jornada_dias x
+                                                              where x.jornada_id = j.id), e.ponto_batidas_minimas)
+                                              else e.ponto_batidas_minimas end) then
+        -- sem horário previsto no dia (folga, sem escala): alerta quem bateu menos que o mínimo — o da jornada (2 ou 4) ou,
+        -- sem jornada, o da empresa (ponto_batidas_minimas, padrão 4; 0 desliga)
+        v_alarmes := v_alarmes || jsonb_build_object(
+          'tipo', 'poucas_batidas', 'batida_esperada', '', 'horario_previsto', null, 'minutos', null,
+          'detalhe', format('%s %s no dia (menos que o mínimo de batidas)', v_n, case when v_n = 1 then 'batida' else 'batidas' end));
       elsif v_n % 2 = 1 then
         v_alarmes := v_alarmes || jsonb_build_object(
           'tipo', 'batidas_impares', 'batida_esperada', '', 'horario_previsto', null, 'minutos', null,
@@ -473,7 +343,7 @@ begin
     end if;
     if e.ponto_alarme_atraso and v_atraso > 0 then
       v_alarmes := v_alarmes || jsonb_build_object(
-        'tipo', 'atraso', 'batida_esperada', 'entrada', 'horario_previsto', v_slots[1], 'minutos', v_atraso,
+        'tipo', 'atraso', 'batida_esperada', 'entrada', 'horario_previsto', coalesce(v_slots[1], v_chegada), 'minutos', v_atraso,
         'detalhe', format('Entrada %s (%s min de atraso)', to_char(v_validas[1] at time zone e.fuso, 'HH24:MI'), v_atraso));
     end if;
   end if;
@@ -583,6 +453,154 @@ begin
   end loop;
   return v_total;
 end $$;
+comment on function public.ponto_apurar(uuid, date, date) is '[interno] Apura e persiste ponto_dias/ponto_alarmes (§7.4). Retorna dias apurados.';
+
+-- Apura todos os funcionários de uma empresa (os que têm algum dia de vínculo no período).
+create or replace function public.ponto_apurar_empresa(p_empresa uuid, p_inicio date, p_fim date)
+returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_total int := 0; f record;
+begin
+  for f in
+    select fu.id from public.funcionarios fu
+     where fu.empresa_id = p_empresa
+       and (fu.data_admissao is null or fu.data_admissao <= p_fim)
+       and (fu.data_desligamento is null or fu.data_desligamento >= p_inicio)
+     order by fu.id
+  loop
+    v_total := v_total + public.ponto_apurar(f.id, p_inicio, p_fim);
+  end loop;
+  return v_total;
+end $$;
+comment on function public.ponto_apurar_empresa(uuid, date, date) is '[interno] Apura todos os funcionários da empresa no período.';
+
+-- ======================================================= gatilhos em tabelas do backend-1 (§7.8)
+create or replace function public.ponto_gatilho_controlid_usuario()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_antigo uuid := case when tg_op = 'UPDATE' then old.funcionario_id end;
+  v_alvo   uuid := new.funcionario_id;
+  v_origem text;
+  v_datas  date[];
+  v_dia    date;
+begin
+  select case when i.tipo in ('controlid_rep', 'rhid') then 'controlid_rep' else 'controlid_acesso' end into v_origem
+    from public.integracoes i where i.id = new.integracao_id;
+  -- REP (user_id_externo = CPF/PIS): sem vínculo, a batida volta ao funcionário com esse CPF/PIS na ficha (como na ingestão)
+  if v_origem = 'controlid_rep' and v_alvo is null then
+    select f.id into v_alvo from public.funcionarios f
+     where f.empresa_id = new.empresa_id and (f.cpf = new.user_id_externo or f.pis = new.user_id_externo)
+     order by f.id limit 1;
+  end if;
+  with alt as (
+    update public.ponto_batidas b
+       set funcionario_id = v_alvo
+     where b.integracao_id = new.integracao_id
+       and b.pessoa_externa = new.user_id_externo
+       and b.origem = v_origem
+       and (b.funcionario_id is null or b.funcionario_id = v_antigo)
+       and b.funcionario_id is distinct from v_alvo
+    returning b.data_trabalho)
+  select array_agg(distinct alt.data_trabalho) into v_datas from alt;
+
+  if v_datas is not null then
+    foreach v_dia in array v_datas loop
+      perform public.ponto_apurar(v_antigo, v_dia, v_dia);
+      perform public.ponto_apurar(v_alvo, v_dia, v_dia);
+    end loop;
+  end if;
+  return null;
+end $$;
+comment on function public.ponto_gatilho_controlid_usuario() is
+  '[interno] §7.8: vínculo Control iD → batidas (acesso pelo id do usuário; REP pelo CPF/PIS) e reapuração.';
+
+drop trigger if exists ponto_vinculo_batidas on public.controlid_usuarios;
+create trigger ponto_vinculo_batidas after update of funcionario_id on public.controlid_usuarios
+  for each row when (old.funcionario_id is distinct from new.funcionario_id)
+  execute function public.ponto_gatilho_controlid_usuario();
+drop trigger if exists ponto_vinculo_batidas_ins on public.controlid_usuarios;
+create trigger ponto_vinculo_batidas_ins after insert on public.controlid_usuarios
+  for each row when (new.funcionario_id is not null)
+  execute function public.ponto_gatilho_controlid_usuario();
+
+create or replace function public.ponto_gatilho_funcionario_documentos()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_datas date[]; v_dia date;
+begin
+  if new.cpf is null and new.pis is null then return null; end if;
+  with alt as (
+    update public.ponto_batidas b
+       set funcionario_id = new.id
+     where b.empresa_id = new.empresa_id
+       and b.origem = 'controlid_rep'
+       and b.funcionario_id is null
+       and b.pessoa_externa is not null
+       and b.pessoa_externa in (new.cpf, new.pis)
+    returning b.data_trabalho)
+  select array_agg(distinct alt.data_trabalho) into v_datas from alt;
+  if v_datas is not null then
+    foreach v_dia in array v_datas loop
+      perform public.ponto_apurar(new.id, v_dia, v_dia);
+    end loop;
+  end if;
+  return null;
+end $$;
+comment on function public.ponto_gatilho_funcionario_documentos() is '[interno] §7.8: CPF/PIS do funcionário → batidas REP sem vínculo.';
+
+drop trigger if exists ponto_documentos on public.funcionarios;
+create trigger ponto_documentos after insert or update of cpf, pis on public.funcionarios
+  for each row execute function public.ponto_gatilho_funcionario_documentos();
+
+create or replace function public.ponto_gatilho_funcionario_vinculo()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_atual date;
+begin
+  v_atual := public.dia_de_trabalho(public.agora(), new.empresa_id);
+  perform public.ponto_apurar(new.id, v_atual - 93, v_atual);
+  return null;
+end $$;
+comment on function public.ponto_gatilho_funcionario_vinculo() is '[interno] §7.8: mudança de admissão/desligamento/ativo → reapura 93 dias.';
+
+drop trigger if exists ponto_vinculo on public.funcionarios;
+create trigger ponto_vinculo after update of data_admissao, data_desligamento, ativo on public.funcionarios
+  for each row
+  when (old.data_admissao is distinct from new.data_admissao
+        or old.data_desligamento is distinct from new.data_desligamento
+        or old.ativo is distinct from new.ativo)
+  execute function public.ponto_gatilho_funcionario_vinculo();
+
+create or replace function public.ponto_gatilho_funcionario_jornada()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_func   uuid;
+  v_desde  date;
+  v_empresa uuid;
+  v_atual  date;
+begin
+  if tg_op = 'DELETE' then
+    v_func := old.funcionario_id; v_desde := old.vigente_desde;
+  elsif tg_op = 'UPDATE' then
+    v_func := new.funcionario_id; v_desde := least(old.vigente_desde, new.vigente_desde);
+    if old.funcionario_id is distinct from new.funcionario_id then
+      select f.empresa_id into v_empresa from public.funcionarios f where f.id = old.funcionario_id;
+      if v_empresa is not null then
+        v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
+        perform public.ponto_apurar(old.funcionario_id, greatest(old.vigente_desde, v_atual - 93), v_atual);
+      end if;
+    end if;
+  else
+    v_func := new.funcionario_id; v_desde := new.vigente_desde;
+  end if;
+  select f.empresa_id into v_empresa from public.funcionarios f where f.id = v_func;
+  if v_empresa is null then return null; end if;
+  v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
+  perform public.ponto_apurar(v_func, greatest(v_desde, v_atual - 93), v_atual);
+  return null;
+end $$;
+comment on function public.ponto_gatilho_funcionario_jornada() is '[interno] §7.8: escala do funcionário mudou → reapura desde vigente_desde (máx. 93 dias).';
+
+drop trigger if exists ponto_reapurar on public.funcionario_jornadas;
+create trigger ponto_reapurar after insert or update or delete on public.funcionario_jornadas
+  for each row execute function public.ponto_gatilho_funcionario_jornada();
 
 commit;
-select 'parte 07 de 20 instalada' as resultado;
+select 'parte 08 de 21 instalada' as resultado;

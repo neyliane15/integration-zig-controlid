@@ -1,87 +1,8 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 12 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 13 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000250_ocorrencias.sql, 20261006000260_extras.sql. Não edite à mão.
 
 begin;
-create trigger a_empresa before insert or update of ocorrencia_id, empresa_id on public.funcionario_ocorrencia_anexos
-  for each row execute function public.ocorrencia_anexo_empresa();
-
--- ================================================================ Storage (documentos)
-do $$
-begin
-  if to_regclass('storage.buckets') is not null then
-    insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-    values ('funcionarios-documentos', 'funcionarios-documentos', false, 5242880,
-            array['image/jpeg', 'image/png', 'image/webp', 'application/pdf'])
-    on conflict (id) do update
-      set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
-  end if;
-  if to_regclass('storage.objects') is not null then
-    execute 'drop policy if exists mdg_docs_ler on storage.objects';
-    execute $p$create policy mdg_docs_ler on storage.objects for select to authenticated
-      using (bucket_id = 'funcionarios-documentos'
-             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
-    execute 'drop policy if exists mdg_docs_inserir on storage.objects';
-    execute $p$create policy mdg_docs_inserir on storage.objects for insert to authenticated
-      with check (bucket_id = 'funcionarios-documentos'
-             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
-    execute 'drop policy if exists mdg_docs_alterar on storage.objects';
-    execute $p$create policy mdg_docs_alterar on storage.objects for update to authenticated
-      using (bucket_id = 'funcionarios-documentos'
-             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))
-      with check (bucket_id = 'funcionarios-documentos'
-             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
-    execute 'drop policy if exists mdg_docs_excluir on storage.objects';
-    execute $p$create policy mdg_docs_excluir on storage.objects for delete to authenticated
-      using (bucket_id = 'funcionarios-documentos'
-             and ((select public.eh_master()) or (storage.foldername(name))[1] = (select public.empresa_operacao())::text))$p$;
-  end if;
-end $$;
-
--- ================================================================ auxiliares
-create or replace function public.ocorrencia_para_operar(p_ocorrencia uuid)
-returns public.funcionario_ocorrencias language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare o public.funcionario_ocorrencias;
-begin
-  select * into o from public.funcionario_ocorrencias where id = p_ocorrencia;
-  if not found then raise exception 'Ocorrência não encontrada' using errcode = 'P0002'; end if;
-  if public.pode_operar(o.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  return o;
-end $$;
-comment on function public.ocorrencia_para_operar(uuid) is '[interno] Ocorrência existente e operável (G A M).';
-
--- Valida os campos e devolve (tipo, dias, início, fim) normalizados.
-create or replace function public.ocorrencia_validar(p_empresa uuid, p_tipo text, p_data date, p_motivo text,
-                                                     p_dias int, p_inicio date,
-                                                     out tipo text, out dias int, out inicio date, out fim date)
-language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-begin
-  if p_tipo is null or p_tipo not in ('advertencia', 'suspensao') then
-    raise exception 'Tipo de ocorrência inválido' using errcode = '22023';
-  end if;
-  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
-  if p_data > public.dia_de_trabalho(public.agora(), p_empresa) then
-    raise exception 'Data no futuro' using errcode = '22023';
-  end if;
-  if nullif(btrim(coalesce(p_motivo, '')), '') is null then
-    raise exception 'Informe o motivo' using errcode = '22023';
-  end if;
-  tipo := p_tipo;
-  if p_tipo = 'advertencia' then
-    return;
-  end if;
-  if p_dias is null or p_dias < 1 or p_dias > 30 then
-    raise exception 'Dias de suspensão inválidos (1 a 30)' using errcode = '22023';
-  end if;
-  inicio := coalesce(p_inicio, p_data);
-  if inicio < p_data or inicio > p_data + 60 then
-    raise exception 'Início da suspensão inválido' using errcode = '22023';
-  end if;
-  dias := p_dias;
-  fim := inicio + p_dias - 1;
-end $$;
-comment on function public.ocorrencia_validar(uuid, text, date, text, int, date) is '[interno] Validação de ocorrência (adendo O.3).';
-
 -- Ressincroniza os abonos 'suspensao' de uma ocorrência e reapura os dias afetados (antigos e novos).
 create or replace function public.ocorrencia_sincronizar_abonos(p_ocorrencia uuid, p_antigo_inicio date, p_antigo_fim date)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -256,29 +177,7 @@ end $$;
 comment on function public.ocorrencias_contagem(uuid, uuid) is '[api] Contagem de ocorrências por funcionário (G A M).';
 
 -- Resumo sem checagem (usado pelo painel, que já resolveu a empresa).
-create or replace function public.ocorrencias_resumo_empresa(p_empresa uuid, p_dias int)
-returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  with h as (select public.dia_de_trabalho(public.agora(), p_empresa) as hoje),
-       o as (select x.*, f.nome as funcionario_nome
-               from public.funcionario_ocorrencias x
-               join public.funcionarios f on f.id = x.funcionario_id, h
-              where x.empresa_id = p_empresa and x.data between h.hoje - p_dias + 1 and h.hoje)
-  select jsonb_build_object(
-    'desde', h.hoje - p_dias + 1, 'ate', h.hoje,
-    'advertencias', (select count(*) from o where o.tipo = 'advertencia'),
-    'suspensoes', (select count(*) from o where o.tipo = 'suspensao'),
-    'suspensos_hoje', (select count(distinct s.funcionario_id) from public.funcionario_ocorrencias s
-                        where s.empresa_id = p_empresa and s.tipo = 'suspensao'
-                          and h.hoje between s.suspensao_inicio and s.suspensao_fim),
-    'recentes', coalesce((select jsonb_agg(jsonb_build_object(
-                    'id', r.id, 'funcionario_id', r.funcionario_id, 'funcionario_nome', r.funcionario_nome, 'tipo', r.tipo,
-                    'data', r.data, 'motivo', r.motivo, 'dias_suspensao', r.dias_suspensao,
-                    'suspensao_inicio', r.suspensao_inicio, 'suspensao_fim', r.suspensao_fim)
-                  order by r.data desc, r.criado_em desc, r.id)
-                  from (select * from o order by o.data desc, o.criado_em desc, o.id limit 10) r), '[]'::jsonb))
-  from h
-$$;
-comment on function public.ocorrencias_resumo_empresa(uuid, int) is '[interno] Resumo de ocorrências (adendo O.4), sem checagem.';
+-- ocorrencias_resumo_empresa(empresa, dias): definida em …0330_ocorrencias_ponto.sql (inclui faltas e atrasos do ponto).
 
 create or replace function public.ocorrencias_resumo(p_dias int default 30, p_empresa uuid default null)
 returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
@@ -454,5 +353,114 @@ drop trigger if exists a_empresa on public.funcionario_valores_diaria;
 create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.funcionario_valores_diaria
   for each row execute function public.ponto_empresa_do_funcionario();
 
+-- diária: empresa_id do extra ou do funcionário (divergente = erro); funcionário excluído mantém a empresa.
+create or replace function public.diarias_antes_gravar()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  if new.extra_id is not null then
+    select x.empresa_id into v_empresa from public.extras x where x.id = new.extra_id;
+    if v_empresa is null then raise exception 'Extra não encontrado' using errcode = 'P0002'; end if;
+    if new.empresa_id is not null and new.empresa_id <> v_empresa then
+      raise exception 'Extra de outra empresa' using errcode = '22023';
+    end if;
+    new.empresa_id := v_empresa;
+  elsif new.funcionario_id is not null then
+    select f.empresa_id into v_empresa from public.funcionarios f where f.id = new.funcionario_id;
+    if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
+    if new.empresa_id is not null and new.empresa_id <> v_empresa then
+      raise exception 'Funcionário de outra empresa' using errcode = '22023';
+    end if;
+    new.empresa_id := v_empresa;
+  end if;
+  if tg_op = 'UPDATE' then
+    if new.funcionario_id is null and new.extra_id is null and new.empresa_id is distinct from old.empresa_id then
+      new.empresa_id := old.empresa_id;
+    end if;
+    new.atualizado_em := now();
+  end if;
+  return new;
+end $$;
+comment on function public.diarias_antes_gravar() is '[interno] Gatilho de diarias: empresa do extra/funcionário; atualizado_em.';
+drop trigger if exists a_antes on public.diarias;
+create trigger a_antes before insert or update on public.diarias
+  for each row execute function public.diarias_antes_gravar();
+
+-- ================================================================ RPCs do cadastro de extras
+create or replace function public.extra_para_operar(p_extra uuid)
+returns public.extras language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare x public.extras;
+begin
+  select * into x from public.extras where id = p_extra;
+  if not found then raise exception 'Extra não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(x.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  return x;
+end $$;
+comment on function public.extra_para_operar(uuid) is '[interno] Extra existente e operável (G A M).';
+
+create or replace function public.extra_validar(p_nome text, p_pontos numeric, p_valor bigint)
+returns void language plpgsql immutable set search_path = public, extensions, pg_temp as $$
+begin
+  if nullif(btrim(coalesce(p_nome, '')), '') is null then raise exception 'Informe o nome' using errcode = '22023'; end if;
+  if p_pontos is null or p_pontos < 0 or p_pontos > 9999.99 or p_pontos <> round(p_pontos, 2) then
+    raise exception 'Pontos inválidos' using errcode = '22023';
+  end if;
+  if p_valor is not null and (p_valor < 0 or p_valor > 100000000) then raise exception 'Valor inválido' using errcode = '22023'; end if;
+end $$;
+comment on function public.extra_validar(text, numeric, bigint) is '[interno] Validação do cadastro de extra (E.1).';
+
+create or replace function public.extra_criar(p_nome text, p_funcao text default null, p_pontos_padrao numeric default 0,
+                                              p_valor_diaria_centavos bigint default null, p_telefone text default null,
+                                              p_documento text default null, p_observacoes text default null,
+                                              p_empresa uuid default null)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid; v_id uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  perform public.extra_validar(p_nome, coalesce(p_pontos_padrao, 0), p_valor_diaria_centavos);
+  insert into public.extras (empresa_id, nome, funcao, telefone, documento, pontos_padrao, valor_diaria_centavos, observacoes, criado_por)
+  values (v_empresa, btrim(p_nome), nullif(btrim(p_funcao), ''), nullif(btrim(p_telefone), ''), nullif(btrim(p_documento), ''),
+          coalesce(p_pontos_padrao, 0), p_valor_diaria_centavos, nullif(btrim(p_observacoes), ''), public.meu_perfil_id())
+  returning id into v_id;
+  return v_id;
+end $$;
+comment on function public.extra_criar(text, text, numeric, bigint, text, text, text, uuid) is '[api] Cadastra um extra (freela) (G A M).';
+
+create or replace function public.extra_atualizar(p_extra uuid, p_nome text, p_funcao text, p_pontos_padrao numeric,
+                                                  p_valor_diaria_centavos bigint, p_telefone text, p_documento text,
+                                                  p_ativo boolean, p_observacoes text)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare x public.extras;
+begin
+  x := public.extra_para_operar(p_extra);
+  perform public.extra_validar(p_nome, coalesce(p_pontos_padrao, 0), p_valor_diaria_centavos);
+  update public.extras
+     set nome = btrim(p_nome), funcao = nullif(btrim(p_funcao), ''), telefone = nullif(btrim(p_telefone), ''),
+         documento = nullif(btrim(p_documento), ''),
+         pontos_padrao = case when x.pontos_pendente and p_pontos_padrao is null then x.pontos_padrao
+                              else coalesce(p_pontos_padrao, 0) end,
+         valor_diaria_centavos = p_valor_diaria_centavos, ativo = coalesce(p_ativo, true),
+         observacoes = nullif(btrim(p_observacoes), '')
+   where id = x.id;
+  -- (v3, §E.7.5) extra pendente: pontos informados = preencher a pontuação (cadastro e dias pendentes)
+  if x.pontos_pendente and p_pontos_padrao is not null then
+    perform public.extra_definir_pontuacao(x.id, p_pontos_padrao);
+  end if;
+end $$;
+comment on function public.extra_atualizar(uuid, text, text, numeric, bigint, text, text, boolean, text) is
+  '[api] Substitui os dados do cadastro de um extra (G A M).';
+
+create or replace function public.extra_excluir(p_extra uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare x public.extras;
+begin
+  x := public.extra_para_operar(p_extra);
+  if exists (select 1 from public.diarias d where d.extra_id = x.id) then
+    raise exception 'Extra com dias lançados: desative em vez de excluir' using errcode = '22023';
+  end if;
+  delete from public.extras where id = x.id;
+end $$;
+comment on function public.extra_excluir(uuid) is '[api] Exclui um extra sem dias lançados (G A M).';
+
 commit;
-select 'parte 12 de 20 instalada' as resultado;
+select 'parte 13 de 21 instalada' as resultado;

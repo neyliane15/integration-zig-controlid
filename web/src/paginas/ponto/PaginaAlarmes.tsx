@@ -17,7 +17,7 @@ import { dataValida, GRAVIDADE_ALARME } from '@/lib/ponto'
 import { ModalJustificar } from './ModaisPonto'
 
 const STATUS: (StatusAlarme | 'todos')[] = ['aberto', 'justificado', 'resolvido', 'todos']
-const TIPOS: TipoAlarme[] = ['sem_batida_dia_escalado', 'batida_faltando', 'batidas_impares', 'atraso']
+const TIPOS: TipoAlarme[] = ['sem_batida_dia_escalado', 'batida_faltando', 'poucas_batidas', 'batidas_impares', 'atraso']
 
 export function PaginaAlarmes() {
   const perfil = usePerfil()

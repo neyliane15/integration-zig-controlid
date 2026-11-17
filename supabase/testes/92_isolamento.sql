@@ -70,6 +70,11 @@ begin
     (a, ana, public.dia_de_trabalho_atual(a) - 45, 'injustificada', null, 'Iso'),
     (b, paolo, public.dia_de_trabalho_atual(b) - 45, 'justificada', 'Atestado', 'Iso')
   on conflict (funcionario_id, data) do nothing;
+  -- previsto do RHiD (adendo RHiD §R.9): direto na tabela
+  insert into public.ponto_previsto_externo (funcionario_id, data, empresa_id, previsto_minutos) values
+    (ana, public.dia_de_trabalho_atual(a) - 50, a, 440),
+    (paolo, public.dia_de_trabalho_atual(b) - 50, b, 440)
+  on conflict (funcionario_id, data) do nothing;
 end $$;
 
 -- ------------------------------------------------------------------ catálogo: tabelas com empresa_id (+ empresas)

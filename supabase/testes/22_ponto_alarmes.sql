@@ -5,6 +5,8 @@ begin;
 -- Relógio fixo, duas empresas (A = SP, B = Manaus), usuários de todos os papéis, jornada "Salão noite" (só sábado).
 set local app.agora = '2026-10-06 12:00:00-03';
 select teste.como_dono();
+-- testes com datas antigas: alarmes sem o prazo de 2 dias da empresa (revertido no rollback)
+alter table public.empresas alter column ponto_alarme_prazo_dias set default 31;
 insert into public.empresas (id, nome, fuso, virada_dia) values
   ('e2000000-0000-4000-8000-00000000000a', 'Teste b2 A', 'America/Sao_Paulo', '05:00'),
   ('e2000000-0000-4000-8000-00000000000b', 'Teste b2 B', 'America/Manaus', '05:00');
@@ -83,8 +85,8 @@ select teste.ok('26/09: textos dos alarmes', (select array_agg(detalhe order by 
 select teste.ok('19/09: 5 batidas → batidas_impares', (select array_agg(tipo || ':' || detalhe) from al
     where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-19' and tipo = 'batidas_impares')
   = array['batidas_impares:5 batidas (número ímpar)']);
-select teste.ok('27/09 (folga): 1 batida → batidas_impares', (select detalhe from al
-    where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-27' and tipo = 'batidas_impares') = '1 batida (número ímpar)');
+select teste.ok('27/09 (folga): 1 batida → poucas_batidas', (select detalhe from al
+    where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-27' and tipo = 'poucas_batidas') = '1 batida no dia (menos que o mínimo de batidas)');
 select teste.ok('dia sem escala nem batida não gera alarme', not exists (select 1 from al
     where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-28'));
 select teste.ok('Manaus (2 batidas esperadas): só 16:50 → falta a entrada (09:00 local)',
@@ -134,12 +136,12 @@ select public.ponto_reabrir_alarme((select id from public.ponto_alarmes
 select teste.ok('reabrir alarme que não é mais esperado: a apuração o resolve', (select (status, justificativa) is not distinct from ('resolvido'::text, null::text)
    from public.ponto_alarmes where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-19' and tipo = 'batidas_impares'));
 select public.ponto_justificar_alarme((select id from public.ponto_alarmes
-   where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-27' and tipo = 'batidas_impares'), 'Veio buscar o uniforme');
+   where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-27' and tipo = 'poucas_batidas'), 'Veio buscar o uniforme');
 select public.ponto_reabrir_alarme((select id from public.ponto_alarmes
-   where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-27' and tipo = 'batidas_impares'));
+   where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-27' and tipo = 'poucas_batidas'));
 select teste.ok('reabrir alarme ainda esperado: volta a aberto e limpa a justificativa',
   (select (status, justificativa, justificado_por, justificado_em) is not distinct from ('aberto'::text, null::text, null::uuid, null::timestamptz)
-     from public.ponto_alarmes where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-27' and tipo = 'batidas_impares')
+     from public.ponto_alarmes where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-27' and tipo = 'poucas_batidas')
   and (select alarmes_abertos from public.ponto_dias where funcionario_id = 'e2000000-0000-4000-8000-000000000302' and data = '2026-09-27') = 1);
 
 -- atraso vale também no dia corrente

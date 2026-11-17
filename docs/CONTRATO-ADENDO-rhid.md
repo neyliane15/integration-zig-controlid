@@ -88,3 +88,25 @@ RHiD um usuário próprio para a integração com leitura de pessoas e relatóri
 `/device` (REP MACAW id 55 model 1 + iDFace model 3), AFD 671 do 55 (tipo 3) e do REP-P 99000001 (cabeçalho/empresa/empregados/
 trailer da amostra real anonimizada `n8n/mocks/dados/rhid-afd-671-rep-p-amostra.txt` + tipo 7 sintéticos; o coletor devolve os
 mesmos registros), validação de 90 dias e `limit`, `POST /__mock/rhid/expirar` (força 401).
+
+## H.6 Horário previsto do RHiD (§R.9)
+
+O saldo do ponto é **trabalhado − previsto**. O previsto de cada dia vem da apuração do próprio RHiD
+(`GET /apuracao_ponto?idPerson=&dataIni=&dataFinal=`, uma pessoa por chamada, corpo = string JSON com um objeto por dia).
+
+- **Tabela** `ponto_previsto_externo` (`[api:leitura]`, RLS por empresa): `(funcionario_id, data)` →
+  `previsto_minutos` (`horasUteis`; **0** em folga ou feriado), `horarios time[]` (de `strHorarioContratualSimples`,
+  `"08:00-13:00\r\n13:30-15:50"`), `folga`, `feriado` (nome), `saldo_externo_minutos` (`saldoBancoCredDeb`, só referência).
+- **Apuração** (`ponto_calcular_dia`, …0200, gancho `ponto_previsto_externo_dia`): sem abono e sem falta justificada,
+  o previsto do RHiD prevalece sobre a jornada e a escala. Os horários viram as batidas esperadas (2 ou 4), usadas nos
+  alarmes e no atraso. Com previsto 0 (folga ou feriado), o trabalhado é todo saldo positivo. Dia previsto sem batida
+  fica `ausente`, com saldo −previsto.
+- **RPCs** `[servico]`:
+  - `ingestao_rhid_vinculados(integracao)` → CPFs ligados a funcionário ativo.
+  - `ingestao_rhid_horarios(integracao, dias)` grava só o que mudou, reapura os dias alterados e grava
+    `cursor.horarios_em`.
+- **N8N** (`importarHorariosRhid`, execução `rhid_horarios`): roda depois das batidas no máximo a cada
+  `parametros.horarios_intervalo_minutos` (padrão 60). No "Sincronizar agora" e em período pedido, roda sempre.
+  - Janela: o período pedido ou os últimos `dias_horarios` (padrão 40), até hoje, com no máximo 90 dias.
+  - `importar_horarios: false` desliga.
+  - Pessoa sem apuração não derruba a execução: ela termina como `parcial`.

@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 06 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 06 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000140_envio_controlid.sql, 20261006000200_ponto.sql. Não edite à mão.
 
@@ -457,7 +457,7 @@ create table if not exists public.ponto_alarmes (
   empresa_id                 uuid not null references public.empresas (id) on delete cascade,
   funcionario_id             uuid not null references public.funcionarios (id) on delete cascade,
   data                       date not null,
-  tipo                       text not null check (tipo in ('batida_faltando', 'batidas_impares',
+  tipo                       text not null check (tipo in ('batida_faltando', 'batidas_impares', 'poucas_batidas',
                                                            'sem_batida_dia_escalado', 'atraso')),
   batida_esperada            text not null default ''
                              check (batida_esperada in ('', 'entrada', 'saida_intervalo', 'volta_intervalo', 'saida')),
@@ -475,6 +475,9 @@ create table if not exists public.ponto_alarmes (
   unique (funcionario_id, data, tipo, batida_esperada)
 );
 create index if not exists ponto_alarmes_empresa_idx on public.ponto_alarmes (empresa_id, status, data desc);
+alter table public.ponto_alarmes drop constraint if exists ponto_alarmes_tipo_check;
+alter table public.ponto_alarmes add constraint ponto_alarmes_tipo_check
+  check (tipo in ('batida_faltando', 'batidas_impares', 'poucas_batidas', 'sem_batida_dia_escalado', 'atraso'));
 create index if not exists ponto_alarmes_justificado_por_idx on public.ponto_alarmes (justificado_por);
 comment on table public.ponto_alarmes is '[api:leitura] Alarmes de ponto (gerados pela apuração; justificar/reabrir por RPC).';
 
@@ -524,9 +527,6 @@ alter table public.ponto_abonos add constraint ponto_abonos_tipo_check
 alter table public.ponto_abonos add column if not exists escala_ajuste_id uuid;
 create index if not exists ponto_abonos_escala_ajuste_idx on public.ponto_abonos (escala_ajuste_id);
 alter table public.ponto_dias drop constraint if exists ponto_dias_situacao_check;
-alter table public.ponto_dias add constraint ponto_dias_situacao_check
-  check (situacao in ('completo', 'incompleto', 'ausente', 'folga', 'sem_escala', 'abonado', 'suspenso', 'em_andamento',
-                      'falta_justificada', 'falta_injustificada'));
 
 commit;
-select 'parte 06 de 20 instalada' as resultado;
+select 'parte 06 de 21 instalada' as resultado;

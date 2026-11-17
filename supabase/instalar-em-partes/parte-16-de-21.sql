@@ -1,77 +1,8 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 15 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 16 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000280_escala.sql. Não edite à mão.
 
 begin;
-create or replace function public.escala_membros_antes()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid;
-begin
-  select s.empresa_id into v_empresa from public.escala_setores s where s.id = new.setor_id;
-  if v_empresa is null then raise exception 'Setor não encontrado' using errcode = 'P0002'; end if;
-  new.empresa_id := v_empresa;
-  if not exists (select 1 from public.funcionarios f where f.id = new.funcionario_id and f.empresa_id = v_empresa) then
-    raise exception 'Funcionário de outra empresa' using errcode = '22023';
-  end if;
-  return new;
-end $$;
-comment on function public.escala_membros_antes() is '[interno] Gatilho: empresa do membro = do setor; funcionário da mesma empresa.';
-drop trigger if exists a_antes on public.escala_membros;
-create trigger a_antes before insert or update on public.escala_membros
-  for each row execute function public.escala_membros_antes();
-
-create or replace function public.escala_ajustes_antes()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare m record;
-begin
-  select x.empresa_id, x.funcionario_id into m from public.escala_membros x where x.id = new.membro_id;
-  if m.empresa_id is null then raise exception 'Funcionário fora da escala' using errcode = '22023'; end if;
-  new.empresa_id := m.empresa_id;
-  new.funcionario_id := m.funcionario_id;
-  return new;
-end $$;
-comment on function public.escala_ajustes_antes() is '[interno] Gatilho: empresa/funcionário do ajuste = do membro.';
-drop trigger if exists a_antes on public.escala_ajustes;
-create trigger a_antes before insert or update on public.escala_ajustes
-  for each row execute function public.escala_ajustes_antes();
-
-drop trigger if exists tocar_atualizado_em on public.escala_config;
-create trigger tocar_atualizado_em before update on public.escala_config
-  for each row execute function public.tocar_atualizado_em();
-drop trigger if exists tocar_atualizado_em on public.escala_setores;
-create trigger tocar_atualizado_em before update on public.escala_setores
-  for each row execute function public.tocar_atualizado_em();
-drop trigger if exists tocar_atualizado_em on public.escala_membros;
-create trigger tocar_atualizado_em before update on public.escala_membros
-  for each row execute function public.tocar_atualizado_em();
-drop trigger if exists tocar_atualizado_em on public.escala_ajustes;
-create trigger tocar_atualizado_em before update on public.escala_ajustes
-  for each row execute function public.tocar_atualizado_em();
-
--- ================================================================ regra do rodízio (§S.2)
--- Membros com a posição k (0-based) e o tamanho n do caminho; p_setor restringe a um setor (usado pelo ponto).
-create or replace function public.escala_membros_rodizio(p_empresa uuid, p_setor uuid default null)
-returns table (id uuid, funcionario_id uuid, setor_id uuid, caminho smallint, posicao smallint, k int, n int,
-               folgas_base smallint[], chegada_padrao time, fase_setor int, data_admissao date, data_desligamento date)
-language sql stable security definer rows 40 set search_path = public, extensions, pg_temp set jit = off as $$
-  select m.id, m.funcionario_id, m.setor_id, m.caminho, m.posicao,
-         (row_number() over (partition by m.setor_id, m.caminho order by m.posicao, m.id) - 1)::int,
-         (count(*) over (partition by m.setor_id, m.caminho))::int,
-         m.folgas_base, m.chegada_padrao, s.fase, f.data_admissao, f.data_desligamento
-    from public.escala_membros m
-    join public.escala_setores s on s.id = m.setor_id
-    join public.funcionarios f on f.id = m.funcionario_id
-   where m.empresa_id = p_empresa and (p_setor is null or m.setor_id = p_setor)
-$$;
-comment on function public.escala_membros_rodizio(uuid, uuid) is '[interno] Membros com posição (k) e tamanho (n) do caminho.';
-
--- Número da semana (w) do dia em relação à âncora.
-create or replace function public.escala_semana_num(p_data date, p_ancora date)
-returns int language sql immutable set search_path = public, extensions, pg_temp as $$
-  select ((p_data - (extract(isodow from p_data)::int - 1)) - p_ancora) / 7
-$$;
-comment on function public.escala_semana_num(date, date) is '[interno] Semana do dia contada a partir da âncora (semana 0).';
-
 -- Escala calculada (regra + ajustes) para o período; p_funcionario restringe a um funcionário.
 create or replace function public.escala_calcular(p_empresa uuid, p_inicio date, p_fim date, p_funcionario uuid default null)
 returns table (funcionario_id uuid, membro_id uuid, setor_id uuid, data date, status text, status_auto text, origem text,
@@ -450,5 +381,82 @@ end $$;
 comment on function public.escala_salvar_membro(uuid, uuid, smallint[], time, smallint, smallint, int) is
   '[api] Põe/atualiza um funcionário num setor da escala (upsert por funcionário) e reapura.';
 
+create or replace function public.escala_definir_membros(p_setor uuid, p_membros jsonb)
+returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  s public.escala_setores; v_afetados uuid[]; v_lista uuid[]; x jsonb; i int := 0;
+  v_func uuid; v_folgas smallint[]; v_cheg time; v_cam smallint; v_pos smallint;
+begin
+  s := public.escala_setor_para_operar(p_setor);
+  if p_membros is null or jsonb_typeof(p_membros) <> 'array' then
+    raise exception 'Lista de membros inválida' using errcode = '22023';
+  end if;
+  begin
+    select coalesce(array_agg((e ->> 'funcionario_id')::uuid), '{}') into v_lista from jsonb_array_elements(p_membros) e;
+  exception when others then
+    raise exception 'Lista de membros inválida' using errcode = '22023';
+  end;
+  if exists (select 1 from unnest(v_lista) u where u is null) then
+    raise exception 'Lista de membros inválida' using errcode = '22023';
+  end if;
+  if (select count(distinct u) from unnest(v_lista) u) <> coalesce(array_length(v_lista, 1), 0) then
+    raise exception 'Funcionário repetido na lista' using errcode = '22023';
+  end if;
+  v_afetados := public.escala_funcionarios_dos_setores(array[p_setor])
+             || public.escala_funcionarios_dos_setores(
+                  (select coalesce(array_agg(distinct m.setor_id), '{}') from public.escala_membros m where m.funcionario_id = any (v_lista)))
+             || v_lista;
+  delete from public.escala_membros where setor_id = p_setor and not (funcionario_id = any (v_lista));
+  update public.escala_membros set caminho = null, posicao = null where setor_id = p_setor;
+  for x in select * from jsonb_array_elements(p_membros) loop
+    i := i + 1;
+    begin
+      v_func := (x ->> 'funcionario_id')::uuid;
+      v_folgas := case when jsonb_typeof(x -> 'folgas_base') = 'array'
+                       then array(select jsonb_array_elements_text(x -> 'folgas_base')::smallint) else '{}'::smallint[] end;
+      v_cheg := nullif(x ->> 'chegada_padrao', '')::time;
+      v_cam := (x ->> 'caminho')::smallint;
+      v_pos := (x ->> 'posicao')::smallint;
+    exception when others then
+      raise exception 'Lista de membros inválida' using errcode = '22023';
+    end;
+    perform public.escala_gravar_membro(p_setor, v_func, v_folgas, v_cheg, v_cam, v_pos, i);
+  end loop;
+  perform public.escala_reapurar(s.empresa_id, v_afetados, (select c.ancora from public.escala_config c where c.empresa_id = s.empresa_id));
+  return i;
+end $$;
+comment on function public.escala_definir_membros(uuid, jsonb) is '[api] Substitui a lista de membros do setor (ordem e caminhos) e reapura.';
+
+create or replace function public.escala_remover_membro(p_funcionario uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare m public.escala_membros; v_func uuid[];
+begin
+  m := public.escala_membro_para_operar(p_funcionario);
+  v_func := public.escala_funcionarios_dos_setores(array[m.setor_id]);
+  delete from public.escala_membros where id = m.id;
+  perform public.escala_reapurar(m.empresa_id, v_func, (select c.ancora from public.escala_config c where c.empresa_id = m.empresa_id));
+end $$;
+comment on function public.escala_remover_membro(uuid) is '[api] Tira o funcionário da escala (apaga seus ajustes) e reapura.';
+
+create or replace function public.escala_adicionar_funcionario(p_setor uuid, p_nome text, p_cargo text default null,
+                                                               p_folgas_base smallint[] default '{}', p_chegada_padrao time default null,
+                                                               p_caminho smallint default null, p_posicao smallint default null)
+returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare s public.escala_setores; v_nome text; v_func uuid;
+begin
+  s := public.escala_setor_para_operar(p_setor);
+  v_nome := nullif(btrim(coalesce(p_nome, '')), '');
+  if v_nome is null then raise exception 'Informe o nome' using errcode = '22023'; end if;
+  insert into public.funcionarios (empresa_id, nome, cargo, pontos_comissao)
+  values (s.empresa_id, v_nome, nullif(btrim(coalesce(p_cargo, '')), ''), 0)
+  returning id into v_func;
+  perform public.escala_gravar_membro(p_setor, v_func, p_folgas_base, p_chegada_padrao, p_caminho, p_posicao, null);
+  perform public.escala_reapurar(s.empresa_id, public.escala_funcionarios_dos_setores(array[p_setor]),
+                                 (select c.ancora from public.escala_config c where c.empresa_id = s.empresa_id));
+  return v_func;
+end $$;
+comment on function public.escala_adicionar_funcionario(uuid, text, text, smallint[], time, smallint, smallint) is
+  '[api] Cadastra um funcionário e o põe num setor da escala; retorna o id do funcionário.';
+
 commit;
-select 'parte 15 de 20 instalada' as resultado;
+select 'parte 16 de 21 instalada' as resultado;

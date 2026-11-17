@@ -785,3 +785,27 @@ Reaproveitadas: `Sem permissão`, `Informe a empresa`, `Informe o motivo`, `Info
 | comissao_rateio_dias, comissao_rateio_itens_dia | `[api:leitura]` | G A M | só o cálculo (gatilho: fechado = imutável) |
 | funcionario_valores_diaria, diarias | `[api:leitura]` | G A M | RPC (G A M) |
 | reservas | `[api:leitura]` | G A M (L via `reservas_listar`, sem telefone/e-mail) | RPC (G A M) / ingestão |
+
+## O.6 Faltas e atrasos nas ocorrências; alarmes de ponto com prazo (migração 0330)
+
+**Ocorrências do ponto.** `ocorrencias_ponto(inicio, fim, funcionario?, empresa?)` é `[api]` e exige perfil G A M. Devolve:
+
+- **faltas**: as registradas em `funcionario_faltas` (justificada ou injustificada) e os dias `ausente` do ponto ainda
+  não registrados (dia previsto, encerrado, sem batida);
+- **atrasos**: `ponto_dias.atraso_minutos > 0`, com a hora da 1ª batida e a entrada prevista.
+
+`ocorrencias_resumo` (usado no painel) passa a trazer também `faltas`, `atrasos`, `minutos_atraso` e `ponto_recentes`.
+
+**Atraso.** Compara a 1ª batida com a entrada prevista: a da jornada ou a do horário do RHiD, deslocada para a
+**chegada da escala** do dia. Sem horário previsto, mas escalado com chegada, a referência é a própria chegada; nesse
+caso, um atraso acima de 6 h não conta. A tolerância é a do RHiD (CLT, 10 min) ou a da jornada; sem nenhuma das duas,
+5 min.
+
+**Alarmes.**
+- **Prazo.** Só os últimos `empresas.ponto_alarme_prazo_dias` dias têm alarme aberto (padrão 2, de 1 a 93). A rotina
+  diária resolve automaticamente os alarmes mais antigos.
+- **Poucas batidas.** Novo tipo `poucas_batidas`, para dia sem horário previsto (folga ou fora da escala) com menos
+  batidas que o mínimo: o da jornada (2 ou 4) ou, sem jornada, `empresas.ponto_batidas_minimas` (padrão 4; 0 desliga).
+  Esse alarme substitui o de batidas ímpares nesse caso.
+
+**Painel.** `escalados_hoje` conta quem está escalado na escala rotativa, além de quem tem horário previsto no dia.

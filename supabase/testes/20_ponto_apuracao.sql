@@ -5,6 +5,8 @@ begin;
 -- Relógio fixo, duas empresas (A = SP, B = Manaus), usuários de todos os papéis, jornada "Salão noite" (só sábado).
 set local app.agora = '2026-10-06 12:00:00-03';
 select teste.como_dono();
+-- testes com datas antigas: alarmes sem o prazo de 2 dias da empresa (revertido no rollback)
+alter table public.empresas alter column ponto_alarme_prazo_dias set default 31;
 insert into public.empresas (id, nome, fuso, virada_dia) values
   ('e2000000-0000-4000-8000-00000000000a', 'Teste b2 A', 'America/Sao_Paulo', '05:00'),
   ('e2000000-0000-4000-8000-00000000000b', 'Teste b2 B', 'America/Manaus', '05:00');
@@ -89,7 +91,7 @@ select teste.ok('alarmes do vetor §7.6 (sem atraso: desligado na empresa)',
   (select array_agg(data::text || ' ' || tipo || ' ' || batida_esperada order by data, tipo)
      from public.ponto_alarmes where funcionario_id = 'e2000000-0000-4000-8000-000000000301'
       and data >= '2026-09-12' and status = 'aberto')
-  = array['2026-09-12 sem_batida_dia_escalado ', '2026-09-13 batidas_impares ', '2026-09-19 batida_faltando volta_intervalo']);
+  = array['2026-09-12 sem_batida_dia_escalado ', '2026-09-13 poucas_batidas ', '2026-09-19 batida_faltando volta_intervalo']);
 select teste.ok('detalhe do alarme de batida faltando',
   (select detalhe from public.ponto_alarmes where funcionario_id = 'e2000000-0000-4000-8000-000000000301'
       and tipo = 'batida_faltando') = 'Faltou a volta do intervalo (21:30)');
@@ -99,8 +101,9 @@ select teste.ok('horario_previsto da volta do intervalo = 21:30 local',
 select teste.ok('detalhe sem batida em dia de escala',
   (select detalhe from public.ponto_alarmes where tipo = 'sem_batida_dia_escalado' and data = '2026-09-12'
       and funcionario_id = 'e2000000-0000-4000-8000-000000000301') = 'Nenhuma batida em dia de escala (17:00–01:00)');
-select teste.ok('detalhe de batidas ímpares', (select detalhe from public.ponto_alarmes where tipo = 'batidas_impares'
-      and funcionario_id = 'e2000000-0000-4000-8000-000000000301') = '3 batidas (número ímpar)');
+select teste.ok('folga com 3 batidas (jornada de 4): alarme de poucas batidas', (select detalhe from public.ponto_alarmes
+   where tipo = 'poucas_batidas' and funcionario_id = 'e2000000-0000-4000-8000-000000000301')
+   = '3 batidas no dia (menos que o mínimo de batidas)');
 select teste.ok('ponto_dias.alarmes_abertos', (select alarmes_abertos from public.ponto_dias
    where funcionario_id = 'e2000000-0000-4000-8000-000000000301' and data = '2026-09-19') = 1);
 
@@ -180,7 +183,7 @@ update public.empresas set fuso = 'America/Manaus' where id = 'e2000000-0000-400
 select teste.ok('após trocar o fuso para Manaus a mesma batida vai para o dia 01', (select data_trabalho from public.ponto_batidas
    where instante = '2026-10-02 08:30:00Z') = '2026-10-01');
 
--- sem escala vigente: sem_escala; batidas viram hora extra
+-- sem escala vigente: sem_escala; sem horário previsto o saldo é 0
 select teste.ok('antes de vigorar a jornada (agosto): sem_escala',
   (select (situacao, previsto_minutos) = ('sem_escala'::text, 0)
      from public.ponto_calcular_dia('e2000000-0000-4000-8000-000000000301', '2026-08-15')));

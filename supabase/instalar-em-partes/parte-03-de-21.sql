@@ -1,4 +1,4 @@
--- Meu Dia de Gerente — instalação do banco, PARTE 03 DE 20.
+-- Meu Dia de Gerente — instalação do banco, PARTE 03 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000120_integracoes_sync.sql. Não edite à mão.
 
@@ -595,4 +595,4 @@ comment on function public.ingestao_funcionarios_para_exportar(uuid) is
   '[servico] Funcionários no vínculo ainda sem usuário ligado neste equipamento.';
 
 commit;
-select 'parte 03 de 20 instalada' as resultado;
+select 'parte 03 de 21 instalada' as resultado;

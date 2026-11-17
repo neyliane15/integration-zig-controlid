@@ -46,6 +46,7 @@ export const rotuloPapel: Record<Papel, string> = {
 export const rotuloTipoAlarme: Record<TipoAlarme, string> = {
   batida_faltando: 'Batida faltando',
   batidas_impares: 'Batidas ímpares',
+  poucas_batidas: 'Poucas batidas',
   sem_batida_dia_escalado: 'Sem batidas no dia escalado',
   atraso: 'Atraso',
 }
