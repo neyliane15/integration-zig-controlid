@@ -338,6 +338,13 @@ begin
       'select null::text, null::time'$f$;
     execute $c$comment on function public.escala_status_ponto(uuid, date) is '[interno] Status da escala no dia (esqueleto; ver …0280).'$c$;
   end if;
+  -- (adendo RHiD §R.9) horário previsto importado do RHiD: a função real é definida em …0320_rhid_horarios.sql.
+  if to_regprocedure('public.ponto_previsto_externo_dia(uuid, date)') is null then
+    execute $f$create function public.ponto_previsto_externo_dia(p_funcionario uuid, p_data date,
+      out previsto_minutos int, out horarios time[])
+      language sql stable security definer set search_path = public, extensions, pg_temp as 'select null::int, null::time[]'$f$;
+    execute $c$comment on function public.ponto_previsto_externo_dia(uuid, date) is '[interno] Previsto externo do dia (esqueleto; ver …0320).'$c$;
+  end if;
   -- (adendo extras v3, §E.7.2) falta do funcionário no dia: a função real é definida em …0290_comissao_presenca.sql.
   if to_regprocedure('public.ponto_falta_do_dia(uuid, date)') is null then
     execute $f$create function public.ponto_falta_do_dia(p_funcionario uuid, p_data date) returns text
@@ -407,6 +414,8 @@ declare
   v_esc        record;
   v_desloc     interval;
   v_falta      text;
+  v_ext_prev   int;
+  v_ext_hor    time[];
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -496,6 +505,29 @@ begin
     end if;
   end if;
 
+  -- (adendo RHiD §R.9) previsto importado do RHiD (apuração do RHiD por dia: horário contratual, folga, feriado):
+  -- prevalece sobre jornada e escala. Folga/feriado = previsto 0 (o trabalhado vira saldo positivo, como no RHiD).
+  if v_abono is null and v_falta is distinct from 'justificada' then
+    select x.previsto_minutos, x.horarios into v_ext_prev, v_ext_hor
+      from public.ponto_previsto_externo_dia(f.id, p_data) x;
+    if v_ext_prev is not null then
+      v_prev := v_ext_prev;
+      v_k := 0;
+      v_slots := '{}';
+      v_nomes := '{}';
+      v_esperadas := '[]'::jsonb;
+      if v_prev > 0 and coalesce(array_length(v_ext_hor, 1), 0) in (2, 4) then
+        v_k := array_length(v_ext_hor, 1);
+        v_nomes := case when v_k = 4 then array['entrada', 'saida_intervalo', 'volta_intervalo', 'saida']
+                        else array['entrada', 'saida'] end;
+        for i in 1 .. v_k loop
+          v_slots := v_slots || public.ponto_instante_escala(p_data, v_ext_hor[i], e.fuso, e.virada_dia);
+          v_esperadas := v_esperadas || jsonb_build_object('batida', v_nomes[i], 'instante', v_slots[i]);
+        end loop;
+      end if;
+    end if;
+  end if;
+
   -- 3. Batidas (duplicadas: a menos de N minutos da última válida)
   for b in
     select pb.id, pb.instante, pb.origem, pb.desconsiderada, pb.motivo
@@ -572,8 +604,9 @@ begin
   elsif not v_encerrado then v_situacao := 'em_andamento';
   elsif v_abono = 'suspensao' then v_situacao := 'suspenso';
   elsif v_abono is not null then v_situacao := 'abonado';
-  elsif v_k = 0 and v_n = 0 then
-    v_situacao := case when v_esc.status in ('folga', 'ferias') or j.id is not null then 'folga' else 'sem_escala' end;
+  elsif v_k = 0 and v_n = 0 and v_prev = 0 then
+    v_situacao := case when v_esc.status in ('folga', 'ferias') or j.id is not null or v_ext_prev is not null
+                       then 'folga' else 'sem_escala' end;
   elsif v_n = 0 then v_situacao := 'ausente';
   elsif v_n >= v_k and v_n % 2 = 0 then v_situacao := 'completo';
   else v_situacao := 'incompleto';

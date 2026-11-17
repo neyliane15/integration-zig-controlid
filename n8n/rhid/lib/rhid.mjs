@@ -18,6 +18,9 @@
 //   parametros { equipamentos: [] (ids; vazio = REPs do cliente + REP-P), incluir_rep_p: true, dias_retroativos: 7,
 //                importar_pessoas: true, url_base?: (padrão RHID_BASE_PADRAO ou variável RHID_BASE_URL), limite_afd?: 50000 }
 //   cursor     { nsr_por_equipamento: { "<chave>": ultimo_nsr } }   chave = id do equipamento; coletor do REP-P = "c<id>"
+//              horarios_em: último envio dos horários previstos (§R.9; parametros importar_horarios, horarios_intervalo_minutos,
+//              dias_horarios)
+//   GET  {base}/apuracao_ponto?idPerson=&dataIni=&dataFinal=  → string JSON: um objeto por dia (horasUteis, folga, isHoliday…)
 // Nunca registra senha nem token (nem em mensagem de erro, nem em sync_execucoes.detalhes).
 
 export const RHID_BASE_PADRAO = 'https://www.rhid.com.br/v2/api.svc'
@@ -382,6 +385,141 @@ export async function importarBatidasRhid(config, entrada, sessao, deps) {
     ignorados: tot.ignorados,
     erro: falhou ? falhas.slice(0, 3).join(' | ') : errosBanco.length ? `${errosBanco.length} marcação(ões) recusada(s) pelo banco` : null,
     detalhes: { equipamentos, duplicados: tot.duplicados, sem_funcionario: tot.sem_funcionario, avisos, logins: sessao.logins },
+    tentativas: sessao.tentativasMax,
+  }
+}
+
+/** CPF do RHiD (número, perde zeros à esquerda) → 11 dígitos, ou null. */
+export function cpfRhid(v) {
+  const d = String(v ?? '').replace(/\D/g, '')
+  if (!d || /^0+$/.test(d) || d.length > 11) return null
+  return d.padStart(11, '0')
+}
+
+/**
+ * Horários previstos (adendo RHiD §R.9): roda junto com as batidas, no máximo a cada `horarios_intervalo_minutos`
+ * (padrão 60, pelo cursor.horarios_em), ou sempre no "Sincronizar agora"/período pedido. `importar_horarios: false` desliga.
+ */
+export function deveImportarHorariosRhid(entrada, config, agoraMs) {
+  const p = (config && config.parametros) || {}
+  if (p.importar_horarios === false) return false
+  if (entrada && (entrada.gatilho === 'manual' || entrada.data_inicio || entrada.data_fim)) return true
+  const ultimo = Date.parse((config && config.cursor && config.cursor.horarios_em) || '')
+  if (!Number.isFinite(ultimo)) return true
+  const intervalo = inteiroRhid(p.horarios_intervalo_minutos, 60, 0, 24 * 60)
+  return (agoraMs ?? Date.now()) - ultimo >= intervalo * 60000
+}
+
+/** Período da apuração: o pedido (≤ 90 dias, até hoje) ou [hoje − dias_horarios (padrão 40), hoje]. */
+export function janelaHorariosRhid(entrada, config) {
+  const hoje = config && config.dia_trabalho_atual
+  if (!dataValidaRhid(hoje)) throw new Error('Configuração sem dia_trabalho_atual')
+  const p = (config && config.parametros) || {}
+  let ini = entrada && entrada.data_inicio
+  let fim = entrada && entrada.data_fim
+  if (ini || fim) {
+    ini = ini || fim
+    fim = fim || hoje
+    if (!dataValidaRhid(ini) || !dataValidaRhid(fim) || ini > fim) throw new Error(`Período inválido: ${ini} a ${fim}`)
+    if (fim > hoje) fim = hoje
+    if (ini > fim) ini = fim
+  } else {
+    fim = hoje
+    ini = somarDiasRhid(hoje, -inteiroRhid(p.dias_horarios, 40, 0, RHID_MAX_DIAS - 1))
+  }
+  if (somarDiasRhid(ini, RHID_MAX_DIAS - 1) < fim) ini = somarDiasRhid(fim, -(RHID_MAX_DIAS - 1))
+  return { dataIni: ini, dataFinal: fim }
+}
+
+/**
+ * Apuração do RHiD de uma pessoa (GET /apuracao_ponto; corpo = string JSON com um objeto por dia) → dias para
+ * `ingestao_rhid_horarios`: previsto = horasUteis (0 em folga/feriado), horários de strHorarioContratualSimples
+ * ("08:00-13:00\r\n13:30-15:50"), feriado = nome, saldo = saldoBancoCredDeb.
+ */
+export function diasApuracaoRhid(corpo, cpf) {
+  let c = corpoJsonRhid(corpo)
+  if (typeof c === 'string') c = corpoJsonRhid(c)
+  if (c && !Array.isArray(c) && typeof c === 'object') {
+    if (Array.isArray(c.records)) c = c.records
+    else throw new Error(`RHiD apuração: ${String(c.error || c.message || 'resposta inesperada').slice(0, 200)}`)
+  }
+  if (!Array.isArray(c)) throw new Error('RHiD apuração: resposta sem lista de dias')
+  const dias = []
+  for (const d of c) {
+    if (!d || typeof d !== 'object') continue
+    const data = String(d.date || d.dateTimeStr || '').replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3').slice(0, 10)
+    if (!dataValidaRhid(data)) continue
+    const horarios = String(d.strHorarioContratualSimples || '')
+      .split(/[\r\n]+/)
+      .flatMap((faixa) => faixa.split('-').map((h) => h.trim()))
+      .filter((h) => /^\d{1,2}:\d{2}$/.test(h))
+    let feriado = null
+    if (Number(d.isHoliday) > 0 || d.holiday) {
+      let h = d.holiday
+      if (typeof h === 'string') h = corpoJsonRhid(h)
+      feriado = String((h && typeof h === 'object' && h.name) || 'Feriado').slice(0, 120)
+    }
+    const folga = d.folga === true
+    const uteis = Math.max(0, Math.min(1440, Math.trunc(Number(d.horasUteis) || 0)))
+    dias.push({
+      cpf,
+      data,
+      previsto_minutos: folga || feriado ? 0 : uteis,
+      horarios,
+      folga,
+      feriado,
+      saldo_minutos: Number.isFinite(Number(d.saldoBancoCredDeb)) ? Math.trunc(Number(d.saldoBancoCredDeb)) : null,
+    })
+  }
+  return dias
+}
+
+/**
+ * Horários previstos: para cada CPF ligado a funcionário (ingestao_rhid_vinculados), pede a apuração do RHiD no período
+ * e grava em lotes (ingestao_rhid_horarios, que reapura os dias alterados). Pessoa com erro vira aviso.
+ * deps: { rpc, tamanhoLote? }
+ */
+export async function importarHorariosRhid(config, entrada, sessao, deps) {
+  const janela = janelaHorariosRhid(entrada, config)
+  const vinculados = ((await deps.rpc('ingestao_rhid_vinculados', { p_integracao: config.integracao_id })) || []).map(cpfRhid).filter(Boolean)
+  if (!sessao.pessoas) sessao.pessoas = await sessao.listar('/person', 'pessoas')
+  const idPorCpf = new Map()
+  for (const x of sessao.pessoas) { const c = cpfRhid(x && x.cpf); if (c && Number(x.id) > 0 && !idPorCpf.has(c)) idPorCpf.set(c, Number(x.id)) }
+  const avisos = []
+  const falhas = []
+  let dias = []
+  let pessoas = 0
+  for (const cpf of vinculados) {
+    const id = idPorCpf.get(cpf)
+    if (!id) { avisos.push(`CPF …${cpf.slice(-2)} ligado, mas não está nas pessoas do RHiD`); continue }
+    try {
+      const corpo = await sessao.chamar((token) => ({ method: 'GET', url: urlRhid(sessao.base, '/apuracao_ponto', { idPerson: id, dataIni: janela.dataIni, dataFinal: janela.dataFinal }), headers: cabecalhosRhid(token), timeoutMs: deps.timeoutMs || 120000 }), `RHiD apuração ${id}`)
+      dias = dias.concat(diasApuracaoRhid(corpo, cpf))
+      pessoas++
+    } catch (e) {
+      falhas.push(`pessoa ${id}: ${e && e.message ? e.message : String(e)}`.slice(0, 200))
+    }
+  }
+  if (vinculados.length && !pessoas && falhas.length) {
+    const e = new Error(falhas.slice(0, 3).join(' | '))
+    e.tentativas = sessao.tentativasMax
+    throw e
+  }
+  const tot = { gravados: 0, iguais: 0, ignorados: 0, reapurados: 0 }
+  for (const lote of lotesRhid(dias, deps.tamanhoLote || 2000)) {
+    const r = (await deps.rpc('ingestao_rhid_horarios', { p_integracao: config.integracao_id, p_dias: lote })) || {}
+    tot.gravados += Number(r.gravados) || 0
+    tot.iguais += Number(r.iguais) || 0
+    tot.ignorados += Number(r.ignorados) || 0
+    tot.reapurados += Number(r.funcionarios_reapurados) || 0
+  }
+  return {
+    status: falhas.length ? 'parcial' : 'sucesso',
+    lidos: dias.length,
+    gravados: tot.gravados,
+    ignorados: tot.ignorados,
+    erro: falhas.length ? `${falhas.length} pessoa(s) sem apuração: ${falhas.slice(0, 2).join(' | ')}` : null,
+    detalhes: { janela, vinculados: vinculados.length, pessoas, iguais: tot.iguais, funcionarios_reapurados: tot.reapurados, avisos: avisos.slice(0, 20), logins: sessao.logins },
     tentativas: sessao.tentativasMax,
   }
 }

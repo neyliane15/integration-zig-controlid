@@ -1,8 +1,203 @@
 -- Meu Dia de Gerente — instalação do banco, PARTE 17 DE 20.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000290_comissao_presenca.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000280_escala.sql, 20261006000290_comissao_presenca.sql. Não edite à mão.
 
 begin;
+create or replace function public.escala_trocar(p_funcionario_a uuid, p_data_a date, p_funcionario_b uuid default null,
+                                                p_data_b date default null, p_motivo text default null)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ma public.escala_membros; mb public.escala_membros; v_motivo text; v_datas date[]; v_d date;
+  ca record; cb record; v_out jsonb := '[]';
+begin
+  ma := public.escala_membro_para_operar(p_funcionario_a);
+  if (p_funcionario_b is null and p_data_b is null) or p_funcionario_b = p_funcionario_a and p_data_b is null then
+    raise exception 'Informe o outro funcionário ou o outro dia' using errcode = '22023';
+  end if;
+  if p_funcionario_b is not null and p_funcionario_b <> p_funcionario_a then
+    mb := public.escala_membro_para_operar(p_funcionario_b);
+    if mb.empresa_id <> ma.empresa_id then raise exception 'Funcionário de outra empresa' using errcode = '22023'; end if;
+  end if;
+  v_motivo := coalesce(nullif(btrim(coalesce(p_motivo, '')), ''), 'Troca de folga');
+  perform public.escala_validar_data(ma.empresa_id, p_data_a);
+  if p_data_b is not null then perform public.escala_validar_data(ma.empresa_id, p_data_b); end if;
+
+  if mb.id is null then
+    -- A troca o próprio status entre os dois dias
+    if p_data_b = p_data_a then raise exception 'Informe o outro funcionário ou o outro dia' using errcode = '22023'; end if;
+    select * into ca from public.escala_calcular(ma.empresa_id, p_data_a, p_data_a, p_funcionario_a) x;
+    select * into cb from public.escala_calcular(ma.empresa_id, p_data_b, p_data_b, p_funcionario_a) x;
+    if ca.status = 'fora' or cb.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
+    if 'ferias' in (ca.status, cb.status) then raise exception 'Não é possível trocar dia de férias' using errcode = '22023'; end if;
+    perform public.escala_checar_falta(p_funcionario_a, least(p_data_a, p_data_b));
+    perform public.escala_checar_falta(p_funcionario_a, greatest(p_data_a, p_data_b));
+    perform public.escala_gravar_dia(ma.id, p_data_a, nullif(cb.status, ca.status_auto), ca.ajuste_chegada,
+                                     case when cb.status <> ca.status_auto then v_motivo end);
+    perform public.escala_gravar_dia(ma.id, p_data_b, nullif(ca.status, cb.status_auto), cb.ajuste_chegada,
+                                     case when ca.status <> cb.status_auto then v_motivo end);
+    perform public.escala_reapurar(ma.empresa_id, array[p_funcionario_a], least(p_data_a, p_data_b), least(p_data_a, p_data_b));
+    perform public.escala_reapurar(ma.empresa_id, array[p_funcionario_a], greatest(p_data_a, p_data_b), greatest(p_data_a, p_data_b));
+    select jsonb_agg(public.escala_dia_json(ma.empresa_id, p_funcionario_a, d, true) order by d) into v_out
+      from unnest(array[p_data_a, p_data_b]) d;
+    return v_out;
+  end if;
+
+  -- A e B trocam o status em cada dia
+  v_datas := array[p_data_a];
+  if p_data_b is not null and p_data_b <> p_data_a then v_datas := v_datas || p_data_b; end if;
+  foreach v_d in array v_datas loop
+    select * into ca from public.escala_calcular(ma.empresa_id, v_d, v_d, p_funcionario_a) x;
+    select * into cb from public.escala_calcular(ma.empresa_id, v_d, v_d, p_funcionario_b) x;
+    if ca.status = 'fora' or cb.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
+    if 'ferias' in (ca.status, cb.status) then raise exception 'Não é possível trocar dia de férias' using errcode = '22023'; end if;
+    perform public.escala_checar_falta(p_funcionario_a, v_d);
+    perform public.escala_checar_falta(p_funcionario_b, v_d);
+  end loop;
+  foreach v_d in array v_datas loop
+    select * into ca from public.escala_calcular(ma.empresa_id, v_d, v_d, p_funcionario_a) x;
+    select * into cb from public.escala_calcular(ma.empresa_id, v_d, v_d, p_funcionario_b) x;
+    perform public.escala_gravar_dia(ma.id, v_d, nullif(cb.status, ca.status_auto), ca.ajuste_chegada,
+                                     case when cb.status <> ca.status_auto then v_motivo end);
+    perform public.escala_gravar_dia(mb.id, v_d, nullif(ca.status, cb.status_auto), cb.ajuste_chegada,
+                                     case when ca.status <> cb.status_auto then v_motivo end);
+    perform public.escala_reapurar(ma.empresa_id, array[p_funcionario_a, p_funcionario_b], v_d, v_d);
+  end loop;
+  select jsonb_agg(public.escala_dia_json(ma.empresa_id, f, d, true) order by o, d) into v_out
+    from unnest(array[p_funcionario_a, p_funcionario_b]) with ordinality as u(f, o)
+    cross join unnest(v_datas) d;
+  return v_out;
+end $$;
+comment on function public.escala_trocar(uuid, date, uuid, date, text) is
+  '[api] Troca de folga: A↔B num dia (ou em dois dias) ou A entre dois dias; reapura.';
+
+-- ================================================================ RPCs de leitura
+create or replace function public.escala_mes(p_ano_mes text, p_empresa uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp set jit = off as $$
+declare v_empresa uuid; v_ini date; v_fim date; v_cfg public.escala_config; v_motivo boolean;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
+  if p_ano_mes is null or p_ano_mes !~ '^[0-9]{4}-(0[1-9]|1[0-2])$' then
+    raise exception 'Mês inválido (use AAAA-MM)' using errcode = '22023';
+  end if;
+  v_ini := (p_ano_mes || '-01')::date;
+  v_fim := (v_ini + interval '1 month')::date - 1;
+  v_motivo := public.pode_operar(v_empresa) is true;
+  select * into v_cfg from public.escala_config where empresa_id = v_empresa;
+
+  return (
+    with calc as materialized (select * from public.escala_calcular(v_empresa, v_ini, v_fim)),
+    dias as (select g::date as d from generate_series(v_ini, v_fim, interval '1 day') g),
+    -- (v3, §S.11) faltas do mês (FJ/FI); tabela da …0290 (função plpgsql: resolvida na execução)
+    fal as (select fl.funcionario_id, fl.data, fl.tipo from public.funcionario_faltas fl
+             where fl.empresa_id = v_empresa and fl.data between v_ini and v_fim),
+    mem as (
+      select m.*, f.nome, f.cargo from public.escala_membros m join public.funcionarios f on f.id = m.funcionario_id
+       where m.empresa_id = v_empresa
+    )
+    select jsonb_build_object(
+      'empresa_id', v_empresa, 'ano_mes', p_ano_mes, 'inicio', v_ini, 'fim', v_fim,
+      'configurada', v_cfg.empresa_id is not null, 'ancora', v_cfg.ancora, 'fase', v_cfg.fase,
+      'pode_editar', v_motivo, 'hoje', public.escala_hoje(v_empresa),
+      'dias', (select jsonb_agg(jsonb_build_object('data', d, 'dia_semana', extract(isodow from d)::int - 1,
+                                                   'semana', case when v_cfg.ancora is not null then public.escala_semana_num(d, v_cfg.ancora) end)
+                                order by d) from dias),
+      'setores', coalesce((
+        select jsonb_agg(jsonb_build_object(
+                 'id', s.id, 'nome', s.nome, 'ordem', s.ordem, 'fase', s.fase,
+                 'caminhos', coalesce((select jsonb_agg(jsonb_build_object('caminho', cm.caminho, 'funcionarios', cm.funcs) order by cm.caminho)
+                                         from (select m.caminho, jsonb_agg(m.funcionario_id order by m.posicao, m.id) as funcs
+                                                 from mem m where m.setor_id = s.id and m.caminho is not null group by m.caminho) cm), '[]'),
+                 'membros', coalesce((
+                   select jsonb_agg(jsonb_build_object(
+                            'membro_id', m.id, 'funcionario_id', m.funcionario_id, 'nome', m.nome, 'cargo', m.cargo,
+                            'chegada_padrao', public.escala_hora(m.chegada_padrao), 'folgas_base', to_jsonb(m.folgas_base),
+                            'caminho', m.caminho, 'posicao', m.posicao, 'folga_fixa', m.caminho is null,
+                            'trabalha', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'trabalha'),
+                            'folgas', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'folga'),
+                            'ferias', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'ferias'),
+                            'faltas', (select count(*) from fal where fal.funcionario_id = m.funcionario_id),
+                            'dias', coalesce((
+                              select jsonb_agg(jsonb_build_object(
+                                       'data', dd.d, 'status', coalesce(c.status, 'fora'), 'origem', coalesce(c.origem, 'auto'),
+                                       'chegada', public.escala_hora(c.chegada), 'ajustado', coalesce(c.ajustado, false),
+                                       'motivo', case when v_motivo then c.motivo end, 'falta', fal.tipo) order by dd.d)
+                                from dias dd left join calc c on c.funcionario_id = m.funcionario_id and c.data = dd.d
+                                left join fal on fal.funcionario_id = m.funcionario_id and fal.data = dd.d), '[]'))
+                          order by m.ordem, m.nome collate "C", m.id)
+                     from mem m where m.setor_id = s.id), '[]'),
+                 'na_escala', (select jsonb_agg((select count(*) from calc c where c.setor_id = s.id and c.data = dd.d and c.status = 'trabalha')
+                                                order by dd.d) from dias dd))
+               order by s.ordem, s.nome collate "C", s.id)
+          from public.escala_setores s where s.empresa_id = v_empresa), '[]'),
+      'na_escala', (select jsonb_agg((select count(*) from calc c where c.data = dd.d and c.status = 'trabalha') order by dd.d)
+                      from dias dd))
+  );
+end $$;
+comment on function public.escala_mes(text, uuid) is '[api] Escala do mês (AAAA-MM): setores, membros e dias (leitura vê, sem motivos).';
+
+create or replace function public.escala_semana(p_data date default null, p_empresa uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp set jit = off as $$
+declare v_empresa uuid; v_cfg public.escala_config; v_data date; v_seg date; v_w int;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
+  v_data := coalesce(p_data, public.escala_hoje(v_empresa));
+  v_seg := v_data - (extract(isodow from v_data)::int - 1);
+  select * into v_cfg from public.escala_config where empresa_id = v_empresa;
+  v_w := case when v_cfg.ancora is not null then public.escala_semana_num(v_seg, v_cfg.ancora) end;
+
+  return (
+    with r as materialized (select * from public.escala_membros_rodizio(v_empresa)),
+    mem as (
+      select r.*, f.nome, f.cargo, m.ordem,
+             coalesce(case when v_w is null or r.caminho is null then r.folgas_base
+                           else (select a.folgas_base from r a
+                                  where a.setor_id = r.setor_id and a.caminho = r.caminho
+                                    and a.k = (((r.k + v_w + coalesce(v_cfg.fase, 0) + r.fase_setor) % r.n) + r.n) % r.n) end,
+                      r.folgas_base) as folgas_semana
+        from r join public.funcionarios f on f.id = r.funcionario_id join public.escala_membros m on m.id = r.id
+    ),
+    wd as (select generate_series(0, 6) as d)
+    select jsonb_build_object(
+      'empresa_id', v_empresa, 'configurada', v_cfg.empresa_id is not null, 'ancora', v_cfg.ancora, 'fase', v_cfg.fase,
+      'semana_inicio', v_seg, 'semana', v_w,
+      'setores', coalesce((
+        select jsonb_agg(jsonb_build_object(
+                 'id', s.id, 'nome', s.nome, 'ordem', s.ordem, 'fase', s.fase,
+                 'total', (select count(*) from mem m where m.setor_id = s.id),
+                 'caminhos', coalesce((select jsonb_agg(jsonb_build_object('caminho', cm.caminho, 'funcionarios', cm.funcs, 'nomes', cm.nomes)
+                                                        order by cm.caminho)
+                                         from (select m.caminho, jsonb_agg(m.funcionario_id order by m.posicao, m.id) as funcs,
+                                                      jsonb_agg(m.nome order by m.posicao, m.id) as nomes
+                                                 from mem m where m.setor_id = s.id and m.caminho is not null group by m.caminho) cm), '[]'),
+                 'membros', coalesce((select jsonb_agg(jsonb_build_object(
+                                               'funcionario_id', m.funcionario_id, 'nome', m.nome, 'cargo', m.cargo,
+                                               'chegada_padrao', public.escala_hora(m.chegada_padrao), 'caminho', m.caminho,
+                                               'posicao', m.posicao, 'folga_fixa', m.caminho is null,
+                                               'folgas_base', to_jsonb(m.folgas_base), 'folgas_semana', to_jsonb(m.folgas_semana))
+                                             order by m.ordem, m.nome collate "C", m.id)
+                                        from mem m where m.setor_id = s.id), '[]'),
+                 'na_escala_base', (select jsonb_agg((select count(*) from mem m where m.setor_id = s.id and not (wd.d::smallint = any (m.folgas_base)))
+                                                     order by wd.d) from wd),
+                 'na_escala_semana', (select jsonb_agg((select count(*) from mem m where m.setor_id = s.id and not (wd.d::smallint = any (m.folgas_semana)))
+                                                       order by wd.d) from wd))
+               order by s.ordem, s.nome collate "C", s.id)
+          from public.escala_setores s where s.empresa_id = v_empresa), '[]'),
+      'na_escala_base', (select jsonb_agg((select count(*) from mem m where not (wd.d::smallint = any (m.folgas_base))) order by wd.d) from wd),
+      'na_escala_semana', (select jsonb_agg((select count(*) from mem m where not (wd.d::smallint = any (m.folgas_semana))) order by wd.d) from wd))
+  );
+end $$;
+comment on function public.escala_semana(date, uuid) is '[api] Semana base e semana de p_data pela regra do rodízio (sem ajustes).';-- =====================================================================================================
+-- 20261006000290_comissao_presenca.sql — backend (adendo extras/ocorrências/reservas v3, §E.7; adendo escala §S.11)
+-- Presença do dia na comissão (ponto → escala → fallback individual; falta, suspensão, férias, atestado, abono individual
+-- e fora do vínculo nunca), faltas (justificada/injustificada) com anexo, recálculo de rascunhos (faltas, desligamento),
+-- extras com pontuação pendente e importação de extras em lote. Aqui ficam comissao_calcular, comissao_fechar e
+-- comissao_detalhe (vieram da …0220). Fechamento FECHADO nunca muda. Idempotente.
+-- =====================================================================================================
+
+-- ================================================================ colunas novas
+alter table public.comissao_fechamentos add column if not exists extras_sem_pontuacao int not null default 0;
+alter table public.comissao_itens add column if not exists pontos_pendente boolean not null default false;
+
 -- ================================================================ faltas (§E.7.2)
 create table if not exists public.funcionario_faltas (
   id               uuid primary key default gen_random_uuid(),
@@ -228,59 +423,6 @@ begin
        and (p_funcionario is null or fl.funcionario_id = p_funcionario)), '[]'::jsonb);
 end $$;
 comment on function public.faltas_listar(date, date, uuid, uuid) is '[api] Faltas do período (G A M).';
-
--- ================================================================ presença do dia (§E.7.1)
-create or replace function public.comissao_presenca(p_empresa uuid, p_inicio date, p_fim date, p_funcionario uuid default null)
-returns table (funcionario_id uuid, data date, presente boolean, fallback boolean, bloqueado boolean, motivo text, origem text)
-language sql stable security definer rows 200 set search_path = public, extensions, pg_temp set jit = off as $$
-  with dias as (select g::date as d from generate_series(p_inicio, p_fim, interval '1 day') g),
-  fu as (
-    select f.id, f.data_admissao, f.data_desligamento,
-           (exists (select 1 from public.controlid_usuarios cu where cu.funcionario_id = f.id)
-            or exists (select 1 from public.ponto_dias pd where pd.funcionario_id = f.id
-                          and pd.data between p_inicio and p_fim and pd.batidas_validas > 0)) as no_ponto
-      from public.funcionarios f
-     where f.empresa_id = p_empresa and (p_funcionario is null or f.id = p_funcionario)
-  ),
-  ponto_emp as (
-    select distinct pd.data from public.ponto_dias pd
-     where pd.empresa_id = p_empresa and pd.data between p_inicio and p_fim and pd.batidas_validas > 0
-  ),
-  esc as materialized (
-    select e.funcionario_id, e.data, e.status from public.escala_calcular(p_empresa, p_inicio, p_fim, p_funcionario) e
-  ),
-  m as (
-    select fu.id, dd.d,
-           case
-             when not public.ponto_no_vinculo(fu.data_admissao, fu.data_desligamento, dd.d) then 'fora_vinculo'
-             when fl.tipo is not null then 'falta_' || fl.tipo
-             when ab.tipo in ('suspensao', 'ferias', 'atestado') then ab.tipo
-             when esc.status = 'ferias' then 'ferias'
-             when coalesce(pd.batidas_validas, 0) > 0 then null
-             when ab.tipo is not null then 'abono'
-             when pe.data is not null and fu.no_ponto then 'sem_batida'
-             when esc.status = 'trabalha' then null
-             when esc.status = 'folga' then 'folga_escala'
-             else 'sem_registro'
-           end as motivo,
-           case when coalesce(pd.batidas_validas, 0) > 0 then 'ponto' when esc.status = 'trabalha' then 'escala' end as origem_bruta
-      from fu
-      cross join dias dd
-      left join public.ponto_dias pd on pd.funcionario_id = fu.id and pd.data = dd.d
-      left join public.funcionario_faltas fl on fl.funcionario_id = fu.id and fl.data = dd.d
-      left join lateral (select a.tipo from public.ponto_abonos a
-                          where a.funcionario_id = fu.id and a.data = dd.d order by a.criado_em limit 1) ab on true
-      left join esc on esc.funcionario_id = fu.id and esc.data = dd.d
-      left join ponto_emp pe on pe.data = dd.d
-  )
-  select m.id, m.d, m.motivo is null, coalesce(m.motivo = 'sem_registro', false),
-         coalesce(m.motivo in ('fora_vinculo', 'falta_justificada', 'falta_injustificada', 'suspensao', 'ferias', 'atestado', 'abono'),
-                  false),
-         m.motivo, case when m.motivo is null then m.origem_bruta end
-    from m
-$$;
-comment on function public.comissao_presenca(uuid, date, date, uuid) is
-  '[interno] Presença de cada funcionário em cada dia para a comissão (adendo extras v3, §E.7.1).';
 
 commit;
 select 'parte 17 de 20 instalada' as resultado;

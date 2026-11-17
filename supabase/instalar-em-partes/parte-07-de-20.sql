@@ -206,6 +206,13 @@ begin
       'select null::text, null::time'$f$;
     execute $c$comment on function public.escala_status_ponto(uuid, date) is '[interno] Status da escala no dia (esqueleto; ver …0280).'$c$;
   end if;
+  -- (adendo RHiD §R.9) horário previsto importado do RHiD: a função real é definida em …0320_rhid_horarios.sql.
+  if to_regprocedure('public.ponto_previsto_externo_dia(uuid, date)') is null then
+    execute $f$create function public.ponto_previsto_externo_dia(p_funcionario uuid, p_data date,
+      out previsto_minutos int, out horarios time[])
+      language sql stable security definer set search_path = public, extensions, pg_temp as 'select null::int, null::time[]'$f$;
+    execute $c$comment on function public.ponto_previsto_externo_dia(uuid, date) is '[interno] Previsto externo do dia (esqueleto; ver …0320).'$c$;
+  end if;
   -- (adendo extras v3, §E.7.2) falta do funcionário no dia: a função real é definida em …0290_comissao_presenca.sql.
   if to_regprocedure('public.ponto_falta_do_dia(uuid, date)') is null then
     execute $f$create function public.ponto_falta_do_dia(p_funcionario uuid, p_data date) returns text
@@ -275,6 +282,8 @@ declare
   v_esc        record;
   v_desloc     interval;
   v_falta      text;
+  v_ext_prev   int;
+  v_ext_hor    time[];
   v_rotulos    constant jsonb := '{"entrada": "a entrada", "saida_intervalo": "a saída para o intervalo",
                                     "volta_intervalo": "a volta do intervalo", "saida": "a saída"}'::jsonb;
 begin
@@ -364,6 +373,29 @@ begin
     end if;
   end if;
 
+  -- (adendo RHiD §R.9) previsto importado do RHiD (apuração do RHiD por dia: horário contratual, folga, feriado):
+  -- prevalece sobre jornada e escala. Folga/feriado = previsto 0 (o trabalhado vira saldo positivo, como no RHiD).
+  if v_abono is null and v_falta is distinct from 'justificada' then
+    select x.previsto_minutos, x.horarios into v_ext_prev, v_ext_hor
+      from public.ponto_previsto_externo_dia(f.id, p_data) x;
+    if v_ext_prev is not null then
+      v_prev := v_ext_prev;
+      v_k := 0;
+      v_slots := '{}';
+      v_nomes := '{}';
+      v_esperadas := '[]'::jsonb;
+      if v_prev > 0 and coalesce(array_length(v_ext_hor, 1), 0) in (2, 4) then
+        v_k := array_length(v_ext_hor, 1);
+        v_nomes := case when v_k = 4 then array['entrada', 'saida_intervalo', 'volta_intervalo', 'saida']
+                        else array['entrada', 'saida'] end;
+        for i in 1 .. v_k loop
+          v_slots := v_slots || public.ponto_instante_escala(p_data, v_ext_hor[i], e.fuso, e.virada_dia);
+          v_esperadas := v_esperadas || jsonb_build_object('batida', v_nomes[i], 'instante', v_slots[i]);
+        end loop;
+      end if;
+    end if;
+  end if;
+
   -- 3. Batidas (duplicadas: a menos de N minutos da última válida)
   for b in
     select pb.id, pb.instante, pb.origem, pb.desconsiderada, pb.motivo
@@ -440,8 +472,9 @@ begin
   elsif not v_encerrado then v_situacao := 'em_andamento';
   elsif v_abono = 'suspensao' then v_situacao := 'suspenso';
   elsif v_abono is not null then v_situacao := 'abonado';
-  elsif v_k = 0 and v_n = 0 then
-    v_situacao := case when v_esc.status in ('folga', 'ferias') or j.id is not null then 'folga' else 'sem_escala' end;
+  elsif v_k = 0 and v_n = 0 and v_prev = 0 then
+    v_situacao := case when v_esc.status in ('folga', 'ferias') or j.id is not null or v_ext_prev is not null
+                       then 'folga' else 'sem_escala' end;
   elsif v_n = 0 then v_situacao := 'ausente';
   elsif v_n >= v_k and v_n % 2 = 0 then v_situacao := 'completo';
   else v_situacao := 'incompleto';
@@ -508,81 +541,6 @@ returns void language sql security definer set search_path = public, extensions,
    where d.funcionario_id = p_funcionario and d.data = p_data
 $$;
 comment on function public.ponto_contar_alarmes(uuid, date) is '[interno] Atualiza ponto_dias.alarmes_abertos.';
-
-create or replace function public.ponto_apurar(p_funcionario uuid, p_inicio date, p_fim date)
-returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_empresa  uuid;
-  v_atual    date;
-  v_dia      date;
-  c          record;
-  a          jsonb;
-  v_chaves   text[];
-  v_total    int := 0;
-begin
-  if p_funcionario is null or p_inicio is null or p_fim is null then return 0; end if;
-  select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
-  if v_empresa is null then return 0; end if;     -- funcionário excluído (cascata) → nada a fazer
-  v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
-
-  for v_dia in select g::date from generate_series(p_inicio, least(p_fim, v_atual), interval '1 day') g loop
-    select * into c from public.ponto_calcular_dia(p_funcionario, v_dia);
-
-    if c.fora_do_vinculo then
-      delete from public.ponto_dias where funcionario_id = p_funcionario and data = v_dia;
-      update public.ponto_alarmes
-         set status = 'resolvido', resolvido_automaticamente = true, resolvido_em = public.agora()
-       where funcionario_id = p_funcionario and data = v_dia and status = 'aberto';
-      continue;
-    end if;
-
-    insert into public.ponto_dias as d (
-      funcionario_id, data, empresa_id, jornada_id, abono_tipo, batidas_esperadas, batidas_validas, batidas_duplicadas,
-      previsto_minutos, trabalhado_minutos, saldo_minutos, atraso_minutos, primeira_batida, ultima_batida,
-      situacao, encerrado, apurado_em)
-    values (
-      p_funcionario, v_dia, v_empresa, c.jornada_id, c.abono_tipo, c.batidas_esperadas, c.batidas_validas, c.batidas_duplicadas,
-      c.previsto_minutos, c.trabalhado_minutos, c.saldo_minutos, c.atraso_minutos, c.primeira_batida, c.ultima_batida,
-      c.situacao, c.encerrado, public.agora())
-    on conflict (funcionario_id, data) do update set
-      jornada_id = excluded.jornada_id, abono_tipo = excluded.abono_tipo,
-      batidas_esperadas = excluded.batidas_esperadas, batidas_validas = excluded.batidas_validas,
-      batidas_duplicadas = excluded.batidas_duplicadas, previsto_minutos = excluded.previsto_minutos,
-      trabalhado_minutos = excluded.trabalhado_minutos, saldo_minutos = excluded.saldo_minutos,
-      atraso_minutos = excluded.atraso_minutos, primeira_batida = excluded.primeira_batida,
-      ultima_batida = excluded.ultima_batida, situacao = excluded.situacao, encerrado = excluded.encerrado,
-      apurado_em = excluded.apurado_em;
-
-    v_chaves := '{}';
-    for a in select * from jsonb_array_elements(c.alarmes) loop
-      v_chaves := v_chaves || ((a ->> 'tipo') || '|' || (a ->> 'batida_esperada'));
-      insert into public.ponto_alarmes as pa (
-        empresa_id, funcionario_id, data, tipo, batida_esperada, horario_previsto, minutos, detalhe, status)
-      values (
-        v_empresa, p_funcionario, v_dia, a ->> 'tipo', a ->> 'batida_esperada',
-        (a ->> 'horario_previsto')::timestamptz, (a ->> 'minutos')::int, a ->> 'detalhe', 'aberto')
-      on conflict (funcionario_id, data, tipo, batida_esperada) do update set
-        detalhe = excluded.detalhe,
-        horario_previsto = excluded.horario_previsto,
-        minutos = excluded.minutos,
-        status = case when pa.status = 'resolvido' then 'aberto' else pa.status end,
-        resolvido_em = case when pa.status = 'resolvido' then null else pa.resolvido_em end,
-        resolvido_automaticamente = case when pa.status = 'resolvido' then false else pa.resolvido_automaticamente end
-      where pa.status = 'resolvido'
-         or (pa.detalhe, pa.horario_previsto, pa.minutos)
-            is distinct from (excluded.detalhe, excluded.horario_previsto, excluded.minutos);
-    end loop;
-
-    update public.ponto_alarmes
-       set status = 'resolvido', resolvido_automaticamente = true, resolvido_em = public.agora()
-     where funcionario_id = p_funcionario and data = v_dia and status = 'aberto'
-       and not ((tipo || '|' || batida_esperada) = any (v_chaves));
-
-    perform public.ponto_contar_alarmes(p_funcionario, v_dia);
-    v_total := v_total + 1;
-  end loop;
-  return v_total;
-end $$;
 
 commit;
 select 'parte 07 de 20 instalada' as resultado;

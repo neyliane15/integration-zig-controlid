@@ -3,6 +3,59 @@
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql, 20261006000210_zig.sql, 20261006000220_comissoes.sql. Não edite à mão.
 
 begin;
+create or replace function public.ponto_remover_abono(p_abono uuid)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare a record;
+begin
+  select * into a from public.ponto_abonos where id = p_abono;
+  if not found then raise exception 'Abono não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if a.ocorrencia_id is not null then
+    raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
+  end if;
+  if a.escala_ajuste_id is not null then
+    raise exception 'Dia com férias na escala: altere pela escala' using errcode = '22023';
+  end if;
+  delete from public.ponto_abonos where id = p_abono;
+  if a.funcionario_id is not null then
+    perform public.ponto_apurar(a.funcionario_id, a.data, a.data);
+  else
+    perform public.ponto_apurar_empresa(a.empresa_id, a.data, a.data);
+  end if;
+end $$;
+comment on function public.ponto_remover_abono(uuid) is '[api] Remove um abono e reapura.';
+
+-- ============================================================ banco de horas (§7.5)
+create or replace function public.banco_horas_calcular_saldo(p_funcionario uuid, p_ate date)
+returns bigint language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_base bigint := 0; v_inicio date := '-infinity'; b record;
+begin
+  select l.data, l.minutos into b
+    from public.banco_horas_lancamentos l
+   where l.funcionario_id = p_funcionario and l.tipo = 'saldo_inicial' and l.data <= p_ate
+   order by l.data desc
+   limit 1;
+  if found then v_base := b.minutos; v_inicio := b.data; end if;
+  return v_base
+    + coalesce((select sum(d.saldo_minutos) from public.ponto_dias d
+                 where d.funcionario_id = p_funcionario and d.encerrado and d.data between v_inicio and p_ate), 0)
+    + coalesce((select sum(l.minutos) from public.banco_horas_lancamentos l
+                 where l.funcionario_id = p_funcionario and l.tipo <> 'saldo_inicial' and l.data between v_inicio and p_ate), 0);
+end $$;
+comment on function public.banco_horas_calcular_saldo(uuid, date) is '[interno] Saldo do banco de horas até a data (§7.5).';
+
+create or replace function public.banco_horas_saldo(p_funcionario uuid, p_ate date default null)
+returns bigint language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
+  if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_ler(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  return public.banco_horas_calcular_saldo(p_funcionario,
+           coalesce(p_ate, public.dia_de_trabalho(public.agora(), v_empresa) - 1));
+end $$;
+comment on function public.banco_horas_saldo(uuid, date) is '[api] Saldo do banco de horas (padrão: até ontem).';
+
 create or replace function public.banco_horas_resumo(p_ate date default null, p_empresa uuid default null)
 returns table (funcionario_id uuid, funcionario_nome text, cargo text, saldo_minutos bigint, saldo_mes_minutos bigint,
                ultimo_dia_apurado date)
@@ -437,53 +490,6 @@ alter table public.comissao_itens drop constraint if exists comissao_itens_tipo_
 alter table public.comissao_itens add constraint comissao_itens_tipo_check check (tipo in ('funcionario', 'extra'));
 alter table public.comissao_itens add column if not exists extra_id uuid;
 alter table public.comissao_itens add column if not exists dias_presentes int not null default 0;
-alter table public.comissao_itens add column if not exists pontos_manual boolean not null default false;
-create unique index if not exists comissao_itens_extra_uk on public.comissao_itens (fechamento_id, extra_id);
-create index if not exists comissao_itens_extra_idx on public.comissao_itens (extra_id);
-
--- v1 (removido): pontos extras de comissão. DROPs idempotentes para quem já rodou a v1.
-drop table if exists public.comissao_pontos_extras cascade;
-alter table public.comissao_itens drop column if exists pontos_extras;
-
--- Detalhe do rateio diário (só no modo 'diario'; recalcular o rascunho apaga e regrava).
-create table if not exists public.comissao_rateio_dias (
-  fechamento_id           uuid not null references public.comissao_fechamentos (id) on delete cascade,
-  empresa_id              uuid not null references public.empresas (id) on delete cascade,
-  data                    date not null,
-  servico_zig_centavos    bigint not null default 0,
-  ajuste_centavos         bigint not null default 0,
-  servico_bruto_centavos  bigint not null default 0,
-  retencao_centavos       bigint not null default 0,
-  base_centavos           bigint not null default 0,
-  soma_pontos             numeric(18,2) not null default 0,
-  participantes           int not null default 0,
-  sem_presenca            boolean not null default false,
-  sem_participantes       boolean not null default false,
-  primary key (fechamento_id, data)
-);
-create index if not exists comissao_rateio_dias_empresa_idx on public.comissao_rateio_dias (empresa_id, data);
-comment on table public.comissao_rateio_dias is '[api:leitura] Rateio diário da comissão: serviço, ajuste, retenção e base de cada dia.';
-
-create table if not exists public.comissao_rateio_itens_dia (
-  item_id         uuid not null references public.comissao_itens (id) on delete cascade,
-  fechamento_id   uuid not null references public.comissao_fechamentos (id) on delete cascade,
-  empresa_id      uuid not null references public.empresas (id) on delete cascade,
-  data            date not null,
-  pontos          numeric(8,2) not null,
-  valor_centavos  bigint not null default 0,
-  fallback        boolean not null default false,
-  primary key (item_id, data)
-);
-create index if not exists comissao_rateio_itens_dia_fechamento_idx on public.comissao_rateio_itens_dia (fechamento_id, data);
-create index if not exists comissao_rateio_itens_dia_empresa_idx on public.comissao_rateio_itens_dia (empresa_id, data);
-comment on table public.comissao_rateio_itens_dia is '[api:leitura] Rateio diário da comissão: pontos e valor de cada participante em cada dia.';
-
-alter table public.comissao_fechamentos enable row level security;
-alter table public.comissao_itens enable row level security;
-drop policy if exists comissao_fechamentos_ler on public.comissao_fechamentos;
-create policy comissao_fechamentos_ler on public.comissao_fechamentos for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-drop policy if exists comissao_itens_ler on public.comissao_itens;
 
 commit;
 select 'parte 09 de 20 instalada' as resultado;

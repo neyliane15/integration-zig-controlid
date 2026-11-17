@@ -3,6 +3,53 @@
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000220_comissoes.sql, 20261006000230_ingestao.sql. Não edite à mão.
 
 begin;
+alter table public.comissao_itens add column if not exists pontos_manual boolean not null default false;
+create unique index if not exists comissao_itens_extra_uk on public.comissao_itens (fechamento_id, extra_id);
+create index if not exists comissao_itens_extra_idx on public.comissao_itens (extra_id);
+
+-- v1 (removido): pontos extras de comissão. DROPs idempotentes para quem já rodou a v1.
+drop table if exists public.comissao_pontos_extras cascade;
+alter table public.comissao_itens drop column if exists pontos_extras;
+
+-- Detalhe do rateio diário (só no modo 'diario'; recalcular o rascunho apaga e regrava).
+create table if not exists public.comissao_rateio_dias (
+  fechamento_id           uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id              uuid not null references public.empresas (id) on delete cascade,
+  data                    date not null,
+  servico_zig_centavos    bigint not null default 0,
+  ajuste_centavos         bigint not null default 0,
+  servico_bruto_centavos  bigint not null default 0,
+  retencao_centavos       bigint not null default 0,
+  base_centavos           bigint not null default 0,
+  soma_pontos             numeric(18,2) not null default 0,
+  participantes           int not null default 0,
+  sem_presenca            boolean not null default false,
+  sem_participantes       boolean not null default false,
+  primary key (fechamento_id, data)
+);
+create index if not exists comissao_rateio_dias_empresa_idx on public.comissao_rateio_dias (empresa_id, data);
+comment on table public.comissao_rateio_dias is '[api:leitura] Rateio diário da comissão: serviço, ajuste, retenção e base de cada dia.';
+
+create table if not exists public.comissao_rateio_itens_dia (
+  item_id         uuid not null references public.comissao_itens (id) on delete cascade,
+  fechamento_id   uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id      uuid not null references public.empresas (id) on delete cascade,
+  data            date not null,
+  pontos          numeric(8,2) not null,
+  valor_centavos  bigint not null default 0,
+  fallback        boolean not null default false,
+  primary key (item_id, data)
+);
+create index if not exists comissao_rateio_itens_dia_fechamento_idx on public.comissao_rateio_itens_dia (fechamento_id, data);
+create index if not exists comissao_rateio_itens_dia_empresa_idx on public.comissao_rateio_itens_dia (empresa_id, data);
+comment on table public.comissao_rateio_itens_dia is '[api:leitura] Rateio diário da comissão: pontos e valor de cada participante em cada dia.';
+
+alter table public.comissao_fechamentos enable row level security;
+alter table public.comissao_itens enable row level security;
+drop policy if exists comissao_fechamentos_ler on public.comissao_fechamentos;
+create policy comissao_fechamentos_ler on public.comissao_fechamentos for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+drop policy if exists comissao_itens_ler on public.comissao_itens;
 create policy comissao_itens_ler on public.comissao_itens for select to authenticated
   using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
 alter table public.comissao_rateio_dias enable row level security;
@@ -361,178 +408,6 @@ begin
   return p_itens;
 end $$;
 comment on function public.ingestao_lista(jsonb) is '[interno] Garante array JSON.';
-
--- ======================================================== Control iD: batidas (§11.4)
-create or replace function public.ingestao_controlid_batidas(p_integracao uuid, p_batidas jsonb)
-returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare
-  ig          public.integracoes;
-  v_fuso      text;
-  v_eventos   jsonb;
-  v_rep       boolean;
-  x           jsonb;
-  v_idx       int := -1;
-  v_lidos     int := 0;
-  v_gravados  int := 0;
-  v_ignorados int := 0;
-  v_dups      int := 0;
-  v_semfunc   int := 0;
-  v_dias      int := 0;
-  v_erros     jsonb := '[]'::jsonb;
-  v_nerros    int := 0;
-  v_idext     text;
-  v_pessoa    text;
-  v_instante  timestamptz;
-  v_func      uuid;
-  v_id        uuid;
-  v_data      date;
-  v_max_id    numeric;
-  v_max_idtxt text;
-  v_max_inst  timestamptz;
-  v_cursor    jsonb;
-  v_afetados  text[] := '{}';
-  v_par       text;
-  v_motivo    text;
-begin
-  ig := public.ingestao_integracao_validar(p_integracao, array['controlid_acesso', 'controlid_rep', 'rhid']);
-  p_batidas := public.ingestao_lista(p_batidas);
-  if jsonb_array_length(p_batidas) > 2000 then
-    raise exception 'Lote maior que 2000 itens' using errcode = '22023';
-  end if;
-  select e.fuso into v_fuso from public.empresas e where e.id = ig.empresa_id;
-  v_rep := ig.tipo in ('controlid_rep', 'rhid');   -- rhid: AFD do RHiD (ingestao_rhid_batidas, …0310), origem controlid_rep
-  v_eventos := coalesce(ig.parametros -> 'eventos_validos', '[7]'::jsonb);
-  if jsonb_typeof(v_eventos) <> 'array' then v_eventos := '[7]'::jsonb; end if;
-
-  for x in select value from jsonb_array_elements(p_batidas) loop
-    v_idx := v_idx + 1;
-    v_lidos := v_lidos + 1;
-    v_motivo := null;
-    begin
-      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
-      v_idext := coalesce(public.ingestao_texto(x -> 'id_externo'), public.ingestao_texto(x -> 'nsr'));
-      if v_idext is null then raise exception 'id_externo ausente'; end if;
-      if v_rep and v_idext ~ '^[0-9]+$' then
-        v_idext := coalesce(nullif(ltrim(v_idext, '0'), ''), '0');
-      end if;
-      if (x ? 'instante' and x -> 'instante' <> 'null'::jsonb) = (x ? 'instante_local' and x -> 'instante_local' <> 'null'::jsonb) then
-        raise exception 'informe instante ou instante_local';
-      end if;
-      begin
-        if x ? 'instante' and x -> 'instante' <> 'null'::jsonb then
-          v_instante := public.ingestao_ler_instante(x ->> 'instante', v_fuso, 'com_fuso');
-        else
-          v_instante := public.ingestao_ler_instante(x ->> 'instante_local', v_fuso, 'sem_fuso');
-        end if;
-      exception when others then
-        raise exception 'instante inválido';
-      end;
-      if v_instante is null then raise exception 'instante inválido'; end if;
-
-      if v_rep then
-        v_pessoa := regexp_replace(coalesce(public.ingestao_texto(x -> 'cpf'), public.ingestao_texto(x -> 'pis'), ''), '[^0-9]', '', 'g');
-        if v_pessoa = '' then raise exception 'sem CPF/PIS'; end if;
-      else
-        v_pessoa := public.ingestao_texto(x -> 'user_id');
-        if x ? 'evento' and x -> 'evento' <> 'null'::jsonb and not (v_eventos @> jsonb_build_array(x -> 'evento')
-                                                                 or v_eventos @> jsonb_build_array((x ->> 'evento')::numeric)) then
-          v_motivo := 'evento';
-        elsif v_pessoa is null or v_pessoa = '0' then
-          v_motivo := 'sem_usuario';
-        end if;
-      end if;
-    exception when others then
-      v_ignorados := v_ignorados + 1;
-      v_nerros := v_nerros + 1;
-      if v_nerros <= 20 then
-        v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm);
-      end if;
-      continue;
-    end;
-
-    -- cursor considera todo item bem formado (inclusive ignorados por evento e já existentes)
-    if v_idext ~ '^[0-9]+$' then
-      if v_max_id is null or v_idext::numeric > v_max_id then v_max_id := v_idext::numeric; end if;
-    elsif v_max_idtxt is null or v_idext > v_max_idtxt then
-      v_max_idtxt := v_idext;
-    end if;
-    if v_max_inst is null or v_instante > v_max_inst then v_max_inst := v_instante; end if;
-
-    if v_motivo is not null then
-      v_ignorados := v_ignorados + 1;
-      continue;
-    end if;
-
-    -- resolve funcionário (§7.1)
-    v_func := null;
-    if v_rep then
-      -- 1) vínculo do usuário do equipamento (CPF/PIS ligado à mão ou pela importação do AFD); 2) CPF/PIS da ficha
-      select cu.funcionario_id into v_func from public.controlid_usuarios cu
-       where cu.integracao_id = ig.id and cu.user_id_externo = v_pessoa and cu.funcionario_id is not null;
-      if v_func is null then
-        select f.id into v_func from public.funcionarios f
-         where f.empresa_id = ig.empresa_id
-           and (case when x ? 'cpf' and public.ingestao_texto(x -> 'cpf') is not null then f.cpf else f.pis end) = v_pessoa
-         limit 1;
-      end if;
-    else
-      select cu.funcionario_id into v_func from public.controlid_usuarios cu
-       where cu.integracao_id = ig.id and cu.user_id_externo = v_pessoa;
-    end if;
-
-    insert into public.ponto_batidas (empresa_id, funcionario_id, integracao_id, origem, id_externo, pessoa_externa, instante)
-    values (ig.empresa_id, v_func, ig.id, case when ig.tipo = 'rhid' then 'controlid_rep' else ig.tipo end, v_idext, v_pessoa, v_instante)
-    on conflict (integracao_id, id_externo) do nothing
-    returning id, data_trabalho into v_id, v_data;
-
-    if v_id is null then
-      v_dups := v_dups + 1;
-    else
-      v_gravados := v_gravados + 1;
-      if v_func is null then
-        v_semfunc := v_semfunc + 1;
-      else
-        v_par := v_func::text || '|' || v_data::text;
-        if not (v_par = any (v_afetados)) then v_afetados := v_afetados || v_par; end if;
-      end if;
-    end if;
-    v_id := null;
-  end loop;
-
-  -- apura cada (funcionário, dia) afetado uma vez
-  foreach v_par in array v_afetados loop
-    v_dias := v_dias + public.ponto_apurar(split_part(v_par, '|', 1)::uuid, split_part(v_par, '|', 2)::date,
-                                           split_part(v_par, '|', 2)::date);
-  end loop;
-
-  -- cursor (máximos)
-  v_cursor := ig.cursor;
-  if v_rep then
-    if v_max_id is not null and (v_cursor ->> 'ultimo_nsr' is null or v_max_id > (v_cursor ->> 'ultimo_nsr')::numeric) then
-      v_cursor := v_cursor || jsonb_build_object('ultimo_nsr', v_max_id);
-    end if;
-  else
-    if v_max_id is not null and (v_cursor ->> 'ultimo_id' is null or (v_cursor ->> 'ultimo_id') !~ '^[0-9]+$'
-                                 or v_max_id > (v_cursor ->> 'ultimo_id')::numeric) then
-      v_cursor := v_cursor || jsonb_build_object('ultimo_id', v_max_id::text);
-    elsif v_max_id is null and v_max_idtxt is not null
-          and (v_cursor ->> 'ultimo_id' is null or v_max_idtxt > (v_cursor ->> 'ultimo_id')) then
-      v_cursor := v_cursor || jsonb_build_object('ultimo_id', v_max_idtxt);
-    end if;
-  end if;
-  if v_max_inst is not null and (v_cursor ->> 'ultimo_instante' is null
-                                 or v_max_inst > (v_cursor ->> 'ultimo_instante')::timestamptz) then
-    v_cursor := v_cursor || jsonb_build_object('ultimo_instante', v_max_inst);
-  end if;
-  if v_cursor is distinct from ig.cursor then
-    update public.integracoes set cursor = v_cursor where id = ig.id;
-  end if;
-
-  return jsonb_build_object('lidos', v_lidos, 'gravados', v_gravados, 'ignorados', v_ignorados, 'duplicados', v_dups,
-                            'sem_funcionario', v_semfunc, 'dias_apurados', v_dias, 'cursor', v_cursor)
-         || case when v_nerros > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
-end $$;
-comment on function public.ingestao_controlid_batidas(uuid, jsonb) is '[servico] Ingestão idempotente de batidas Control iD (§11.4).';
 
 commit;
 select 'parte 10 de 20 instalada' as resultado;

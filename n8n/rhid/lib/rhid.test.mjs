@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 import {
   validarConfigRhid, planoRhid, requisicaoLoginRhid, tokenDoLoginRhid, registrosRhid, textoAfdRhid, empresasRhid, alvosRhid,
   janelaRhid, requisicaoAfdRhid, abrirSessaoRhid, importarPessoasRhid, importarBatidasRhid, juntarSaidasRhid, RHID_BASE_PADRAO,
+  cpfRhid, deveImportarHorariosRhid, janelaHorariosRhid, diasApuracaoRhid, importarHorariosRhid,
 } from './rhid.mjs'
 import { lerAfd, resumoAfd } from '../../controlid/lib/afd.mjs'
 import { requisitarComRetentativa, criarHttpFetch } from '../../comum/lib/supabase.mjs'
@@ -153,6 +154,58 @@ test('ponta a ponta (HTTP): login → pessoas → equipamentos → AFD REP + REP
   assert.match(b4.erro, /Equipamento 77/)
 })
 
+test('horários: apuração do RHiD (formato real) → previsto, folga, feriado, horários; janela e intervalo', () => {
+  const real = JSON.stringify([
+    { date: '2026-11-01T00:00:00', strHorarioContratualSimples: '08:00-13:00\r\n13:30-15:50', horasUteis: 440, folga: false, isHoliday: 0, holiday: null, saldoBancoCredDeb: -326 },
+    { date: '2026-11-02T00:00:00', strHorarioContratualSimples: '', horasUteis: 0, folga: false, isHoliday: 1, holiday: { name: 'Finados', folga: false }, saldoBancoCredDeb: 622 },
+    { date: '2026-11-03T00:00:00', strHorarioContratualSimples: '08:00-13:00\r\n13:30-15:50', horasUteis: 440, folga: true, isHoliday: 0, holiday: null, saldoBancoCredDeb: 0 },
+    { dateTimeStr: '20261104', strHorarioContratualSimples: '15:00-17:00\r\n17:30-22:50', horasUteis: 440, folga: false },
+    { date: 'lixo' }, null,
+  ])
+  const d = diasApuracaoRhid(JSON.stringify(real), '04567891230')
+  assert.deepEqual(d.map((x) => [x.data, x.previsto_minutos, x.folga, x.feriado, x.horarios.join(' '), x.saldo_minutos]), [
+    ['2026-11-01', 440, false, null, '08:00 13:00 13:30 15:50', -326],
+    ['2026-11-02', 0, false, 'Finados', '', 622],
+    ['2026-11-03', 0, true, null, '08:00 13:00 13:30 15:50', 0],
+    ['2026-11-04', 440, false, null, '15:00 17:00 17:30 22:50', null],
+  ])
+  assert.ok(d.every((x) => x.cpf === '04567891230'))
+  assert.throws(() => diasApuracaoRhid('{"error":"Sem permissão"}', 'x'), /Sem permissão/)
+  assert.equal(cpfRhid(4567891230), '04567891230')
+  assert.equal(cpfRhid(0), null)
+  const cfg = (cursor, p = {}) => ({ dia_trabalho_atual: '2026-11-17', cursor, parametros: p })
+  const agora = Date.parse('2026-11-17T15:00:00Z')
+  assert.equal(deveImportarHorariosRhid({ gatilho: 'agendado' }, cfg({}), agora), true, 'nunca rodou')
+  assert.equal(deveImportarHorariosRhid({ gatilho: 'agendado' }, cfg({ horarios_em: '2026-11-17T14:30:00Z' }), agora), false, 'rodou há 30 min')
+  assert.equal(deveImportarHorariosRhid({ gatilho: 'agendado' }, cfg({ horarios_em: '2026-11-17T13:59:00Z' }), agora), true)
+  assert.equal(deveImportarHorariosRhid({ gatilho: 'manual' }, cfg({ horarios_em: '2026-11-17T14:59:00Z' }), agora), true, 'manual sempre')
+  assert.equal(deveImportarHorariosRhid({ gatilho: 'manual' }, cfg({}, { importar_horarios: false }), agora), false)
+  assert.deepEqual(janelaHorariosRhid({}, cfg({})), { dataIni: '2026-10-08', dataFinal: '2026-11-17' })
+  assert.deepEqual(janelaHorariosRhid({ data_inicio: '2026-11-01', data_fim: '2026-12-31' }, cfg({})), { dataIni: '2026-11-01', dataFinal: '2026-11-17' })
+  assert.deepEqual(janelaHorariosRhid({ data_inicio: '2026-01-01' }, cfg({})).dataIni, '2026-08-20', '≤ 90 dias')
+})
+
+test('horários ponta a ponta (HTTP): só CPFs ligados, uma apuração por pessoa, lotes', async () => {
+  const lotes = []
+  const rpc = async (nome, args) => {
+    if (nome === 'ingestao_rhid_vinculados') return ['52998224725', '99999999999']
+    if (nome === 'ingestao_rhid_horarios') { lotes.push(args.p_dias); return { gravados: args.p_dias.length, iguais: 0, ignorados: 0, funcionarios_reapurados: 1 } }
+    throw new Error(`rpc inesperada ${nome}`)
+  }
+  const config = configMock()
+  const sessao = await abrirSessaoRhid(config, { requisitar })
+  const h = await importarHorariosRhid(config, { data_inicio: '2026-11-09', data_fim: '2026-11-16' }, sessao, { rpc, tamanhoLote: 5 })
+  assert.equal(h.status, 'sucesso', h.erro)
+  assert.equal(h.lidos, 8)
+  assert.deepEqual(lotes.map((l) => l.length), [5, 3])
+  const dias = lotes.flat()
+  assert.ok(dias.every((x) => x.cpf === '52998224725'))
+  assert.deepEqual(dias.filter((x) => x.previsto_minutos === 0).map((x) => [x.data, x.folga, x.feriado]),
+    [['2026-11-15', false, 'Proclamação da República']], '15/11 (domingo) é feriado: previsto 0')
+  assert.deepEqual(dias.find((x) => x.data === '2026-11-09').horarios, ['08:00', '13:00', '13:30', '15:50'])
+  assert.match(h.detalhes.avisos.join(' '), /…99 ligado, mas não está nas pessoas do RHiD/)
+})
+
 test('credenciais erradas: erro do login sem a senha na mensagem', async () => {
   const c = { ...configMock(), segredos: { email: RHID_MOCK.email, senha: 'errada-123' } }
   await assert.rejects(abrirSessaoRhid(c, { requisitar }), (e) => /RHiD login: HTTP 400.*Invalid credentials/.test(e.message) && !e.message.includes('errada-123'))
@@ -177,6 +230,8 @@ test('workflow "MDG · RHiD · Importar" no simulador + despacho pela fila e pel
     ingestao_integracoes_ativas: () => [{ integracao_id: RHID_ID, empresa_id: EMPRESA, tipo: 'rhid', nome: 'RHiD', intervalo_minutos: 60, ultima_execucao_em: null }],
     ingestao_rhid_pessoas: (a) => ({ lidos: a.p_pessoas.length, gravados: a.p_pessoas.length, ignorados: 0 }),
     ingestao_rhid_batidas: (a) => ({ lidos: a.p_marcacoes.length, gravados: a.p_marcacoes.length, ignorados: 0, duplicados: 0, ultimo_nsr: Math.max(...a.p_marcacoes.map((m) => m.nsr)) }),
+    ingestao_rhid_vinculados: () => ['52998224725'],
+    ingestao_rhid_horarios: (a) => ({ lidos: a.p_dias.length, gravados: a.p_dias.length, iguais: 0, ignorados: 0, funcionarios_reapurados: 1 }),
   } })
   try {
     const ler = (rel) => JSON.parse(readFileSync(join(N8N, rel), 'utf8'))
@@ -188,7 +243,8 @@ test('workflow "MDG · RHiD · Importar" no simulador + despacho pela fila e pel
     assert.equal(concl['s-b'].p_status, 'concluida', concl['s-b'].p_mensagem)
     assert.match(concl['s-v'].p_mensagem, /não se aplica a integração do tipo "rhid"/)
     const ini = sb.chamadas.filter((c) => c.rpc === 'ingestao_sync_iniciar').map((c) => [c.args.p_tipo, c.args.p_workflow])
-    assert.deepEqual(ini, [['rhid_pessoas', 'MDG · RHiD · Importar'], ['rhid_batidas', 'MDG · RHiD · Importar'], ['rhid_batidas', 'MDG · RHiD · Importar']])
+    assert.deepEqual(ini.map((x) => x[0]), ['rhid_pessoas', 'rhid_batidas', 'rhid_horarios', 'rhid_batidas', 'rhid_horarios'])
+    assert.ok(ini.every((x) => x[1] === 'MDG · RHiD · Importar'))
     const fins = sb.chamadas.filter((c) => c.rpc === 'ingestao_sync_finalizar').map((c) => c.args)
     assert.ok(fins.every((f) => f.p_status === 'sucesso'), JSON.stringify(fins.map((f) => f.p_erro)))
     assert.ok(!JSON.stringify(sb.chamadas).includes('rhid-token-'), 'token não vai para o banco')
@@ -198,7 +254,7 @@ test('workflow "MDG · RHiD · Importar" no simulador + despacho pela fila e pel
     assert.equal(ag.erro, null, ag.erro && ag.erro.message)
     assert.deepEqual([ag.saida[0].json.total, ag.saida[0].json.erros], [1, 0])
     assert.deepEqual(sb.chamadas.slice(n).filter((c) => c.rpc === 'ingestao_sync_iniciar').map((c) => [c.args.p_tipo, c.args.p_gatilho]),
-      [['rhid_pessoas', 'agendado'], ['rhid_batidas', 'agendado']])
+      [['rhid_pessoas', 'agendado'], ['rhid_batidas', 'agendado'], ['rhid_horarios', 'agendado']], 'sem cursor.horarios_em: roda')
     // sem MDG_WF_RHID_IMPORTAR → pedido em erro citando a variável
     fila.push({ solicitacao_id: 's-x', empresa_id: EMPRESA, integracao_id: RHID_ID, integracao_tipo: 'rhid', escopo: 'tudo', parametros: {} })
     await executarWorkflow(ler('comum/workflows/sincronizar-agora.json'), [], { ...ctx, env: { ...ctx.env, MDG_WF_RHID_IMPORTAR: '' } })

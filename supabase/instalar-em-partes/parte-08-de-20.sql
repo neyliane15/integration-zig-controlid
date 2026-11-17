@@ -3,6 +3,80 @@
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000200_ponto.sql. Não edite à mão.
 
 begin;
+create or replace function public.ponto_apurar(p_funcionario uuid, p_inicio date, p_fim date)
+returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_empresa  uuid;
+  v_atual    date;
+  v_dia      date;
+  c          record;
+  a          jsonb;
+  v_chaves   text[];
+  v_total    int := 0;
+begin
+  if p_funcionario is null or p_inicio is null or p_fim is null then return 0; end if;
+  select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
+  if v_empresa is null then return 0; end if;     -- funcionário excluído (cascata) → nada a fazer
+  v_atual := public.dia_de_trabalho(public.agora(), v_empresa);
+
+  for v_dia in select g::date from generate_series(p_inicio, least(p_fim, v_atual), interval '1 day') g loop
+    select * into c from public.ponto_calcular_dia(p_funcionario, v_dia);
+
+    if c.fora_do_vinculo then
+      delete from public.ponto_dias where funcionario_id = p_funcionario and data = v_dia;
+      update public.ponto_alarmes
+         set status = 'resolvido', resolvido_automaticamente = true, resolvido_em = public.agora()
+       where funcionario_id = p_funcionario and data = v_dia and status = 'aberto';
+      continue;
+    end if;
+
+    insert into public.ponto_dias as d (
+      funcionario_id, data, empresa_id, jornada_id, abono_tipo, batidas_esperadas, batidas_validas, batidas_duplicadas,
+      previsto_minutos, trabalhado_minutos, saldo_minutos, atraso_minutos, primeira_batida, ultima_batida,
+      situacao, encerrado, apurado_em)
+    values (
+      p_funcionario, v_dia, v_empresa, c.jornada_id, c.abono_tipo, c.batidas_esperadas, c.batidas_validas, c.batidas_duplicadas,
+      c.previsto_minutos, c.trabalhado_minutos, c.saldo_minutos, c.atraso_minutos, c.primeira_batida, c.ultima_batida,
+      c.situacao, c.encerrado, public.agora())
+    on conflict (funcionario_id, data) do update set
+      jornada_id = excluded.jornada_id, abono_tipo = excluded.abono_tipo,
+      batidas_esperadas = excluded.batidas_esperadas, batidas_validas = excluded.batidas_validas,
+      batidas_duplicadas = excluded.batidas_duplicadas, previsto_minutos = excluded.previsto_minutos,
+      trabalhado_minutos = excluded.trabalhado_minutos, saldo_minutos = excluded.saldo_minutos,
+      atraso_minutos = excluded.atraso_minutos, primeira_batida = excluded.primeira_batida,
+      ultima_batida = excluded.ultima_batida, situacao = excluded.situacao, encerrado = excluded.encerrado,
+      apurado_em = excluded.apurado_em;
+
+    v_chaves := '{}';
+    for a in select * from jsonb_array_elements(c.alarmes) loop
+      v_chaves := v_chaves || ((a ->> 'tipo') || '|' || (a ->> 'batida_esperada'));
+      insert into public.ponto_alarmes as pa (
+        empresa_id, funcionario_id, data, tipo, batida_esperada, horario_previsto, minutos, detalhe, status)
+      values (
+        v_empresa, p_funcionario, v_dia, a ->> 'tipo', a ->> 'batida_esperada',
+        (a ->> 'horario_previsto')::timestamptz, (a ->> 'minutos')::int, a ->> 'detalhe', 'aberto')
+      on conflict (funcionario_id, data, tipo, batida_esperada) do update set
+        detalhe = excluded.detalhe,
+        horario_previsto = excluded.horario_previsto,
+        minutos = excluded.minutos,
+        status = case when pa.status = 'resolvido' then 'aberto' else pa.status end,
+        resolvido_em = case when pa.status = 'resolvido' then null else pa.resolvido_em end,
+        resolvido_automaticamente = case when pa.status = 'resolvido' then false else pa.resolvido_automaticamente end
+      where pa.status = 'resolvido'
+         or (pa.detalhe, pa.horario_previsto, pa.minutos)
+            is distinct from (excluded.detalhe, excluded.horario_previsto, excluded.minutos);
+    end loop;
+
+    update public.ponto_alarmes
+       set status = 'resolvido', resolvido_automaticamente = true, resolvido_em = public.agora()
+     where funcionario_id = p_funcionario and data = v_dia and status = 'aberto'
+       and not ((tipo || '|' || batida_esperada) = any (v_chaves));
+
+    perform public.ponto_contar_alarmes(p_funcionario, v_dia);
+    v_total := v_total + 1;
+  end loop;
+  return v_total;
+end $$;
 comment on function public.ponto_apurar(uuid, date, date) is '[interno] Apura e persiste ponto_dias/ponto_alarmes (§7.4). Retorna dias apurados.';
 
 -- Apura todos os funcionários de uma empresa (os que têm algum dia de vínculo no período).
@@ -466,59 +540,6 @@ begin
   return v_dias;
 end $$;
 comment on function public.ponto_abonar(date, date, text, text, uuid, uuid) is '[api] Abona dias (upsert por dia) e reapura.';
-
-create or replace function public.ponto_remover_abono(p_abono uuid)
-returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare a record;
-begin
-  select * into a from public.ponto_abonos where id = p_abono;
-  if not found then raise exception 'Abono não encontrado' using errcode = 'P0002'; end if;
-  if public.pode_operar(a.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  if a.ocorrencia_id is not null then
-    raise exception 'Dia com suspensão: altere pela ocorrência' using errcode = '22023';
-  end if;
-  if a.escala_ajuste_id is not null then
-    raise exception 'Dia com férias na escala: altere pela escala' using errcode = '22023';
-  end if;
-  delete from public.ponto_abonos where id = p_abono;
-  if a.funcionario_id is not null then
-    perform public.ponto_apurar(a.funcionario_id, a.data, a.data);
-  else
-    perform public.ponto_apurar_empresa(a.empresa_id, a.data, a.data);
-  end if;
-end $$;
-comment on function public.ponto_remover_abono(uuid) is '[api] Remove um abono e reapura.';
-
--- ============================================================ banco de horas (§7.5)
-create or replace function public.banco_horas_calcular_saldo(p_funcionario uuid, p_ate date)
-returns bigint language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare v_base bigint := 0; v_inicio date := '-infinity'; b record;
-begin
-  select l.data, l.minutos into b
-    from public.banco_horas_lancamentos l
-   where l.funcionario_id = p_funcionario and l.tipo = 'saldo_inicial' and l.data <= p_ate
-   order by l.data desc
-   limit 1;
-  if found then v_base := b.minutos; v_inicio := b.data; end if;
-  return v_base
-    + coalesce((select sum(d.saldo_minutos) from public.ponto_dias d
-                 where d.funcionario_id = p_funcionario and d.encerrado and d.data between v_inicio and p_ate), 0)
-    + coalesce((select sum(l.minutos) from public.banco_horas_lancamentos l
-                 where l.funcionario_id = p_funcionario and l.tipo <> 'saldo_inicial' and l.data between v_inicio and p_ate), 0);
-end $$;
-comment on function public.banco_horas_calcular_saldo(uuid, date) is '[interno] Saldo do banco de horas até a data (§7.5).';
-
-create or replace function public.banco_horas_saldo(p_funcionario uuid, p_ate date default null)
-returns bigint language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid;
-begin
-  select f.empresa_id into v_empresa from public.funcionarios f where f.id = p_funcionario;
-  if v_empresa is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
-  if public.pode_ler(v_empresa) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  return public.banco_horas_calcular_saldo(p_funcionario,
-           coalesce(p_ate, public.dia_de_trabalho(public.agora(), v_empresa) - 1));
-end $$;
-comment on function public.banco_horas_saldo(uuid, date) is '[api] Saldo do banco de horas (padrão: até ontem).';
 
 commit;
 select 'parte 08 de 20 instalada' as resultado;

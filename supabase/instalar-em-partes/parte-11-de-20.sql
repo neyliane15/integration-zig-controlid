@@ -1,8 +1,180 @@
 -- Meu Dia de Gerente — instalação do banco, PARTE 11 DE 20.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000230_ingestao.sql, 20261006000240_painel.sql, 20261006000250_ocorrencias.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000230_ingestao.sql. Não edite à mão.
 
 begin;
+-- ======================================================== Control iD: batidas (§11.4)
+create or replace function public.ingestao_controlid_batidas(p_integracao uuid, p_batidas jsonb)
+returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig          public.integracoes;
+  v_fuso      text;
+  v_eventos   jsonb;
+  v_rep       boolean;
+  x           jsonb;
+  v_idx       int := -1;
+  v_lidos     int := 0;
+  v_gravados  int := 0;
+  v_ignorados int := 0;
+  v_dups      int := 0;
+  v_semfunc   int := 0;
+  v_dias      int := 0;
+  v_erros     jsonb := '[]'::jsonb;
+  v_nerros    int := 0;
+  v_idext     text;
+  v_pessoa    text;
+  v_instante  timestamptz;
+  v_func      uuid;
+  v_id        uuid;
+  v_data      date;
+  v_max_id    numeric;
+  v_max_idtxt text;
+  v_max_inst  timestamptz;
+  v_cursor    jsonb;
+  v_afetados  text[] := '{}';
+  v_par       text;
+  v_motivo    text;
+begin
+  ig := public.ingestao_integracao_validar(p_integracao, array['controlid_acesso', 'controlid_rep', 'rhid']);
+  p_batidas := public.ingestao_lista(p_batidas);
+  if jsonb_array_length(p_batidas) > 2000 then
+    raise exception 'Lote maior que 2000 itens' using errcode = '22023';
+  end if;
+  select e.fuso into v_fuso from public.empresas e where e.id = ig.empresa_id;
+  v_rep := ig.tipo in ('controlid_rep', 'rhid');   -- rhid: AFD do RHiD (ingestao_rhid_batidas, …0310), origem controlid_rep
+  v_eventos := coalesce(ig.parametros -> 'eventos_validos', '[7]'::jsonb);
+  if jsonb_typeof(v_eventos) <> 'array' then v_eventos := '[7]'::jsonb; end if;
+
+  for x in select value from jsonb_array_elements(p_batidas) loop
+    v_idx := v_idx + 1;
+    v_lidos := v_lidos + 1;
+    v_motivo := null;
+    begin
+      if jsonb_typeof(x) <> 'object' then raise exception 'item inválido'; end if;
+      v_idext := coalesce(public.ingestao_texto(x -> 'id_externo'), public.ingestao_texto(x -> 'nsr'));
+      if v_idext is null then raise exception 'id_externo ausente'; end if;
+      if v_rep and v_idext ~ '^[0-9]+$' then
+        v_idext := coalesce(nullif(ltrim(v_idext, '0'), ''), '0');
+      end if;
+      if (x ? 'instante' and x -> 'instante' <> 'null'::jsonb) = (x ? 'instante_local' and x -> 'instante_local' <> 'null'::jsonb) then
+        raise exception 'informe instante ou instante_local';
+      end if;
+      begin
+        if x ? 'instante' and x -> 'instante' <> 'null'::jsonb then
+          v_instante := public.ingestao_ler_instante(x ->> 'instante', v_fuso, 'com_fuso');
+        else
+          v_instante := public.ingestao_ler_instante(x ->> 'instante_local', v_fuso, 'sem_fuso');
+        end if;
+      exception when others then
+        raise exception 'instante inválido';
+      end;
+      if v_instante is null then raise exception 'instante inválido'; end if;
+
+      if v_rep then
+        v_pessoa := regexp_replace(coalesce(public.ingestao_texto(x -> 'cpf'), public.ingestao_texto(x -> 'pis'), ''), '[^0-9]', '', 'g');
+        if v_pessoa = '' then raise exception 'sem CPF/PIS'; end if;
+      else
+        v_pessoa := public.ingestao_texto(x -> 'user_id');
+        if x ? 'evento' and x -> 'evento' <> 'null'::jsonb and not (v_eventos @> jsonb_build_array(x -> 'evento')
+                                                                 or v_eventos @> jsonb_build_array((x ->> 'evento')::numeric)) then
+          v_motivo := 'evento';
+        elsif v_pessoa is null or v_pessoa = '0' then
+          v_motivo := 'sem_usuario';
+        end if;
+      end if;
+    exception when others then
+      v_ignorados := v_ignorados + 1;
+      v_nerros := v_nerros + 1;
+      if v_nerros <= 20 then
+        v_erros := v_erros || jsonb_build_object('indice', v_idx, 'motivo', sqlerrm);
+      end if;
+      continue;
+    end;
+
+    -- cursor considera todo item bem formado (inclusive ignorados por evento e já existentes)
+    if v_idext ~ '^[0-9]+$' then
+      if v_max_id is null or v_idext::numeric > v_max_id then v_max_id := v_idext::numeric; end if;
+    elsif v_max_idtxt is null or v_idext > v_max_idtxt then
+      v_max_idtxt := v_idext;
+    end if;
+    if v_max_inst is null or v_instante > v_max_inst then v_max_inst := v_instante; end if;
+
+    if v_motivo is not null then
+      v_ignorados := v_ignorados + 1;
+      continue;
+    end if;
+
+    -- resolve funcionário (§7.1)
+    v_func := null;
+    if v_rep then
+      -- 1) vínculo do usuário do equipamento (CPF/PIS ligado à mão ou pela importação do AFD); 2) CPF/PIS da ficha
+      select cu.funcionario_id into v_func from public.controlid_usuarios cu
+       where cu.integracao_id = ig.id and cu.user_id_externo = v_pessoa and cu.funcionario_id is not null;
+      if v_func is null then
+        select f.id into v_func from public.funcionarios f
+         where f.empresa_id = ig.empresa_id
+           and (case when x ? 'cpf' and public.ingestao_texto(x -> 'cpf') is not null then f.cpf else f.pis end) = v_pessoa
+         limit 1;
+      end if;
+    else
+      select cu.funcionario_id into v_func from public.controlid_usuarios cu
+       where cu.integracao_id = ig.id and cu.user_id_externo = v_pessoa;
+    end if;
+
+    insert into public.ponto_batidas (empresa_id, funcionario_id, integracao_id, origem, id_externo, pessoa_externa, instante)
+    values (ig.empresa_id, v_func, ig.id, case when ig.tipo = 'rhid' then 'controlid_rep' else ig.tipo end, v_idext, v_pessoa, v_instante)
+    on conflict (integracao_id, id_externo) do nothing
+    returning id, data_trabalho into v_id, v_data;
+
+    if v_id is null then
+      v_dups := v_dups + 1;
+    else
+      v_gravados := v_gravados + 1;
+      if v_func is null then
+        v_semfunc := v_semfunc + 1;
+      else
+        v_par := v_func::text || '|' || v_data::text;
+        if not (v_par = any (v_afetados)) then v_afetados := v_afetados || v_par; end if;
+      end if;
+    end if;
+    v_id := null;
+  end loop;
+
+  -- apura cada (funcionário, dia) afetado uma vez
+  foreach v_par in array v_afetados loop
+    v_dias := v_dias + public.ponto_apurar(split_part(v_par, '|', 1)::uuid, split_part(v_par, '|', 2)::date,
+                                           split_part(v_par, '|', 2)::date);
+  end loop;
+
+  -- cursor (máximos)
+  v_cursor := ig.cursor;
+  if v_rep then
+    if v_max_id is not null and (v_cursor ->> 'ultimo_nsr' is null or v_max_id > (v_cursor ->> 'ultimo_nsr')::numeric) then
+      v_cursor := v_cursor || jsonb_build_object('ultimo_nsr', v_max_id);
+    end if;
+  else
+    if v_max_id is not null and (v_cursor ->> 'ultimo_id' is null or (v_cursor ->> 'ultimo_id') !~ '^[0-9]+$'
+                                 or v_max_id > (v_cursor ->> 'ultimo_id')::numeric) then
+      v_cursor := v_cursor || jsonb_build_object('ultimo_id', v_max_id::text);
+    elsif v_max_id is null and v_max_idtxt is not null
+          and (v_cursor ->> 'ultimo_id' is null or v_max_idtxt > (v_cursor ->> 'ultimo_id')) then
+      v_cursor := v_cursor || jsonb_build_object('ultimo_id', v_max_idtxt);
+    end if;
+  end if;
+  if v_max_inst is not null and (v_cursor ->> 'ultimo_instante' is null
+                                 or v_max_inst > (v_cursor ->> 'ultimo_instante')::timestamptz) then
+    v_cursor := v_cursor || jsonb_build_object('ultimo_instante', v_max_inst);
+  end if;
+  if v_cursor is distinct from ig.cursor then
+    update public.integracoes set cursor = v_cursor where id = ig.id;
+  end if;
+
+  return jsonb_build_object('lidos', v_lidos, 'gravados', v_gravados, 'ignorados', v_ignorados, 'duplicados', v_dups,
+                            'sem_funcionario', v_semfunc, 'dias_apurados', v_dias, 'cursor', v_cursor)
+         || case when v_nerros > 0 then jsonb_build_object('erros', v_erros) else '{}'::jsonb end;
+end $$;
+comment on function public.ingestao_controlid_batidas(uuid, jsonb) is '[servico] Ingestão idempotente de batidas Control iD (§11.4).';
+
 -- ======================================================== Zig (§11.5)
 create or replace function public.ingestao_zig_lojas(p_integracao uuid, p_lojas jsonb)
 returns jsonb language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -267,202 +439,7 @@ begin
     'dias', coalesce((select jsonb_agg(to_jsonb(rd) order by rd.data) from public.comissao_rateio_dias rd
                        where rd.fechamento_id = p_fechamento), '[]'::jsonb));
 end $$;
-comment on function public.ingestao_fechamento_exportar(uuid) is '[servico] Fechamento + itens (por nome) + dias do rateio para o CSV do N8N.';-- =====================================================================================================
--- 20261006000240_painel.sql — backend-2
--- painel_do_dia: resumo do dia de trabalho (faturamento, serviço, ponto, tarefas, sincronização). Contrato §10.7.
--- + blocos reservas e ocorrencias (docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md, R.4).
--- =====================================================================================================
-
-create or replace function public.painel_do_dia(p_empresa uuid default null)
-returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare
-  v_empresa   uuid;
-  v_hoje      date;
-  v_ontem     date;
-  v_mes       date;
-  v_fat       jsonb;
-  v_serv      jsonb;
-  v_ponto     jsonb;
-  v_tarefas   jsonb;
-  v_sync      jsonb;
-  v_fuso      text;
-  v_virada    time;
-  v_presentes int := 0;
-  v_escalados int := 0;
-  v_operar    boolean;
-begin
-  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
-  select e.fuso, e.virada_dia into v_fuso, v_virada from public.empresas e where e.id = v_empresa;
-  v_hoje := public.dia_de_trabalho(public.agora(), v_empresa);
-  v_ontem := v_hoje - 1;
-  v_mes := date_trunc('month', v_hoje)::date;
-
-  -- faturamento e serviço
-  select jsonb_build_object(
-           'hoje', coalesce(sum(z.valor) filter (where z.data_operacao = v_hoje), 0),
-           'ontem', coalesce(sum(z.valor) filter (where z.data_operacao = v_ontem), 0),
-           'mes', coalesce(sum(z.valor) filter (where z.data_operacao >= v_mes), 0),
-           'tem_zig', exists (select 1 from public.integracoes i where i.empresa_id = v_empresa and i.tipo = 'zig' and i.ativa))
-    into v_fat
-    from public.zig_faturamento z
-   where z.empresa_id = v_empresa and z.data_operacao between least(v_mes, v_ontem) and v_hoje;
-
-  select jsonb_build_object(
-           'ontem', coalesce(sum(i.valor_total) filter (where i.data_operacao = v_ontem), 0),
-           'mes', coalesce(sum(i.valor_total) filter (where i.data_operacao >= v_mes), 0))
-    into v_serv
-    from public.zig_vendas_itens i
-   where i.empresa_id = v_empresa and i.tipo = 'Tip' and i.data_operacao between least(v_mes, v_ontem) and v_hoje;
-
-  -- ponto (ao vivo para hoje)
-  select count(*) filter (where c.batidas_validas % 2 = 1),
-         count(*) filter (where c.batidas_esperadas > 0)
-    into v_presentes, v_escalados
-    from public.funcionarios f
-    cross join lateral public.ponto_calcular_dia(f.id, v_hoje) c
-   where f.empresa_id = v_empresa and f.ativo and not c.fora_do_vinculo;
-
-  select jsonb_build_object(
-    'alarmes_abertos', (select count(*) from public.ponto_alarmes a where a.empresa_id = v_empresa and a.status = 'aberto'),
-    'alarmes', coalesce((
-       select jsonb_agg(jsonb_build_object('id', x.id, 'funcionario_id', x.funcionario_id, 'funcionario_nome', x.nome,
-                                           'data', x.data, 'tipo', x.tipo, 'batida_esperada', x.batida_esperada,
-                                           'detalhe', x.detalhe) order by x.data desc, x.criado_em desc, x.id)
-         from (select a.id, a.funcionario_id, f.nome, a.data, a.tipo, a.batida_esperada, a.detalhe, a.criado_em
-                 from public.ponto_alarmes a
-                 join public.funcionarios f on f.id = a.funcionario_id
-                where a.empresa_id = v_empresa and a.status = 'aberto'
-                order by a.data desc, a.criado_em desc, a.id
-                limit 5) x), '[]'::jsonb),
-    'presentes_agora', v_presentes,
-    'escalados_hoje', v_escalados,
-    'batidas_sem_funcionario', (select count(*) from public.ponto_batidas b
-                                 where b.empresa_id = v_empresa and b.funcionario_id is null))
-    into v_ponto;
-
-  -- tarefas do dia (atrasadas: abertas de hoje ou de dias anteriores cujo prazo já passou)
-  select jsonb_build_object(
-           'total', count(*) filter (where t.data = v_hoje and t.status <> 'cancelada'),
-           'concluidas', count(*) filter (where t.data = v_hoje and t.status = 'concluida'),
-           'pendentes', count(*) filter (where t.data = v_hoje and t.status in ('pendente', 'em_andamento')),
-           'atrasadas', count(*) filter (where t.status in ('pendente', 'em_andamento')
-                                          and (t.data < v_hoje
-                                               or (t.data = v_hoje and t.horario_limite is not null
-                                                   and public.ponto_instante_escala(t.data, t.horario_limite, v_fuso, v_virada)
-                                                       < public.agora()))))
-    into v_tarefas
-    from public.tarefas t
-   where t.empresa_id = v_empresa and t.data between v_hoje - 31 and v_hoje;
-
-  -- sincronização (só status, nunca segredos)
-  select coalesce(jsonb_agg(jsonb_build_object(
-           'integracao_id', i.id, 'tipo', i.tipo, 'nome', i.nome, 'ativa', i.ativa,
-           'por_arquivo', coalesce(i.parametros ->> 'fonte', '') = 'arquivo',
-           'ultimo_sucesso_em', i.ultimo_sucesso_em, 'ultimo_status', i.ultimo_status, 'ultimo_erro', i.ultimo_erro,
-           'executando', exists (select 1 from public.sync_execucoes s where s.integracao_id = i.id and s.status = 'executando')
-                      or exists (select 1 from public.sync_solicitacoes s
-                                  where s.integracao_id = i.id and s.status in ('pendente', 'em_andamento')))
-           order by i.tipo, i.nome, i.id), '[]'::jsonb)
-    into v_sync
-    from public.integracoes i
-   where i.empresa_id = v_empresa;
-
-  -- reservas e ocorrências (adendo extras/ocorrências/reservas R.4 / O.4): telefone e ocorrências só para G A M
-  v_operar := public.pode_operar(v_empresa) is true;
-
-  return jsonb_build_object(
-    'empresa_id', v_empresa, 'dia_trabalho', v_hoje, 'ontem', v_ontem,
-    'faturamento', v_fat, 'servico', v_serv, 'ponto', v_ponto, 'tarefas', v_tarefas, 'sincronizacao', v_sync,
-    'reservas', public.reservas_painel(v_empresa, v_hoje, v_operar),
-    'ocorrencias', case when v_operar then public.ocorrencias_resumo_empresa(v_empresa, 30) end);
-end $$;
-comment on function public.painel_do_dia(uuid) is '[api] Painel do dia de trabalho (§10.7).';-- =====================================================================================================
--- 20261006000250_ocorrencias.sql — backend (adendo extras/ocorrências/reservas, seção O)
--- Ocorrências disciplinares do funcionário (advertência / suspensão) com anexos no Storage (bucket privado
--- 'funcionarios-documentos'). Suspensão gera abonos 'suspensao' em ponto_abonos (situação 'suspenso', sem alarmes
--- nem saldo negativo). Dado sensível: só G A M. Idempotente.
--- =====================================================================================================
-
-create table if not exists public.funcionario_ocorrencias (
-  id                uuid primary key default gen_random_uuid(),
-  empresa_id        uuid not null references public.empresas (id) on delete cascade,
-  funcionario_id    uuid not null references public.funcionarios (id) on delete cascade,
-  tipo              text not null check (tipo in ('advertencia', 'suspensao')),
-  data              date not null,
-  motivo            text not null check (btrim(motivo) <> ''),
-  descricao         text,
-  dias_suspensao    int check (dias_suspensao between 1 and 30),
-  suspensao_inicio  date,
-  suspensao_fim     date,
-  criado_por        uuid references public.perfis (id) on delete set null,
-  criado_por_nome   text not null,
-  criado_em         timestamptz not null default now(),
-  atualizado_em     timestamptz not null default now(),
-  constraint funcionario_ocorrencias_suspensao check (
-    (tipo = 'advertencia' and dias_suspensao is null and suspensao_inicio is null and suspensao_fim is null)
-    or (tipo = 'suspensao' and dias_suspensao is not null and suspensao_inicio is not null
-        and suspensao_fim = suspensao_inicio + dias_suspensao - 1))
-);
-create index if not exists funcionario_ocorrencias_empresa_idx on public.funcionario_ocorrencias (empresa_id, data desc);
-create index if not exists funcionario_ocorrencias_funcionario_idx on public.funcionario_ocorrencias (funcionario_id, data desc);
-create index if not exists funcionario_ocorrencias_criado_por_idx on public.funcionario_ocorrencias (criado_por);
-comment on table public.funcionario_ocorrencias is
-  '[api:leitura] Ocorrências disciplinares (advertência/suspensão) do funcionário. Dado sensível: só G A M.';
-
-create table if not exists public.funcionario_ocorrencia_anexos (
-  id              uuid primary key default gen_random_uuid(),
-  empresa_id      uuid not null references public.empresas (id) on delete cascade,
-  ocorrencia_id   uuid not null references public.funcionario_ocorrencias (id) on delete cascade,
-  bucket          text not null default 'funcionarios-documentos',
-  caminho         text not null unique,
-  nome_arquivo    text,
-  criado_por      uuid references public.perfis (id) on delete set null,
-  criado_em       timestamptz not null default now()
-);
-create index if not exists funcionario_ocorrencia_anexos_empresa_idx on public.funcionario_ocorrencia_anexos (empresa_id);
-create index if not exists funcionario_ocorrencia_anexos_ocorrencia_idx on public.funcionario_ocorrencia_anexos (ocorrencia_id);
-create index if not exists funcionario_ocorrencia_anexos_criado_por_idx on public.funcionario_ocorrencia_anexos (criado_por);
-comment on table public.funcionario_ocorrencia_anexos is
-  '[api:leitura] Anexos (fotos/PDF no Storage, bucket privado funcionarios-documentos) das ocorrências. Só G A M.';
-
--- abono gerado pela suspensão (coluna criada em …0200)
-do $$
-begin
-  if not exists (select 1 from pg_constraint where conname = 'ponto_abonos_ocorrencia_fk') then
-    alter table public.ponto_abonos add constraint ponto_abonos_ocorrencia_fk
-      foreign key (ocorrencia_id) references public.funcionario_ocorrencias (id) on delete cascade;
-  end if;
-end $$;
-
--- ================================================================ RLS
-alter table public.funcionario_ocorrencias enable row level security;
-alter table public.funcionario_ocorrencia_anexos enable row level security;
-drop policy if exists funcionario_ocorrencias_ler on public.funcionario_ocorrencias;
-create policy funcionario_ocorrencias_ler on public.funcionario_ocorrencias for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-drop policy if exists funcionario_ocorrencia_anexos_ler on public.funcionario_ocorrencia_anexos;
-create policy funcionario_ocorrencia_anexos_ler on public.funcionario_ocorrencia_anexos for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-
--- ================================================================ gatilhos
-drop trigger if exists a_empresa on public.funcionario_ocorrencias;
-create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.funcionario_ocorrencias
-  for each row execute function public.ponto_empresa_do_funcionario();
-drop trigger if exists tocar_atualizado_em on public.funcionario_ocorrencias;
-create trigger tocar_atualizado_em before update on public.funcionario_ocorrencias
-  for each row execute function public.tocar_atualizado_em();
-
-create or replace function public.ocorrencia_anexo_empresa()
-returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid;
-begin
-  select o.empresa_id into v_empresa from public.funcionario_ocorrencias o where o.id = new.ocorrencia_id;
-  if v_empresa is null then raise exception 'Ocorrência não encontrada' using errcode = 'P0002'; end if;
-  new.empresa_id := v_empresa;
-  return new;
-end $$;
-comment on function public.ocorrencia_anexo_empresa() is '[interno] Gatilho: empresa_id do anexo = da ocorrência.';
-drop trigger if exists a_empresa on public.funcionario_ocorrencia_anexos;
+comment on function public.ingestao_fechamento_exportar(uuid) is '[servico] Fechamento + itens (por nome) + dias do rateio para o CSV do N8N.';
 
 commit;
 select 'parte 11 de 20 instalada' as resultado;

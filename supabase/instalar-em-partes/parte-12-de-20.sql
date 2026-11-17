@@ -1,8 +1,204 @@
 -- Meu Dia de Gerente — instalação do banco, PARTE 12 DE 20.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000250_ocorrencias.sql, 20261006000260_extras.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000240_painel.sql, 20261006000250_ocorrencias.sql. Não edite à mão.
 
 begin;
+-- =====================================================================================================
+-- 20261006000240_painel.sql — backend-2
+-- painel_do_dia: resumo do dia de trabalho (faturamento, serviço, ponto, tarefas, sincronização). Contrato §10.7.
+-- + blocos reservas e ocorrencias (docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md, R.4).
+-- =====================================================================================================
+
+create or replace function public.painel_do_dia(p_empresa uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare
+  v_empresa   uuid;
+  v_hoje      date;
+  v_ontem     date;
+  v_mes       date;
+  v_fat       jsonb;
+  v_serv      jsonb;
+  v_ponto     jsonb;
+  v_tarefas   jsonb;
+  v_sync      jsonb;
+  v_fuso      text;
+  v_virada    time;
+  v_presentes int := 0;
+  v_escalados int := 0;
+  v_operar    boolean;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
+  select e.fuso, e.virada_dia into v_fuso, v_virada from public.empresas e where e.id = v_empresa;
+  v_hoje := public.dia_de_trabalho(public.agora(), v_empresa);
+  v_ontem := v_hoje - 1;
+  v_mes := date_trunc('month', v_hoje)::date;
+
+  -- faturamento e serviço
+  select jsonb_build_object(
+           'hoje', coalesce(sum(z.valor) filter (where z.data_operacao = v_hoje), 0),
+           'ontem', coalesce(sum(z.valor) filter (where z.data_operacao = v_ontem), 0),
+           'mes', coalesce(sum(z.valor) filter (where z.data_operacao >= v_mes), 0),
+           'tem_zig', exists (select 1 from public.integracoes i where i.empresa_id = v_empresa and i.tipo = 'zig' and i.ativa))
+    into v_fat
+    from public.zig_faturamento z
+   where z.empresa_id = v_empresa and z.data_operacao between least(v_mes, v_ontem) and v_hoje;
+
+  select jsonb_build_object(
+           'ontem', coalesce(sum(i.valor_total) filter (where i.data_operacao = v_ontem), 0),
+           'mes', coalesce(sum(i.valor_total) filter (where i.data_operacao >= v_mes), 0))
+    into v_serv
+    from public.zig_vendas_itens i
+   where i.empresa_id = v_empresa and i.tipo = 'Tip' and i.data_operacao between least(v_mes, v_ontem) and v_hoje;
+
+  -- ponto (ao vivo para hoje)
+  select count(*) filter (where c.batidas_validas % 2 = 1),
+         count(*) filter (where c.batidas_esperadas > 0)
+    into v_presentes, v_escalados
+    from public.funcionarios f
+    cross join lateral public.ponto_calcular_dia(f.id, v_hoje) c
+   where f.empresa_id = v_empresa and f.ativo and not c.fora_do_vinculo;
+
+  select jsonb_build_object(
+    'alarmes_abertos', (select count(*) from public.ponto_alarmes a where a.empresa_id = v_empresa and a.status = 'aberto'),
+    'alarmes', coalesce((
+       select jsonb_agg(jsonb_build_object('id', x.id, 'funcionario_id', x.funcionario_id, 'funcionario_nome', x.nome,
+                                           'data', x.data, 'tipo', x.tipo, 'batida_esperada', x.batida_esperada,
+                                           'detalhe', x.detalhe) order by x.data desc, x.criado_em desc, x.id)
+         from (select a.id, a.funcionario_id, f.nome, a.data, a.tipo, a.batida_esperada, a.detalhe, a.criado_em
+                 from public.ponto_alarmes a
+                 join public.funcionarios f on f.id = a.funcionario_id
+                where a.empresa_id = v_empresa and a.status = 'aberto'
+                order by a.data desc, a.criado_em desc, a.id
+                limit 5) x), '[]'::jsonb),
+    'presentes_agora', v_presentes,
+    'escalados_hoje', v_escalados,
+    'batidas_sem_funcionario', (select count(*) from public.ponto_batidas b
+                                 where b.empresa_id = v_empresa and b.funcionario_id is null))
+    into v_ponto;
+
+  -- tarefas do dia (atrasadas: abertas de hoje ou de dias anteriores cujo prazo já passou)
+  select jsonb_build_object(
+           'total', count(*) filter (where t.data = v_hoje and t.status <> 'cancelada'),
+           'concluidas', count(*) filter (where t.data = v_hoje and t.status = 'concluida'),
+           'pendentes', count(*) filter (where t.data = v_hoje and t.status in ('pendente', 'em_andamento')),
+           'atrasadas', count(*) filter (where t.status in ('pendente', 'em_andamento')
+                                          and (t.data < v_hoje
+                                               or (t.data = v_hoje and t.horario_limite is not null
+                                                   and public.ponto_instante_escala(t.data, t.horario_limite, v_fuso, v_virada)
+                                                       < public.agora()))))
+    into v_tarefas
+    from public.tarefas t
+   where t.empresa_id = v_empresa and t.data between v_hoje - 31 and v_hoje;
+
+  -- sincronização (só status, nunca segredos)
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'integracao_id', i.id, 'tipo', i.tipo, 'nome', i.nome, 'ativa', i.ativa,
+           'por_arquivo', coalesce(i.parametros ->> 'fonte', '') = 'arquivo',
+           'ultimo_sucesso_em', i.ultimo_sucesso_em, 'ultimo_status', i.ultimo_status, 'ultimo_erro', i.ultimo_erro,
+           'executando', exists (select 1 from public.sync_execucoes s where s.integracao_id = i.id and s.status = 'executando')
+                      or exists (select 1 from public.sync_solicitacoes s
+                                  where s.integracao_id = i.id and s.status in ('pendente', 'em_andamento')))
+           order by i.tipo, i.nome, i.id), '[]'::jsonb)
+    into v_sync
+    from public.integracoes i
+   where i.empresa_id = v_empresa;
+
+  -- reservas e ocorrências (adendo extras/ocorrências/reservas R.4 / O.4): telefone e ocorrências só para G A M
+  v_operar := public.pode_operar(v_empresa) is true;
+
+  return jsonb_build_object(
+    'empresa_id', v_empresa, 'dia_trabalho', v_hoje, 'ontem', v_ontem,
+    'faturamento', v_fat, 'servico', v_serv, 'ponto', v_ponto, 'tarefas', v_tarefas, 'sincronizacao', v_sync,
+    'reservas', public.reservas_painel(v_empresa, v_hoje, v_operar),
+    'ocorrencias', case when v_operar then public.ocorrencias_resumo_empresa(v_empresa, 30) end);
+end $$;
+comment on function public.painel_do_dia(uuid) is '[api] Painel do dia de trabalho (§10.7).';-- =====================================================================================================
+-- 20261006000250_ocorrencias.sql — backend (adendo extras/ocorrências/reservas, seção O)
+-- Ocorrências disciplinares do funcionário (advertência / suspensão) com anexos no Storage (bucket privado
+-- 'funcionarios-documentos'). Suspensão gera abonos 'suspensao' em ponto_abonos (situação 'suspenso', sem alarmes
+-- nem saldo negativo). Dado sensível: só G A M. Idempotente.
+-- =====================================================================================================
+
+create table if not exists public.funcionario_ocorrencias (
+  id                uuid primary key default gen_random_uuid(),
+  empresa_id        uuid not null references public.empresas (id) on delete cascade,
+  funcionario_id    uuid not null references public.funcionarios (id) on delete cascade,
+  tipo              text not null check (tipo in ('advertencia', 'suspensao')),
+  data              date not null,
+  motivo            text not null check (btrim(motivo) <> ''),
+  descricao         text,
+  dias_suspensao    int check (dias_suspensao between 1 and 30),
+  suspensao_inicio  date,
+  suspensao_fim     date,
+  criado_por        uuid references public.perfis (id) on delete set null,
+  criado_por_nome   text not null,
+  criado_em         timestamptz not null default now(),
+  atualizado_em     timestamptz not null default now(),
+  constraint funcionario_ocorrencias_suspensao check (
+    (tipo = 'advertencia' and dias_suspensao is null and suspensao_inicio is null and suspensao_fim is null)
+    or (tipo = 'suspensao' and dias_suspensao is not null and suspensao_inicio is not null
+        and suspensao_fim = suspensao_inicio + dias_suspensao - 1))
+);
+create index if not exists funcionario_ocorrencias_empresa_idx on public.funcionario_ocorrencias (empresa_id, data desc);
+create index if not exists funcionario_ocorrencias_funcionario_idx on public.funcionario_ocorrencias (funcionario_id, data desc);
+create index if not exists funcionario_ocorrencias_criado_por_idx on public.funcionario_ocorrencias (criado_por);
+comment on table public.funcionario_ocorrencias is
+  '[api:leitura] Ocorrências disciplinares (advertência/suspensão) do funcionário. Dado sensível: só G A M.';
+
+create table if not exists public.funcionario_ocorrencia_anexos (
+  id              uuid primary key default gen_random_uuid(),
+  empresa_id      uuid not null references public.empresas (id) on delete cascade,
+  ocorrencia_id   uuid not null references public.funcionario_ocorrencias (id) on delete cascade,
+  bucket          text not null default 'funcionarios-documentos',
+  caminho         text not null unique,
+  nome_arquivo    text,
+  criado_por      uuid references public.perfis (id) on delete set null,
+  criado_em       timestamptz not null default now()
+);
+create index if not exists funcionario_ocorrencia_anexos_empresa_idx on public.funcionario_ocorrencia_anexos (empresa_id);
+create index if not exists funcionario_ocorrencia_anexos_ocorrencia_idx on public.funcionario_ocorrencia_anexos (ocorrencia_id);
+create index if not exists funcionario_ocorrencia_anexos_criado_por_idx on public.funcionario_ocorrencia_anexos (criado_por);
+comment on table public.funcionario_ocorrencia_anexos is
+  '[api:leitura] Anexos (fotos/PDF no Storage, bucket privado funcionarios-documentos) das ocorrências. Só G A M.';
+
+-- abono gerado pela suspensão (coluna criada em …0200)
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'ponto_abonos_ocorrencia_fk') then
+    alter table public.ponto_abonos add constraint ponto_abonos_ocorrencia_fk
+      foreign key (ocorrencia_id) references public.funcionario_ocorrencias (id) on delete cascade;
+  end if;
+end $$;
+
+-- ================================================================ RLS
+alter table public.funcionario_ocorrencias enable row level security;
+alter table public.funcionario_ocorrencia_anexos enable row level security;
+drop policy if exists funcionario_ocorrencias_ler on public.funcionario_ocorrencias;
+create policy funcionario_ocorrencias_ler on public.funcionario_ocorrencias for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+drop policy if exists funcionario_ocorrencia_anexos_ler on public.funcionario_ocorrencia_anexos;
+create policy funcionario_ocorrencia_anexos_ler on public.funcionario_ocorrencia_anexos for select to authenticated
+  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
+
+-- ================================================================ gatilhos
+drop trigger if exists a_empresa on public.funcionario_ocorrencias;
+create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.funcionario_ocorrencias
+  for each row execute function public.ponto_empresa_do_funcionario();
+drop trigger if exists tocar_atualizado_em on public.funcionario_ocorrencias;
+create trigger tocar_atualizado_em before update on public.funcionario_ocorrencias
+  for each row execute function public.tocar_atualizado_em();
+
+create or replace function public.ocorrencia_anexo_empresa()
+returns trigger language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  select o.empresa_id into v_empresa from public.funcionario_ocorrencias o where o.id = new.ocorrencia_id;
+  if v_empresa is null then raise exception 'Ocorrência não encontrada' using errcode = 'P0002'; end if;
+  new.empresa_id := v_empresa;
+  return new;
+end $$;
+comment on function public.ocorrencia_anexo_empresa() is '[interno] Gatilho: empresa_id do anexo = da ocorrência.';
+drop trigger if exists a_empresa on public.funcionario_ocorrencia_anexos;
 create trigger a_empresa before insert or update of ocorrencia_id, empresa_id on public.funcionario_ocorrencia_anexos
   for each row execute function public.ocorrencia_anexo_empresa();
 
@@ -279,180 +475,6 @@ returns jsonb language sql stable security definer set search_path = public, ext
   from h
 $$;
 comment on function public.ocorrencias_resumo_empresa(uuid, int) is '[interno] Resumo de ocorrências (adendo O.4), sem checagem.';
-
-create or replace function public.ocorrencias_resumo(p_dias int default 30, p_empresa uuid default null)
-returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid;
-begin
-  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
-  if p_dias is null or p_dias < 1 or p_dias > 366 then
-    raise exception 'Período máximo de 366 dias' using errcode = '22023';
-  end if;
-  return public.ocorrencias_resumo_empresa(v_empresa, p_dias);
-end $$;
-comment on function public.ocorrencias_resumo(int, uuid) is '[api] Resumo das ocorrências dos últimos N dias (G A M).';-- =====================================================================================================
--- 20261006000260_extras.sql — backend (adendo extras/ocorrências/reservas, seção E — v2)
--- Extras = freelas/diaristas: cadastro (pontuação e diária padrão), dias trabalhados (diarias: extra com pontos
--- que entram no rateio diário da comissão, ou funcionário só como custo), valor padrão de diária do funcionário
--- e gastos totais por período. Valores e dados pessoais: só G A M. Idempotente; atualiza por cima da v1.
--- =====================================================================================================
-
--- ================================================================ v1 removida (pontos extras, diária avulsa)
-drop function if exists public.comissao_extra_lancar(uuid, date, numeric, text);
-drop function if exists public.comissao_extra_excluir(uuid);
-drop function if exists public.comissao_extras_listar(date, date, uuid, uuid);
-drop function if exists public.diaria_lancar(date, uuid, text, text, bigint, text, boolean, date, uuid);
-drop function if exists public.diaria_atualizar(uuid, date, uuid, text, text, bigint, text, boolean, date);
-drop function if exists public.diaria_preparar(uuid, date, uuid, text, text, bigint, boolean, date);
-drop function if exists public.diarias_listar(date, date, uuid, boolean, uuid);
-
-create or replace function public.comissao_periodo_fechado(p_empresa uuid, p_data date)
-returns boolean language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  select exists (select 1 from public.comissao_fechamentos f
-                  where f.empresa_id = p_empresa and f.status = 'fechado' and p_data between f.data_inicio and f.data_fim)
-$$;
-comment on function public.comissao_periodo_fechado(uuid, date) is '[interno] A data cai num fechamento de comissão fechado?';
-
--- ================================================================ cadastro de extras (E.1)
-create table if not exists public.extras (
-  id                     uuid primary key default gen_random_uuid(),
-  empresa_id             uuid not null references public.empresas (id) on delete cascade,
-  nome                   text not null check (btrim(nome) <> ''),
-  funcao                 text,
-  telefone               text,
-  documento              text,
-  pontos_padrao          numeric(8,2) not null default 0 check (pontos_padrao between 0 and 9999.99),
-  valor_diaria_centavos  bigint check (valor_diaria_centavos between 0 and 100000000),
-  ativo                  boolean not null default true,
-  observacoes            text,
-  criado_por             uuid references public.perfis (id) on delete set null,
-  criado_em              timestamptz not null default now(),
-  atualizado_em          timestamptz not null default now()
-);
-create index if not exists extras_empresa_idx on public.extras (empresa_id, lower(nome));
-create index if not exists extras_criado_por_idx on public.extras (criado_por);
-comment on table public.extras is '[api:leitura] Extras (freelas/diaristas): pontuação e diária padrão, contato. Só G A M.';
-
--- (adendo extras v3, §E.7.5) pontuação pendente (extra importado sem pontos)
-alter table public.extras add column if not exists pontos_pendente boolean not null default false;
-
-alter table public.extras enable row level security;
-drop policy if exists extras_ler on public.extras;
-create policy extras_ler on public.extras for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-drop trigger if exists extras_tocar on public.extras;
-create trigger extras_tocar before update on public.extras
-  for each row execute function public.tocar_atualizado_em();
-
--- itens de comissão de extras (colunas em …0220)
-alter table public.comissao_itens drop constraint if exists comissao_itens_extra_fk;
-alter table public.comissao_itens add constraint comissao_itens_extra_fk
-  foreign key (extra_id) references public.extras (id) on delete set null;
-alter table public.comissao_itens drop constraint if exists comissao_itens_participante;
-alter table public.comissao_itens add constraint comissao_itens_participante
-  check ((tipo = 'funcionario' and extra_id is null) or (tipo = 'extra' and funcionario_id is null));
-
--- ================================================================ valor padrão da diária do funcionário
-create table if not exists public.funcionario_valores_diaria (
-  funcionario_id         uuid primary key references public.funcionarios (id) on delete cascade,
-  empresa_id             uuid not null references public.empresas (id) on delete cascade,
-  valor_diaria_centavos  bigint not null check (valor_diaria_centavos between 0 and 100000000),
-  atualizado_por         uuid references public.perfis (id) on delete set null,
-  atualizado_em          timestamptz not null default now()
-);
-create index if not exists funcionario_valores_diaria_empresa_idx on public.funcionario_valores_diaria (empresa_id);
-create index if not exists funcionario_valores_diaria_atualizado_por_idx on public.funcionario_valores_diaria (atualizado_por);
-comment on table public.funcionario_valores_diaria is
-  '[api:leitura] Valor padrão da diária do funcionário (fora de funcionarios: a leitura não vê valores).';
-
--- ================================================================ dias trabalhados / diárias (E.2)
-create table if not exists public.diarias (
-  id               uuid primary key default gen_random_uuid(),
-  empresa_id       uuid not null references public.empresas (id) on delete cascade,
-  tipo             text not null default 'funcionario',
-  extra_id         uuid references public.extras (id),
-  funcionario_id   uuid references public.funcionarios (id) on delete set null,
-  pessoa_nome      text not null check (btrim(pessoa_nome) <> ''),
-  data             date not null,
-  funcao           text,
-  pontos           numeric(8,2),
-  valor_centavos   bigint not null check (valor_centavos between 0 and 100000000),
-  observacao       text,
-  pago             boolean not null default false,
-  pago_em          date,
-  criado_por       uuid references public.perfis (id) on delete set null,
-  criado_por_nome  text not null,
-  criado_em        timestamptz not null default now(),
-  atualizado_em    timestamptz not null default now(),
-  constraint diarias_pagamento check (pago or pago_em is null)
-);
-
--- Atualização por cima da v1 (diarias sem "tipo"): cada diária avulsa vira um extra cadastrado (pontos 0).
-do $$
-declare r record; v_nome text; v_extra uuid;
-begin
-  if exists (select 1 from information_schema.columns
-              where table_schema = 'public' and table_name = 'diarias' and column_name = 'tipo') then
-    return;
-  end if;
-  alter table public.diarias add column tipo text not null default 'funcionario';
-  alter table public.diarias add column extra_id uuid references public.extras (id);
-  alter table public.diarias add column pontos numeric(8,2);
-  for r in
-    select d.id, d.empresa_id, btrim(d.pessoa_nome) as nome, d.funcao, d.valor_centavos,
-           row_number() over (partition by d.empresa_id, lower(btrim(d.pessoa_nome)), d.data order by d.criado_em, d.id) as rn
-      from public.diarias d
-     where d.funcionario_id is null
-     order by d.empresa_id, d.data desc, d.criado_em desc, d.id
-  loop
-    v_nome := r.nome || case when r.rn > 1 then ' (' || r.rn || ')' else '' end;
-    v_extra := null;
-    select x.id into v_extra from public.extras x
-     where x.empresa_id = r.empresa_id and lower(x.nome) = lower(v_nome) order by x.criado_em, x.id limit 1;
-    if v_extra is null then
-      insert into public.extras (empresa_id, nome, funcao, pontos_padrao, valor_diaria_centavos, observacoes)
-      values (r.empresa_id, v_nome, r.funcao, 0, r.valor_centavos, 'Cadastrado automaticamente a partir de diária avulsa.')
-      returning id into v_extra;
-    end if;
-    update public.diarias set tipo = 'extra', extra_id = v_extra, pontos = 0 where id = r.id;
-  end loop;
-end $$;
-
-alter table public.diarias add column if not exists tipo text not null default 'funcionario';
-alter table public.diarias add column if not exists extra_id uuid references public.extras (id);
-alter table public.diarias add column if not exists pontos numeric(8,2);
-alter table public.diarias drop constraint if exists diarias_tipo_check;
-alter table public.diarias add constraint diarias_tipo_check check (tipo in ('extra', 'funcionario'));
-alter table public.diarias drop constraint if exists diarias_pontos_check;
-alter table public.diarias add constraint diarias_pontos_check check (pontos between 0 and 9999.99);
-alter table public.diarias drop constraint if exists diarias_participante;
-alter table public.diarias add constraint diarias_participante check (
-  (tipo = 'extra' and extra_id is not null and funcionario_id is null and pontos is not null)
-  or (tipo = 'funcionario' and extra_id is null and pontos is null));
--- (adendo extras v3, §E.7.5) dia de extra sem pontuação: vale 0 e não entra no rateio até a pontuação ser preenchida
-alter table public.diarias add column if not exists pontos_pendente boolean not null default false;
-alter table public.diarias drop constraint if exists diarias_pontos_pendente;
-alter table public.diarias add constraint diarias_pontos_pendente check (not pontos_pendente or (tipo = 'extra' and pontos = 0));
-create index if not exists diarias_empresa_idx on public.diarias (empresa_id, data);
-create index if not exists diarias_funcionario_idx on public.diarias (funcionario_id, data);
-create unique index if not exists diarias_extra_dia_uidx on public.diarias (extra_id, data) where extra_id is not null;
-create index if not exists diarias_extra_idx on public.diarias (extra_id);
-create index if not exists diarias_criado_por_idx on public.diarias (criado_por);
-comment on table public.diarias is
-  '[api:leitura] Dias trabalhados: de extra (pontos entram na comissão do dia) ou de funcionário (só custo). Só G A M.';
-
-alter table public.funcionario_valores_diaria enable row level security;
-alter table public.diarias enable row level security;
-drop policy if exists funcionario_valores_diaria_ler on public.funcionario_valores_diaria;
-create policy funcionario_valores_diaria_ler on public.funcionario_valores_diaria for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-drop policy if exists diarias_ler on public.diarias;
-create policy diarias_ler on public.diarias for select to authenticated
-  using ((select public.eh_master()) or empresa_id = (select public.empresa_operacao()));
-
-drop trigger if exists a_empresa on public.funcionario_valores_diaria;
-create trigger a_empresa before insert or update of funcionario_id, empresa_id on public.funcionario_valores_diaria
-  for each row execute function public.ponto_empresa_do_funcionario();
 
 commit;
 select 'parte 12 de 20 instalada' as resultado;

@@ -100,7 +100,7 @@ create table if not exists public.sync_execucoes (
   tipo                 text not null check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                          'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
                          'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar',
-                         'rhid_pessoas', 'rhid_batidas')),
+                         'rhid_pessoas', 'rhid_batidas', 'rhid_horarios')),
   gatilho              text not null check (gatilho in ('agendado', 'manual', 'webhook')),
   workflow             text not null,
   n8n_execution_id     text,
@@ -125,7 +125,7 @@ alter table public.sync_execucoes add constraint sync_execucoes_tipo_check
   check (tipo in ('zig_lojas', 'zig_faturamento', 'zig_vendas', 'zig_compradores',
                   'zig_importar', 'controlid_usuarios', 'controlid_batidas', 'controlid_exportar_usuarios',
                   'apurar_ponto', 'tarefas_gerar', 'exportar_fechamento', 'tagme_importar',
-                  'rhid_pessoas', 'rhid_batidas'));
+                  'rhid_pessoas', 'rhid_batidas', 'rhid_horarios'));
 
 -- ====================================================================================== gatilhos
 -- Parâmetros padrão por tipo (§11.1); as chaves informadas prevalecem.

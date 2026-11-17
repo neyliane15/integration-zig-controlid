@@ -3,6 +3,59 @@
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000290_comissao_presenca.sql. Não edite à mão.
 
 begin;
+-- ================================================================ presença do dia (§E.7.1)
+create or replace function public.comissao_presenca(p_empresa uuid, p_inicio date, p_fim date, p_funcionario uuid default null)
+returns table (funcionario_id uuid, data date, presente boolean, fallback boolean, bloqueado boolean, motivo text, origem text)
+language sql stable security definer rows 200 set search_path = public, extensions, pg_temp set jit = off as $$
+  with dias as (select g::date as d from generate_series(p_inicio, p_fim, interval '1 day') g),
+  fu as (
+    select f.id, f.data_admissao, f.data_desligamento,
+           (exists (select 1 from public.controlid_usuarios cu where cu.funcionario_id = f.id)
+            or exists (select 1 from public.ponto_dias pd where pd.funcionario_id = f.id
+                          and pd.data between p_inicio and p_fim and pd.batidas_validas > 0)) as no_ponto
+      from public.funcionarios f
+     where f.empresa_id = p_empresa and (p_funcionario is null or f.id = p_funcionario)
+  ),
+  ponto_emp as (
+    select distinct pd.data from public.ponto_dias pd
+     where pd.empresa_id = p_empresa and pd.data between p_inicio and p_fim and pd.batidas_validas > 0
+  ),
+  esc as materialized (
+    select e.funcionario_id, e.data, e.status from public.escala_calcular(p_empresa, p_inicio, p_fim, p_funcionario) e
+  ),
+  m as (
+    select fu.id, dd.d,
+           case
+             when not public.ponto_no_vinculo(fu.data_admissao, fu.data_desligamento, dd.d) then 'fora_vinculo'
+             when fl.tipo is not null then 'falta_' || fl.tipo
+             when ab.tipo in ('suspensao', 'ferias', 'atestado') then ab.tipo
+             when esc.status = 'ferias' then 'ferias'
+             when coalesce(pd.batidas_validas, 0) > 0 then null
+             when ab.tipo is not null then 'abono'
+             when pe.data is not null and fu.no_ponto then 'sem_batida'
+             when esc.status = 'trabalha' then null
+             when esc.status = 'folga' then 'folga_escala'
+             else 'sem_registro'
+           end as motivo,
+           case when coalesce(pd.batidas_validas, 0) > 0 then 'ponto' when esc.status = 'trabalha' then 'escala' end as origem_bruta
+      from fu
+      cross join dias dd
+      left join public.ponto_dias pd on pd.funcionario_id = fu.id and pd.data = dd.d
+      left join public.funcionario_faltas fl on fl.funcionario_id = fu.id and fl.data = dd.d
+      left join lateral (select a.tipo from public.ponto_abonos a
+                          where a.funcionario_id = fu.id and a.data = dd.d order by a.criado_em limit 1) ab on true
+      left join esc on esc.funcionario_id = fu.id and esc.data = dd.d
+      left join ponto_emp pe on pe.data = dd.d
+  )
+  select m.id, m.d, m.motivo is null, coalesce(m.motivo = 'sem_registro', false),
+         coalesce(m.motivo in ('fora_vinculo', 'falta_justificada', 'falta_injustificada', 'suspensao', 'ferias', 'atestado', 'abono'),
+                  false),
+         m.motivo, case when m.motivo is null then m.origem_bruta end
+    from m
+$$;
+comment on function public.comissao_presenca(uuid, date, date, uuid) is
+  '[interno] Presença de cada funcionário em cada dia para a comissão (adendo extras v3, §E.7.1).';
+
 -- ================================================================ cálculo (§9 / E.3 / E.7)
 create or replace function public.comissao_calcular(p_fechamento uuid)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
