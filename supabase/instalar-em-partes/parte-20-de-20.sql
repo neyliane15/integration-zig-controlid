@@ -251,7 +251,7 @@ begin
     raise exception 'Lista maior que 20000 dias' using errcode = '22023';
   end if;
   create temp table if not exists pg_temp.rhid_horarios_alterados (funcionario_id uuid, data date) on commit drop;
-  delete from pg_temp.rhid_horarios_alterados;
+  delete from pg_temp.rhid_horarios_alterados where true;  -- Supabase (pg_safeupdate) recusa DELETE sem WHERE
 
   for x in select value from jsonb_array_elements(p_dias) loop
     begin
