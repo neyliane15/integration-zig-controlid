@@ -634,10 +634,11 @@ begin
   -- escalado com chegada: a chegada da escala. Tolerância: a do horário do RHiD (CLT 10) ou a da jornada; sem nenhuma, 5.
   v_tol_atraso := case when v_ext_prev is not null then coalesce(v_ext_tol_f, v_tol_bat)
                        when j.id is not null then v_tol_bat else 5 end;
-  -- Quem está na escala rotativa só tem atraso no dia em que a escala informa a chegada (o horário do RHiD costuma ser
-  -- genérico, ex.: 08:00 para todos; sem a chegada do dia não dá para saber o atraso).
+  -- Quem é membro da escala rotativa só tem atraso no dia em que a escala informa a chegada — inclusive antes de a escala
+  -- começar (o horário do RHiD costuma ser genérico, ex.: 08:00 para todos; sem a chegada do dia não dá para saber).
   if v_k > 0 and v_n > 0 and (v_melhor is null or 1 = any (v_melhor))
-     and (v_esc.status is null or v_esc.chegada is not null) then
+     and (v_esc.chegada is not null
+          or not exists (select 1 from public.escala_membros em where em.funcionario_id = f.id)) then
     v_atraso := greatest(0, floor(extract(epoch from (v_validas[1] - v_slots[1])) / 60)::int);
     if v_atraso <= v_tol_atraso then v_atraso := 0; end if;
   elsif v_k = 0 and v_n > 0 and v_abono is null and v_esc.status = 'trabalha' and v_esc.chegada is not null then

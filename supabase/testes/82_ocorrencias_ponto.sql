@@ -126,4 +126,10 @@ select public.ponto_apurar('e8200000-0000-4000-8000-000000000301', '2026-11-16',
 select teste.ok('Ana 16/11 na escala sem chegada: sem atraso (não compara com as 08:00 do RHiD)',
   (select atraso_minutos = 0 and previsto_minutos = 440 from public.ponto_dias
     where funcionario_id = 'e8200000-0000-4000-8000-000000000301' and data = '2026-11-16'));
+insert into public.ponto_previsto_externo (funcionario_id, data, empresa_id, previsto_minutos, horarios, tolerancia_extra_minutos, tolerancia_falta_minutos)
+values ('e8200000-0000-4000-8000-000000000301', '2026-11-01', 'e8200000-0000-4000-8000-00000000000a', 440, '{08:00,13:00,13:30,15:50}', 10, 10);
+insert into public.ponto_batidas (empresa_id, funcionario_id, origem, instante, motivo) values
+  ('e8200000-0000-4000-8000-00000000000a', 'e8200000-0000-4000-8000-000000000301', 'manual', '2026-11-01 12:30-03', 't');
+select teste.ok('membro da escala, antes de a escala começar (01/11, âncora 02/11): sem atraso pelo horário do RHiD',
+  (select c.atraso_minutos = 0 from public.ponto_calcular_dia('e8200000-0000-4000-8000-000000000301', '2026-11-01') c));
 rollback;
