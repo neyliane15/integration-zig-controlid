@@ -3,6 +3,42 @@
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000310_rhid.sql, 20261006000900_permissoes.sql. Não edite à mão.
 
 begin;
+-- ---------------------------------------------------------------- pessoas (GET /person)
+-- p_pessoas: os PersonDTO do RHiD como vieram ({id, cpf, pis, name, registration, status, ...}). Snapshot completo:
+-- quem não vier é marcado removido_no_equipamento (a ingestão do Control iD faz isso). Pessoa sem CPF é ignorada
+-- (Portaria 671: o REP identifica pelo CPF).
+create or replace function public.ingestao_rhid_pessoas(p_integracao uuid, p_pessoas jsonb) returns jsonb
+language plpgsql volatile security definer set search_path = public, extensions, pg_temp as $$
+declare
+  ig       public.integracoes := public.integracao_validar(p_integracao, array['rhid']);
+  v_itens  jsonb := '[]'::jsonb;
+  x        jsonb;
+  v_cpf    text;
+  v_sem    int := 0;
+  v_res    jsonb;
+begin
+  p_pessoas := public.ingestao_lista(p_pessoas);
+  if jsonb_array_length(p_pessoas) > 20000 then
+    raise exception 'Lista maior que 20000 pessoas' using errcode = '22023';
+  end if;
+  for x in select value from jsonb_array_elements(p_pessoas) loop
+    v_cpf := case when jsonb_typeof(x) = 'object' then public.rhid_documento(x -> 'cpf') end;
+    if v_cpf is null then
+      v_sem := v_sem + 1;
+      continue;
+    end if;
+    v_itens := v_itens || jsonb_build_object(
+      'id', v_cpf, 'cpf', v_cpf, 'pis', public.rhid_documento(x -> 'pis'),
+      'name', coalesce(public.ingestao_texto(x -> 'name'), public.ingestao_texto(x -> 'socialName')),
+      'registration', public.ingestao_texto(x -> 'registration'));
+  end loop;
+  v_res := public.ingestao_controlid_usuarios(ig.id, v_itens);
+  return v_res || jsonb_build_object('lidos', jsonb_array_length(p_pessoas), 'sem_cpf', v_sem,
+                                     'ignorados', coalesce((v_res ->> 'ignorados')::int, 0) + v_sem);
+end $$;
+comment on function public.ingestao_rhid_pessoas(uuid, jsonb) is
+  '[servico] Pessoas do RHiD (GET /person) → usuários do relógio por CPF + vínculo automático (reaproveita a do Control iD).';
+
 -- ----------------------------------------------------- batidas (AFD 671 de um equipamento)
 -- p_equipamento: id do equipamento no RHiD (REP-P: idCompany + 99000000; coletor REP-P: "c<id>" para não colidir NSR).
 -- p_marcacoes: saída de lerAfd (n8n/controlid/lib/afd.mjs): [{nsr, instante (com fuso -03:00), cpf | pis}].

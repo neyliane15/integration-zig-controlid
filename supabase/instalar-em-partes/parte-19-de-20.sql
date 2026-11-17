@@ -358,7 +358,7 @@ comment on function public.ponto_importar_afd(uuid, jsonb, jsonb, text) is
   '[api] Importa marcações do AFD (lido no navegador) e empregados (tipo 5) num relógio REP — mesma regra da ingestão (G A M).';
 
 -- ------------------------------------------------------------- ligar funcionários (CPF do AFD)
--- Liga o CPF/PIS do AFD (usuário do equipamento) a um funcionário — inclusive provisório da escala ("Garçom 1") —,
+-- Liga o CPF/PIS do AFD ou do RHiD (usuário do equipamento) a um funcionário — inclusive provisório da escala ("Garçom 1") —,
 -- opcionalmente renomeando-o com o nome do AFD e gravando o CPF/PIS na ficha. As batidas pendentes passam ao funcionário
 -- e os dias são reapurados (gatilho §7.8).
 create or replace function public.ponto_afd_ligar(
@@ -377,7 +377,10 @@ begin
   if not found then raise exception 'Usuário do equipamento não encontrado' using errcode = 'P0002'; end if;
   if not public.pode_operar(v.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
   select i.tipo into v_tipo from public.integracoes i where i.id = v.integracao_id;
-  if v_tipo is distinct from 'controlid_rep' then raise exception 'Tipo de integração incompatível' using errcode = '22023'; end if;
+  -- relógio REP (rede ou arquivo) ou RHiD (nuvem): os dois guardam os CPFs/PIS em controlid_usuarios
+  if v_tipo is null or v_tipo not in ('controlid_rep', 'rhid') then
+    raise exception 'Tipo de integração incompatível' using errcode = '22023';
+  end if;
   if p_funcionario is null then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
   select * into f from public.funcionarios where id = p_funcionario;
   if not found then raise exception 'Funcionário não encontrado' using errcode = 'P0002'; end if;
@@ -413,7 +416,7 @@ begin
                  where b.integracao_id = v.integracao_id and b.pessoa_externa = v.user_id_externo and b.funcionario_id = f.id));
 end $$;
 comment on function public.ponto_afd_ligar(uuid, uuid, boolean, boolean) is
-  '[api] Liga o CPF/PIS do AFD a um funcionário (renomear e gravar o documento na ficha são opcionais) (G A M).';
+  '[api] Liga o CPF/PIS do AFD/RHiD (relógio controlid_rep ou rhid) a um funcionário (renomear e gravar o documento na ficha são opcionais) (G A M).';
 
 -- Usuários do relógio (CPF/PIS) com batidas ainda sem funcionário — a lista do "Ligar funcionários".
 create or replace function public.ponto_afd_pendentes(p_integracao uuid)
@@ -426,6 +429,7 @@ begin
   select * into ig from public.integracoes where id = p_integracao;
   if not found then raise exception 'Integração não encontrada' using errcode = 'P0002'; end if;
   if not public.pode_operar(ig.empresa_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  if ig.tipo not in ('controlid_rep', 'rhid') then raise exception 'Tipo de integração incompatível' using errcode = '22023'; end if;
   return query
   select c.id, c.cpf, c.pis, c.nome, public.nome_proprio(c.nome), count(b.id)::int, min(b.data_trabalho), max(b.data_trabalho)
     from public.controlid_usuarios c
@@ -437,7 +441,7 @@ begin
    order by count(b.id) desc, c.nome nulls last, c.user_id_externo;
 end $$;
 comment on function public.ponto_afd_pendentes(uuid) is
-  '[api] CPF/PIS do relógio sem funcionário, com as batidas pendentes (G A M).';-- =====================================================================================================
+  '[api] CPF/PIS do relógio (controlid_rep ou rhid) sem funcionário, com as batidas pendentes (G A M).';-- =====================================================================================================
 -- 20261006000310_rhid.sql — integração RHiD (nuvem da Control iD) pela API oficial (docs/referencias/rhid-swagger.json)
 -- O relógio REP da loja (iDClass, Portaria 671) não é alcançável pela rede, mas sincroniza com o RHiD; o N8N
 -- ("MDG · RHiD · Importar") faz login no RHiD, lê as pessoas (GET /person) e baixa o AFD 671 de cada equipamento
@@ -459,42 +463,6 @@ language sql immutable set search_path = public, extensions, pg_temp as $$
     from (select regexp_replace(coalesce(p_valor #>> '{}', ''), '[^0-9]', '', 'g') as d) x
 $$;
 comment on function public.rhid_documento(jsonb) is '[interno] CPF/PIS do RHiD (número) → 11 dígitos com zeros à esquerda (ou null).';
-
--- ---------------------------------------------------------------- pessoas (GET /person)
--- p_pessoas: os PersonDTO do RHiD como vieram ({id, cpf, pis, name, registration, status, ...}). Snapshot completo:
--- quem não vier é marcado removido_no_equipamento (a ingestão do Control iD faz isso). Pessoa sem CPF é ignorada
--- (Portaria 671: o REP identifica pelo CPF).
-create or replace function public.ingestao_rhid_pessoas(p_integracao uuid, p_pessoas jsonb) returns jsonb
-language plpgsql volatile security definer set search_path = public, extensions, pg_temp as $$
-declare
-  ig       public.integracoes := public.integracao_validar(p_integracao, array['rhid']);
-  v_itens  jsonb := '[]'::jsonb;
-  x        jsonb;
-  v_cpf    text;
-  v_sem    int := 0;
-  v_res    jsonb;
-begin
-  p_pessoas := public.ingestao_lista(p_pessoas);
-  if jsonb_array_length(p_pessoas) > 20000 then
-    raise exception 'Lista maior que 20000 pessoas' using errcode = '22023';
-  end if;
-  for x in select value from jsonb_array_elements(p_pessoas) loop
-    v_cpf := case when jsonb_typeof(x) = 'object' then public.rhid_documento(x -> 'cpf') end;
-    if v_cpf is null then
-      v_sem := v_sem + 1;
-      continue;
-    end if;
-    v_itens := v_itens || jsonb_build_object(
-      'id', v_cpf, 'cpf', v_cpf, 'pis', public.rhid_documento(x -> 'pis'),
-      'name', coalesce(public.ingestao_texto(x -> 'name'), public.ingestao_texto(x -> 'socialName')),
-      'registration', public.ingestao_texto(x -> 'registration'));
-  end loop;
-  v_res := public.ingestao_controlid_usuarios(ig.id, v_itens);
-  return v_res || jsonb_build_object('lidos', jsonb_array_length(p_pessoas), 'sem_cpf', v_sem,
-                                     'ignorados', coalesce((v_res ->> 'ignorados')::int, 0) + v_sem);
-end $$;
-comment on function public.ingestao_rhid_pessoas(uuid, jsonb) is
-  '[servico] Pessoas do RHiD (GET /person) → usuários do relógio por CPF + vínculo automático (reaproveita a do Control iD).';
 
 commit;
 select 'parte 19 de 20 instalada' as resultado;
