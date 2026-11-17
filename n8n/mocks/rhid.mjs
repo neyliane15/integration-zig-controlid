@@ -117,6 +117,8 @@ export function criarTratadorRhid({ marcacoes, funcionarios }) {
     if (req.method !== 'GET') return [405, { code: 405, error: 'Method not allowed' }]
     if (rota === '/person') { const r = pessoas(); return [200, { totalRecords: r.length, records: r }] }
     if (rota === '/device') {
+      // como o RHiD real: sem start/length a API (WCF) responde 500 "Request Error" em HTML
+      if (!url.searchParams.has('start') || !url.searchParams.has('length')) return [500, '<?xml version="1.0" encoding="utf-8"?><html><head><title>Request Error</title></head></html>']
       const r = [
         { id: RHID_MOCK.rep, name: 'REP MACAW', serial: '00004004330000001', model: 1, status: 'online', numberOfPeople: 5, linkedCompanyId: 1, deviceCode: null, firstSyncPIS: null },
         { id: 56, name: 'iD Face Portaria', serial: '0M0100/000123', model: 3, status: 'online', numberOfPeople: 5, deviceCode: '01234567', statusAuth: 'A', firstSyncPIS: null },

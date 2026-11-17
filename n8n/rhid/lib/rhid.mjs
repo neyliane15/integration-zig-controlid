@@ -266,8 +266,9 @@ export async function abrirSessaoRhid(config, deps) {
       }
     }
   }
+  // O RHiD real responde HTTP 500 em GET /device sem start/length (a spec diz que são opcionais): sempre envia a paginação.
   sessao.listar = (caminho, rotulo) =>
-    sessao.chamar((token) => ({ method: 'GET', url: urlRhid(base, caminho), headers: cabecalhosRhid(token), timeoutMs: deps.timeoutMs || 120000 }), rotulo)
+    sessao.chamar((token) => ({ method: 'GET', url: urlRhid(base, caminho, { start: 0, length: 10000 }), headers: cabecalhosRhid(token), timeoutMs: deps.timeoutMs || 120000 }), rotulo)
       .then((c) => registrosRhid(c, rotulo))
   await logar()
   return sessao
