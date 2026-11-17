@@ -301,8 +301,13 @@ function CartaoSincronizacao({ empresaId, p, podeSincronizar }: { empresaId: str
                   <p className="min-w-0 text-xs text-lavanda">
                     {s.ultimo_sucesso_em ? `Último sucesso ${formatarRelativo(s.ultimo_sucesso_em)}` : 'Ainda sem sucesso'}
                   </p>
-                  {podeSincronizar && s.ativa && (
+                  {podeSincronizar && s.ativa && !s.por_arquivo && (
                     <BotaoSincronizar empresaId={empresaId} integracaoId={s.integracao_id} rotulo="Sincronizar" variante="fantasma" desabilitado={s.executando} />
+                  )}
+                  {podeSincronizar && s.ativa && s.por_arquivo && (
+                    <Link to={`/integracoes/${s.integracao_id}`} className="text-xs font-semibold text-ouro hover:underline">
+                      Importar AFD
+                    </Link>
                   )}
                 </div>
                 {s.ultimo_status === 'erro' && s.ultimo_erro && <p className="mt-1 line-clamp-2 text-xs text-perigo">{s.ultimo_erro}</p>}

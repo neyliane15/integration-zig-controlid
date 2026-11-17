@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { lerAfd, lerLinhaAfd, resumoAfd, deduplicarPorIdExterno, emLotes, separarLotes } from './afd.mjs'
+import { lerAfd, lerLinhaAfd, lerEmpregadoAfd, resumoAfd, deduplicarPorIdExterno, emLotes, separarLotes } from './afd.mjs'
 
 const { describe, it } = process.env.VITEST ? await import('vitest') : await import('node:test')
 const DADOS = join(dirname(fileURLToPath(import.meta.url)), '__dados__')
@@ -97,6 +97,59 @@ describe('linha a linha', () => {
   })
   it('fuso inválido', () => {
     assert.deepEqual(lerLinhaAfd('0000000013' + '2026-10-05T17:02:00-9900' + '052998224725ABCD'), { ignorada: 'fuso inválido' })
+  })
+})
+
+describe('empregados (registro tipo 5)', () => {
+  const nome52 = (n) => n.padEnd(52, ' ')
+  it('671: CPF e nome do empregado; 1510: PIS e nome', () => {
+    assert.deepEqual(lerAfd(ler('afd-671.txt')).empregados, [{ nsr: 7, operacao: 'I', cpf: '39053344705', nome: 'CARLA DIAS' }])
+    assert.deepEqual(lerAfd(ler('afd-1510.txt')).empregados, [{ nsr: 5, operacao: 'I', pis: '12345678901', nome: 'ANA SOUZA' }])
+  })
+  it('um por documento: fica a última operação; nome vazio não apaga o anterior; espaços internos normalizados', () => {
+    const t = [
+      '0000000015' + '2026-10-01T09:00:00-0300' + 'I' + '052998224725' + nome52('ANA  SOUZA') + '0000' + '12345678901' + 'ABCD',
+      '0000000025' + '2026-10-01T09:00:00-0300' + 'I' + '011144477735' + nome52('BRUNO LIMA') + '0000' + '12345678901' + 'ABCD',
+      '0000000035' + '2026-10-02T09:00:00-0300' + 'A' + '052998224725' + nome52('') + '0000' + '12345678901' + 'ABCD',
+      '0000000045' + '2026-10-02T09:00:00-0300' + 'X' + '039053344705' + nome52('OPERAÇÃO INVÁLIDA') + '0000',
+      '0000000055' + '2026-10-02T09:00:00-0300' + 'I' + '000000000000' + nome52('SEM CPF') + '0000',
+    ].join('\r\n')
+    const r = lerAfd(t)
+    assert.deepEqual(r.empregados, [
+      { nsr: 2, operacao: 'I', cpf: '11144477735', nome: 'BRUNO LIMA' },
+      { nsr: 3, operacao: 'A', cpf: '52998224725', nome: 'ANA SOUZA' },
+    ])
+    assert.equal(r.outros_registros['5'], 5)
+    assert.equal(r.ignoradas.length, 0)
+    assert.equal(resumoAfd(r).empregados, 2)
+  })
+  it('exclusão vem com a operação "E"; linha curta não vira empregado', () => {
+    assert.deepEqual(lerEmpregadoAfd('0000000095' + '2026-10-02T09:00:00-0300' + 'E' + '052998224725' + 'ANA'), {
+      nsr: 9,
+      operacao: 'E',
+      cpf: '52998224725',
+      nome: 'ANA',
+    })
+    assert.equal(lerEmpregadoAfd('0000000095' + '2026-10-02'), null)
+    assert.equal(lerEmpregadoAfd('0000000093' + '2026-10-02T09:00:00-0300' + 'I' + '052998224725'), null)
+    assert.equal(lerEmpregadoAfd('000000009505102026090Z012345678901ANA'), null)
+  })
+})
+
+describe('AFD real do RHiD (REP-P, Portaria 671) — amostra anonimizada', () => {
+  // Exportado do RHiD (Relatório de AFDs): CRLF, Latin-1, cabeçalho (302 col), empresa (331), 7 empregados tipo 5 (118 col),
+  // trailer de 64 col e a linha "ASSINATURA_DIGITAL_EM_ARQUIVO_P7S"; nenhuma marcação no período. CPFs/nomes trocados na
+  // anonimização (o CPF de 12 posições mantém o zero à esquerda do layout).
+  const r = lerAfd(ler('afd-671-rep-p-rhid.txt'))
+  it('sem marcações e sem linhas ignoradas (trailer e assinatura viram "outros")', () => {
+    assert.equal(r.marcacoes.length, 0)
+    assert.deepEqual(r.ignoradas, [])
+    assert.deepEqual(r.outros_registros, { 1: 1, 2: 1, 5: 7, 9: 1, A: 1 })
+  })
+  it('empregados do tipo 5: operação na coluna 35, CPF 36–47, nome 48–99 (acento em Latin-1)', () => {
+    assert.equal(r.empregados.length, 7)
+    assert.deepEqual(r.empregados[0], { nsr: 343, operacao: 'A', cpf: '52998224725', nome: 'FUNCIONARIO UM' })
+    assert.deepEqual(r.empregados[6], { nsr: 349, operacao: 'A', cpf: '46821497095', nome: 'Funcionário Sete Acentuado' })
   })
 })
 

@@ -11,6 +11,8 @@
 //          → { data: { reservations: [{ _id, scheduled_at (ISO -03:00), customer: {name, phone, email}, party_size, status, notes }] },
 //              meta: { page, per_page, total, total_pages } }   — 4 reservas por dia, status CONFIRMED/SEATED/CANCELED/NO_SHOW
 //          Só sobe quando pedido: `node n8n/mocks/servidor.mjs` (sempre) ou iniciarMocks({ tagme: 0 }).
+//   54344  RHiD (nuvem da Control iD): base http://127.0.0.1:54344/v2/api.svc — login/person/device/AFD 671 (ver mocks/rhid.mjs)
+//          Só sobe quando pedido: `node n8n/mocks/servidor.mjs` (sempre) ou iniciarMocks({ rhid: 0 }).
 //
 // Variáveis opcionais:
 //   MOCK_AGORA=2026-10-06T12:00:00-03:00   fixa o relógio (padrão: hora real). Os dados são relativos a ele.
@@ -41,6 +43,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { criarTratadorRhid, RHID_MOCK } from './rhid.mjs'
 
 const PASTA = dirname(fileURLToPath(import.meta.url))
 const lerJson = (nome) => JSON.parse(readFileSync(join(PASTA, 'dados', nome), 'utf8'))
@@ -708,10 +711,11 @@ function criarServidor(nome, porta, tratar) {
  * Sobe os mocks. Retorna `{ fechar(), portas }`. Portas 0 = aleatórias (útil em testes).
  * O da Tagme só sobe se `tagme` for informado (número; 0 = aleatória) — assim os testes antigos não disputam a porta 54343.
  */
-export async function iniciarMocks({ host = process.env.MOCK_HOST || '127.0.0.1', zig = Number(process.env.MOCK_PORTA_ZIG || 54340), acesso = Number(process.env.MOCK_PORTA_ACESSO || 54341), rep = Number(process.env.MOCK_PORTA_REP || 54342), tagme = null } = {}) {
+export async function iniciarMocks({ host = process.env.MOCK_HOST || '127.0.0.1', zig = Number(process.env.MOCK_PORTA_ZIG || 54340), acesso = Number(process.env.MOCK_PORTA_ACESSO || 54341), rep = Number(process.env.MOCK_PORTA_REP || 54342), tagme = null, rhid = null } = {}) {
   reset()
   const defs = [['zig', zig, tratarZig], ['acesso', acesso, tratarAcesso], ['rep', rep, tratarRep]]
   if (tagme !== null && tagme !== undefined) defs.push(['tagme', Number(tagme), tratarTagme])
+  if (rhid !== null && rhid !== undefined) defs.push(['rhid', Number(rhid), criarTratadorRhid({ marcacoes, funcionarios: DEMO.funcionarios })])
   const servidores = {}
   const portas = {}
   for (const [nome, porta, tratar] of defs) {
@@ -728,16 +732,18 @@ export async function iniciarMocks({ host = process.env.MOCK_HOST || '127.0.0.1'
 }
 
 // exportados para testes
+export { RHID_MOCK }
 export const _interno = { estado, vendasDoDia, zigFaturamento, zigSaidaProdutos, marcacoes, afd, diaDeTrabalho, agoraMs, reservasTagme }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const m = await iniciarMocks({ tagme: Number(process.env.MOCK_PORTA_TAGME || 54343) })
+  const m = await iniciarMocks({ tagme: Number(process.env.MOCK_PORTA_TAGME || 54343), rhid: Number(process.env.MOCK_PORTA_RHID || 54344) })
   const h = m.host
   console.log('Mocks do Meu Dia de Gerente no ar:')
   console.log(`  Zig ............ http://${h}:${m.portas.zig}/integration   (Authorization: ${ZIG.token}, rede=rede-mock)`)
   console.log(`  Control iD acesso http://${h}:${m.portas.acesso}           (admin/admin)`)
   console.log(`  Control iD REP .. http://${h}:${m.portas.rep}           (admin/admin)`)
   console.log(`  Tagme ........... http://${h}:${m.portas.tagme}${TAGME_MOCK.caminho}   (Authorization: Bearer ${TAGME_MOCK.token})`)
+  console.log(`  RHiD ............ http://${h}:${m.portas.rhid}${RHID_MOCK.base}   (${RHID_MOCK.email} / ${RHID_MOCK.senha})`)
   console.log(`  Dia de trabalho do mock: ${diaDeTrabalho(agoraMs())}  (MOCK_AGORA=${process.env.MOCK_AGORA || 'relógio real'})`)
   const parar = () => m.fechar().then(() => process.exit(0))
   process.on('SIGINT', parar)

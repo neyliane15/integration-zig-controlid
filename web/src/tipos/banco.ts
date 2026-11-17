@@ -16,7 +16,7 @@ export type Minutos = number
 
 // ---------------------------------------------------------------------- enums
 export type Papel = 'master' | 'administrador' | 'gerente' | 'leitura'
-export type TipoIntegracao = 'zig' | 'controlid_acesso' | 'controlid_rep' | 'tagme'
+export type TipoIntegracao = 'zig' | 'controlid_acesso' | 'controlid_rep' | 'tagme' | 'rhid'
 export type StatusUltimaExecucao = 'sucesso' | 'parcial' | 'erro'
 export type EscopoSync =
   | 'tudo'
@@ -41,6 +41,8 @@ export type TipoExecucao =
   | 'tarefas_gerar'
   | 'exportar_fechamento'
   | 'tagme_importar'
+  | 'rhid_pessoas'
+  | 'rhid_batidas'
 export type GatilhoExecucao = 'agendado' | 'manual' | 'webhook'
 export type StatusExecucao = 'executando' | 'sucesso' | 'parcial' | 'erro'
 export type VinculoControlId = 'automatico' | 'manual'
@@ -209,6 +211,8 @@ export interface ParametrosControlIdRep {
   modelo?: string
   dias_retroativos?: number
   identificador?: 'cpf' | 'pis'
+  /** 'arquivo': relógio sem rede (RHiD) — as marcações entram por "Importar AFD", fora do N8N e sem segredos. */
+  fonte?: 'arquivo'
 }
 /** Adendo R.1 — o N8N pode acrescentar chaves (ex.: `mapeamento`); o front preserva as desconhecidas. */
 export interface ParametrosTagme {
@@ -218,13 +222,24 @@ export interface ParametrosTagme {
   dias_a_frente?: number
   [chave: string]: unknown
 }
-export type ParametrosIntegracao = ParametrosZig | ParametrosControlIdAcesso | ParametrosControlIdRep | ParametrosTagme
+/** RHiD (nuvem da Control iD, docs/CONTRATO-ADENDO-rhid.md). `equipamentos` vazio = REPs do cliente + REP-P. */
+export interface ParametrosRhid {
+  equipamentos?: (number | string)[]
+  incluir_rep_p?: boolean
+  dias_retroativos?: number
+  importar_pessoas?: boolean
+  /** id da integração controlid_rep trocada por esta (integracao_trocar_para_rhid). */
+  substitui?: string
+  [chave: string]: unknown
+}
+export type ParametrosIntegracao = ParametrosZig | ParametrosControlIdAcesso | ParametrosControlIdRep | ParametrosTagme | ParametrosRhid
 
 /** Chaves de segredo permitidas por tipo (§11.1). Valores nunca voltam ao front. */
 export type ChaveSegredoZig = 'token'
 export type ChaveSegredoControlId = 'url' | 'login' | 'senha'
 export type ChaveSegredoTagme = 'token' | 'cliente_id' | 'cliente_segredo'
-export type ChaveSegredo = ChaveSegredoZig | ChaveSegredoControlId | ChaveSegredoTagme
+export type ChaveSegredoRhid = 'email' | 'senha' | 'dominio'
+export type ChaveSegredo = ChaveSegredoZig | ChaveSegredoControlId | ChaveSegredoTagme | ChaveSegredoRhid
 
 export interface Integracao {
   id: Uuid
@@ -799,6 +814,38 @@ export interface ExtraImportacao {
   pontos?: number | null
   dias_trabalhados?: { data: DataISO; valor_centavos?: Centavos | null; pontos?: number | null }[]
 }
+/** Retorno de `ponto_importar_afd` (importação do AFD pelo site). */
+export interface PendenteAfd {
+  cpf: string | null
+  pis: string | null
+  nome: string | null
+  quantidade: number
+  controlid_usuario_id: Uuid | null
+}
+export interface ResultadoImportacaoAfd {
+  lidas: number
+  gravadas: number
+  duplicadas: number
+  ignoradas: number
+  sem_funcionario: PendenteAfd[]
+  dias_reapurados: number
+  periodo: { inicio: DataISO | null; fim: DataISO | null }
+  empregados: { lidos: number; novos: number; atualizados: number; vinculados_automaticamente: number }
+  execucao_id: Uuid
+  erros?: { indice: number; motivo: string }[]
+}
+/** Linha de `ponto_afd_pendentes`: CPF/PIS do relógio sem funcionário. */
+export interface UsuarioRelogioPendente {
+  controlid_usuario_id: Uuid
+  cpf: string | null
+  pis: string | null
+  nome: string | null
+  nome_sugerido: string | null
+  quantidade: number
+  primeira: DataISO | null
+  ultima: DataISO | null
+}
+
 export interface ResultadoImportacaoExtras {
   lidos: number
   criados: number
@@ -1082,6 +1129,8 @@ export interface PainelDoDia {
     ultimo_status: StatusUltimaExecucao | null
     ultimo_erro: string | null
     executando: boolean
+    /** Relógio por arquivo (RHiD/AFD): sem "Sincronizar", entra por "Importar AFD". */
+    por_arquivo?: boolean
   }[]
   /** adendo R.4 */
   reservas?: {
@@ -1261,6 +1310,22 @@ export interface Rpcs {
   ponto_reapurar: {
     args: { p_inicio: DataISO; p_fim: DataISO; p_funcionario?: Uuid | null; p_empresa?: Uuid | null }
     retorno: number
+  }
+  ponto_integracao_arquivo: { args: { p_empresa?: Uuid | null }; retorno: Uuid }
+  integracao_trocar_para_rhid: { args: { p_integracao: Uuid; p_nome?: string | null }; retorno: Uuid }
+  ponto_importar_afd: {
+    args: {
+      p_integracao: Uuid
+      p_marcacoes: { id_externo?: string; nsr: number; instante?: string; instante_local?: string; cpf?: string; pis?: string }[]
+      p_empregados?: { cpf?: string; pis?: string; nome: string | null }[]
+      p_arquivo_nome?: string | null
+    }
+    retorno: ResultadoImportacaoAfd
+  }
+  ponto_afd_pendentes: { args: { p_integracao: Uuid }; retorno: UsuarioRelogioPendente[] }
+  ponto_afd_ligar: {
+    args: { p_controlid_usuario: Uuid; p_funcionario: Uuid; p_renomear?: boolean; p_cadastrar_documento?: boolean }
+    retorno: { funcionario_id: Uuid; nome: string; renomeado: boolean; documento_cadastrado: boolean; batidas: number }
   }
   ponto_incluir_batida: { args: { p_funcionario: Uuid; p_instante: InstanteISO; p_motivo: string }; retorno: Uuid }
   ponto_desconsiderar_batida: { args: { p_batida: Uuid; p_motivo: string }; retorno: null }

@@ -218,14 +218,26 @@ describe('cenário revisão 2: AFD com virada + Zig com Tip → ponto, alarme, b
     assert.equal(Number(r.servico), 3845, 'serviço não dobra')
   })
 
-  it('comissão: (3845 − 20%) = 3076 rateado 10:5 → Zeca 2051, Yara 1025; fechada é imutável; CSV do e-mail sem fórmula', async () => {
+  // Modo de rateio padrão = DIÁRIO (adendo §E.3.2) com a presença do §E.7.1 (ponto → escala → fallback individual):
+  //   Zeca e Yara estão "no ponto" (ligados ao Control iD) e a empresa tem ponto nos dois dias.
+  //   D-2: serviço 2110 (Zeca 1000 + 333, Yara 777), retenção 20% = 422, base 1688. Zeca bateu (regra 5, presente);
+  //        Yara não bateu → regra 7 `sem_batida` (não participa, mesmo tendo vendido). Participantes: Zeca 10 → 1688.
+  //   D-1: serviço 1735 (Zeca 1234, Yara 501), retenção 347, base 1388. Os dois bateram: 10:5, S = 15.
+  //        Zeca 13880/15 = 925 r 5; Yara 6940/15 = 462 r 10 → sobra 1 vai para o maior resto (Yara) → 925 / 463.
+  //   O cadastro "de fórmula" não está no ponto nem na escala → regra 10 (fallback individual), mas tem 0 ponto → não entra.
+  //   Totais: retenção 422 + 347 = 769; base 3076; soma_pontos_efetivos = Σ soma dos dias = 10 + 15 = 25;
+  //   Zeca 1688 + 925 = 2613 (2 dias presentes), Yara 463 (1 dia presente).
+  it('comissão (rateio diário + presença §E.7): D-2 só Zeca (Yara sem batida), D-1 10:5 → Zeca 2613, Yara 463; fechada é imutável; CSV sem fórmula', async () => {
     const id = await rpc('gerente', 'comissao_criar_fechamento', { p_data_inicio: D2, p_data_fim: D1, p_empresa: empresa })
     await rpc('gerente', 'comissao_definir_item', { p_fechamento: id, p_funcionario: CENARIO.formula, p_pontos: 0, p_incluido: true })
-    const [f] = await tabela('gerente', `comissao_fechamentos?select=servico_zig_centavos,retencao_centavos,base_distribuivel_centavos,soma_pontos_efetivos&id=eq.${id}`)
-    assert.deepEqual([f.servico_zig_centavos, f.retencao_centavos, f.base_distribuivel_centavos, Number(f.soma_pontos_efetivos)], [3845, 769, 3076, 15])
-    const itens = await tabela('gerente', `comissao_itens?select=funcionario_nome,valor_centavos&fechamento_id=eq.${id}&order=funcionario_nome`)
-    // exato: Zeca 3076×10/15 = 2050,667 → 2050 + 1 (maior resto); Yara 3076×5/15 = 1025,333 → 1025
-    assert.deepEqual(Object.fromEntries(itens.map((i) => [i.funcionario_nome, i.valor_centavos])), { 'Zeca Silva': 2051, 'Yara Lima': 1025, '=HYPERLINK("http://evil.example";"x")': 0 })
+    const [f] = await tabela('gerente', `comissao_fechamentos?select=modo_rateio,servico_zig_centavos,retencao_centavos,base_distribuivel_centavos,soma_pontos_efetivos,dias_sem_presenca,dias_sem_participantes&id=eq.${id}`)
+    assert.deepEqual([f.modo_rateio, f.servico_zig_centavos, f.retencao_centavos, f.base_distribuivel_centavos, Number(f.soma_pontos_efetivos), f.dias_sem_presenca, f.dias_sem_participantes], ['diario', 3845, 769, 3076, 25, 0, 0])
+    const dias = await tabela('gerente', `comissao_rateio_dias?select=data,servico_zig_centavos,retencao_centavos,base_centavos,soma_pontos,participantes&fechamento_id=eq.${id}&order=data`)
+    assert.deepEqual(dias.map((d) => [d.data, d.servico_zig_centavos, d.retencao_centavos, d.base_centavos, Number(d.soma_pontos), d.participantes]), [[D2, 2110, 422, 1688, 10, 1], [D1, 1735, 347, 1388, 15, 2]])
+    const itens = await tabela('gerente', `comissao_itens?select=funcionario_nome,valor_centavos,pontos_efetivos,dias_presentes&fechamento_id=eq.${id}&order=funcionario_nome`)
+    assert.deepEqual(Object.fromEntries(itens.map((i) => [i.funcionario_nome, [i.valor_centavos, Number(i.pontos_efetivos), i.dias_presentes]])), {
+      'Zeca Silva': [2613, 20, 2], 'Yara Lima': [463, 5, 1], '=HYPERLINK("http://evil.example";"x")': [0, 0, 0],
+    })
     await assert.rejects(rpc('gerente', 'comissao_fechar', { p_fechamento: id }), /Somente o administrador fecha/, 'gerente não fecha')
     await rpc('admin', 'comissao_fechar', { p_fechamento: id })
     for (const quem of ['admin', 'master', 'gerente']) {
@@ -237,9 +249,10 @@ describe('cenário revisão 2: AFD com virada + Zig com Tip → ponto, alarme, b
     await rodarFila()
     const email = ctx.emails.at(-1)
     const csv = Buffer.from(Object.values(email.anexos)[0].data, 'base64').toString('utf8')
-    assert.match(csv, /\r\nZeca Silva;Garçom;Sim;10;2;0;10;20,51\r\n/)
-    assert.match(csv, /\r\nYara Lima;Garçom;Sim;5;1;0;5;10,25\r\n/)
-    assert.match(csv, /\r\n"'=HYPERLINK\(""http:\/\/evil.example"";""x""\)";'@SUM\(1\);Sim;0;0;0;0;0,00\r\n/, 'célula de fórmula neutralizada com apóstrofo')
-    assert.match(csv, /\r\nTotal;;;15;;0;15;30,76\r\n$/)
+    // colunas (n8n/comum/lib/csv.mjs): Participante;Tipo;Cargo;Incluído;Pontos (do cadastro);Dias presentes;Valor (R$)
+    assert.match(csv, /\r\nZeca Silva;Funcionário;Garçom;Sim;10;2;26,13\r\n/)
+    assert.match(csv, /\r\nYara Lima;Funcionário;Garçom;Sim;5;1;4,63\r\n/)
+    assert.match(csv, /\r\n"'=HYPERLINK\(""http:\/\/evil.example"";""x""\)";Funcionário;'@SUM\(1\);Sim;0;0;0,00\r\n/, 'célula de fórmula neutralizada com apóstrofo')
+    assert.match(csv, /\r\nTotal;;;;15;3;30,76\r\n$/)
   })
 })

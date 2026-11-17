@@ -112,7 +112,7 @@ select teste.ok('sincronização: 3 integrações com status e "executando"', (s
    order by s ->> 'tipo') from p, jsonb_array_elements(j -> 'sincronizacao') s)
   = '[["controlid_acesso", true, null, null], ["controlid_rep", false, "erro", "Equipamento fora do ar"], ["zig", true, null, null]]'::jsonb);
 select teste.ok('sincronização: chaves exatas e nenhum segredo', (select array_agg(k order by k) from p, jsonb_object_keys(j -> 'sincronizacao' -> 0) k)
-  = array['ativa', 'executando', 'integracao_id', 'nome', 'tipo', 'ultimo_erro', 'ultimo_status', 'ultimo_sucesso_em']);
+  = array['ativa', 'executando', 'integracao_id', 'nome', 'por_arquivo', 'tipo', 'ultimo_erro', 'ultimo_status', 'ultimo_sucesso_em']);
 
 -- relógio na madrugada: 01:30 de quarta ainda é o dia de trabalho de terça
 set local app.agora = '2026-10-07 01:30:00-03';

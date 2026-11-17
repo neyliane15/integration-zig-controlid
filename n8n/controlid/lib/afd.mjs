@@ -7,7 +7,11 @@
 //   Portaria 1510, tipo 3 (34 colunas):
 //     1–9 NSR · 10 tipo "3" · 11–18 data DDMMAAAA · 19–22 hora hhmm · 23–34 PIS (12, zero à esquerda)
 // Detecção por linha: coluna 10 = tipo; coluna 21 = "T" → 671; senão comprimento ≥ 34 → 1510.
-// Demais tipos (1 cabeçalho, 2 empresa, 4 ajuste de relógio, 5 empregado, 6 eventos, 9 trailer…) são contados e descartados.
+// Registro de empregado (tipo 5: inclusão "I", alteração "A" ou exclusão "E" no REP) → `empregados` (nome para o vínculo):
+//   Portaria 671: 1–9 NSR · 10 "5" · 11–34 data-hora · 35 operação · 36–47 CPF (12) · 48–99 nome (52) · …
+//   Portaria 1510: 1–9 NSR · 10 "5" · 11–18 data · 19–22 hora · 23 operação · 24–35 PIS (12) · 36–87 nome (52)
+//   O tipo 5 continua contado em outros_registros; linha de empregado malformada só deixa de virar empregado.
+// Demais tipos (1 cabeçalho, 2 empresa, 4 ajuste de relógio, 6 eventos, 9 trailer…) são contados e descartados.
 // O CRC-16 e o hash SHA-256 não são validados (o equipamento é a fonte; a idempotência fica no banco por NSR).
 
 const AFD_MAX_IGNORADAS_LISTADAS = 20;
@@ -102,9 +106,32 @@ export function lerLinhaAfd(linhaBruta, tipos) {
   };
 }
 
-// lerAfd(texto) → { marcacoes, ignoradas, total_linhas, outros_registros, layouts }
+// Lê um registro tipo 5 (empregado). Retorna {operacao, cpf|pis, nome, nsr} ou null se a linha não tiver o formato.
+export function lerEmpregadoAfd(linhaBruta) {
+  const linha = String(linhaBruta ?? '').replace(/^\uFEFF/, '').replace(/\s+$/, '');
+  if (linha.length < 36 || linha.charAt(9) !== '5' || !afdDigitos(linha.slice(0, 9))) return null;
+  const nsr = Number(linha.slice(0, 9));
+  if (linha.charAt(20) === 'T') {
+    const operacao = linha.charAt(34);
+    if (!'IAE'.includes(operacao) || operacao === '') return null;
+    const cpf = afdDocumento(linha.slice(35, 47));
+    if (!cpf) return null;
+    const nome = linha.slice(47, 99).replace(/\s+/g, ' ').trim();
+    return { nsr, operacao, cpf, nome: nome || null };
+  }
+  const operacao = linha.charAt(22);
+  if (!'IAE'.includes(operacao) || operacao === '' || !afdDigitos(linha.slice(10, 22))) return null;
+  const pis = afdDocumento(linha.slice(23, 35));
+  if (!pis) return null;
+  const nome = linha.slice(35, 87).replace(/\s+/g, ' ').trim();
+  return { nsr, operacao, pis, nome: nome || null };
+}
+
+// lerAfd(texto) → { marcacoes, empregados, ignoradas, total_linhas, outros_registros, layouts }
 //   marcacoes: [{id_externo, nsr, instante|instante_local, cpf|pis}] na ordem do arquivo, sem NSR repetido (fica o primeiro)
 //   ignoradas: [{linha (1-based), motivo, conteudo}] — linhas que pareciam marcação mas estão corrompidas
+//   empregados: [{cpf|pis, nome, operacao, nsr}] dos registros tipo 5, um por documento (fica o último do arquivo;
+//     um nome vazio não apaga o nome visto antes)
 //   outros_registros: { "<tipo>": quantidade } dos registros que não são marcação
 export function lerAfd(texto, opcoes) {
   const tipos = (opcoes && opcoes.tipos) || ['3', '7'];
@@ -114,6 +141,7 @@ export function lerAfd(texto, opcoes) {
   const outros = {};
   const layouts = { '671': 0, '1510': 0 };
   const vistos = new Set();
+  const empregados = new Map();
   let duplicadas = 0;
   let totalLinhas = 0;
   linhas.forEach((linha, i) => {
@@ -122,6 +150,15 @@ export function lerAfd(texto, opcoes) {
     totalLinhas += 1;
     if (r.outro !== undefined) {
       outros[r.outro] = (outros[r.outro] || 0) + 1;
+      if (r.outro === '5') {
+        const e = lerEmpregadoAfd(linha);
+        if (e) {
+          const chave = e.cpf ? `c${e.cpf}` : `p${e.pis}`;
+          const antes = empregados.get(chave);
+          if (antes) empregados.delete(chave);
+          empregados.set(chave, { ...e, nome: e.nome || (antes && antes.nome) || null });
+        }
+      }
     } else if (r.ignorada) {
       ignoradas.push({ linha: i + 1, motivo: r.ignorada, conteudo: String(linha).slice(0, 60) });
     } else if (vistos.has(r.marcacao.id_externo)) {
@@ -132,7 +169,15 @@ export function lerAfd(texto, opcoes) {
       marcacoes.push(r.marcacao);
     }
   });
-  return { marcacoes, ignoradas, total_linhas: totalLinhas, outros_registros: outros, duplicadas, layouts };
+  return {
+    marcacoes,
+    empregados: Array.from(empregados.values()),
+    ignoradas,
+    total_linhas: totalLinhas,
+    outros_registros: outros,
+    duplicadas,
+    layouts,
+  };
 }
 
 // Resumo pequeno para gravar em sync_execucoes.detalhes (no máximo 20 linhas ignoradas listadas).
@@ -140,6 +185,7 @@ export function resumoAfd(leitura) {
   return {
     total_linhas: leitura.total_linhas,
     marcacoes: leitura.marcacoes.length,
+    empregados: (leitura.empregados || []).length,
     ignoradas: leitura.ignoradas.length,
     duplicadas: leitura.duplicadas,
     layouts: leitura.layouts,

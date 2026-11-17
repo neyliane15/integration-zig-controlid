@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { executarWorkflow } from './mocks/simulador-n8n.mjs'
-import { iniciarMocks, TAGME_MOCK } from './mocks/servidor.mjs'
+import { iniciarMocks, TAGME_MOCK, RHID_MOCK } from './mocks/servidor.mjs'
 
 const { describe, it, before, after } = process.env.VITEST
   ? await import('vitest').then((v) => ({ ...v, before: v.beforeAll, after: v.afterAll }))
@@ -27,6 +27,7 @@ const ZIG = 'a0000000-0000-4000-8000-000000000101'
 const ACESSO = 'a0000000-0000-4000-8000-000000000102'
 const REP = 'a0000000-0000-4000-8000-000000000103'
 const NOME_TAGME = 'Tagme (teste de integração)'
+const NOME_RHID = 'RHiD (teste de integração)'
 
 function configLocal() {
   let url = process.env.MDG_SUPABASE_URL
@@ -63,7 +64,7 @@ describe('integração real N8N × Supabase local', { skip: !ATIVO && 'defina MD
 
   before(async () => {
     sb = configLocal()
-    mocks = await iniciarMocks({ zig: 0, acesso: 0, rep: 0, tagme: 0 })
+    mocks = await iniciarMocks({ zig: 0, acesso: 0, rep: 0, tagme: 0, rhid: 0 })
     const base = (q) => `http://127.0.0.1:${mocks.portas[q]}`
     // segredos das integrações demo apontando para os mocks desta execução
     for (const [id, q] of [[ACESSO, 'acesso'], [REP, 'rep']]) {
@@ -81,7 +82,7 @@ describe('integração real N8N × Supabase local', { skip: !ATIVO && 'defina MD
       env: {
         SUPABASE_URL: sb.url, SUPABASE_SERVICE_ROLE_KEY: sb.chave, ZIG_BASE_URL: `${base('zig')}/integration`,
         MDG_WF_ZIG_IMPORTAR: 'wf-zig', MDG_WF_EXPORTAR_FECHAMENTO: 'wf-exp', MDG_WF_CONTROLID_USUARIOS: 'wf-u',
-        MDG_WF_CONTROLID_BATIDAS: 'wf-b', MDG_WF_CONTROLID_EXPORTAR: 'wf-e', MDG_WF_TAGME_IMPORTAR: 'wf-tagme', MDG_EMAIL_RELATORIOS: 'gerente@barbossanova.com.br',
+        MDG_WF_CONTROLID_BATIDAS: 'wf-b', MDG_WF_CONTROLID_EXPORTAR: 'wf-e', MDG_WF_TAGME_IMPORTAR: 'wf-tagme', MDG_WF_RHID_IMPORTAR: 'wf-rhid', RHID_BASE_URL: `${base('rhid')}${RHID_MOCK.base}`, MDG_EMAIL_RELATORIOS: 'gerente@barbossanova.com.br',
       },
       workflows: {
         fila: ler('comum/workflows/sincronizar-agora.json'),
@@ -91,6 +92,7 @@ describe('integração real N8N × Supabase local', { skip: !ATIVO && 'defina MD
         'wf-b': ler('controlid/workflows/controlid-importar-batidas.json'),
         'wf-e': ler('controlid/workflows/controlid-exportar-usuarios.json'),
         'wf-tagme': ler('tagme/workflows/tagme-importar.json'),
+        'wf-rhid': ler('rhid/workflows/rhid-importar.json'),
       },
       emails: [], http: [], esperaRetentativaMs: 10,
     }
@@ -98,6 +100,7 @@ describe('integração real N8N × Supabase local', { skip: !ATIVO && 'defina MD
   after(async () => {
     // a integração Tagme do teste fica DESATIVADA (os outros testes contam as integrações ativas da empresa demo)
     if (sb) await tabela(`integracoes?empresa_id=eq.${EMPRESA}&tipo=eq.tagme&nome=eq.${encodeURIComponent(NOME_TAGME)}`, { method: 'PATCH', body: JSON.stringify({ ativa: false }) }).catch(() => {})
+    if (sb) await tabela(`integracoes?empresa_id=eq.${EMPRESA}&tipo=eq.rhid&nome=eq.${encodeURIComponent(NOME_RHID)}`, { method: 'PATCH', body: JSON.stringify({ ativa: false }) }).catch(() => {})
     if (mocks) await mocks.fechar()
   })
 
@@ -217,5 +220,51 @@ describe('integração real N8N × Supabase local', { skip: !ATIVO && 'defina MD
     // o painel do dia enxerga as reservas de hoje
     const painel = await rpc('painel_do_dia', { p_empresa: EMPRESA }).catch(() => null)
     if (painel && painel.reservas) assert.equal(painel.reservas.tem_tagme, true, JSON.stringify(painel.reservas))
+  })
+  it('RHiD: fila "tudo" → mock (login, pessoas, equipamentos, AFD REP + REP-P + coletor) → ingestões reais; cursor por relógio; reimportar não duplica', async () => {
+    let [ig] = await tabela(`integracoes?select=id&empresa_id=eq.${EMPRESA}&tipo=eq.rhid&nome=eq.${encodeURIComponent(NOME_RHID)}`)
+    if (ig) await tabela(`integracoes?id=eq.${ig.id}`, { method: 'PATCH', body: JSON.stringify({ ativa: true, cursor: {} }) })
+    else [ig] = await tabela('integracoes?select=id', { method: 'POST', body: JSON.stringify({ empresa_id: EMPRESA, tipo: 'rhid', nome: NOME_RHID, ativa: true, parametros: { dias_retroativos: 7 } }) })
+    await tabela('integracoes_segredos?on_conflict=integracao_id', {
+      method: 'POST', headers: { ...cab(), Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify({ integracao_id: ig.id, empresa_id: EMPRESA, segredos: { email: RHID_MOCK.email, senha: RHID_MOCK.senha } }),
+    })
+    const [cfg] = await tabela(`integracoes?select=parametros&id=eq.${ig.id}`)
+    assert.deepEqual([cfg.parametros.incluir_rep_p, cfg.parametros.importar_pessoas, cfg.parametros.equipamentos], [true, true, []], 'padrões do tipo rhid')
+    inicio = new Date().toISOString()
+    // o token expira antes: o workflow faz login de novo sozinho
+    await fetch(`http://127.0.0.1:${mocks.portas.rhid}/__mock/rhid/expirar`, { method: 'POST' })
+    assert.equal(await rpc('sync_solicitar', { p_integracao: ig.id, p_escopo: 'tudo' }), 1)
+    await rodarFila()
+    const sol = await tabela(`sync_solicitacoes?select=status,mensagem&integracao_id=eq.${ig.id}&solicitado_em=gte.${encodeURIComponent(inicio)}`)
+    assert.deepEqual(sol.map((x) => x.status), ['concluida'], JSON.stringify(sol))
+    const ex = await execucoesDesde(`&integracao_id=eq.${ig.id}`)
+    assert.deepEqual(ex.map((e) => [e.tipo, e.status]), [['rhid_pessoas', 'sucesso'], ['rhid_batidas', 'sucesso']], JSON.stringify(ex.map((e) => e.erro)))
+    assert.equal(ex[0].registros_lidos, 6, '5 funcionários demo + 1 só no RHiD')
+    const pessoas = await tabela(`controlid_usuarios?select=user_id_externo,funcionario_id,vinculo&integracao_id=eq.${ig.id}`)
+    assert.equal(pessoas.length, 6)
+    assert.equal(pessoas.filter((p) => p.funcionario_id && p.vinculo === 'automatico').length, 5, 'os 5 ligados pelo CPF da ficha')
+    const det = ex[1].detalhes
+    assert.deepEqual(det.equipamentos.map((e) => e.chave).sort(), ['55', '99000001', 'c99000001'])
+    assert.ok(det.equipamentos.every((e) => e.marcacoes > 0 && e.janela.modo === 'retroativo'), JSON.stringify(det.equipamentos))
+    // o REP demo (por rede) já trouxe as mesmas marcações do mock: o que coincide (CPF + instante) não é gravado de novo
+    const lidos = ex[1].registros_lidos
+    const bat = await tabela(`ponto_batidas?select=id_externo,funcionario_id,origem&integracao_id=eq.${ig.id}`)
+    assert.equal(bat.length + det.duplicados, lidos, `gravadas ${bat.length} + duplicadas ${det.duplicados} = lidas ${lidos}`)
+    assert.ok(det.duplicados > 0)
+    assert.ok(bat.every((b) => /^c?\d+\|\d+$/.test(b.id_externo) && b.origem === 'controlid_rep' && b.funcionario_id), JSON.stringify(bat.slice(0, 3)))
+    const [i1] = await tabela(`integracoes?select=cursor,ultimo_status&id=eq.${ig.id}`)
+    assert.deepEqual(Object.keys(i1.cursor.nsr_por_equipamento).sort(), ['55', '99000001', 'c99000001'])
+    assert.equal(i1.ultimo_status, 'sucesso')
+    // de novo: segue pelo NSR, nada novo
+    inicio = new Date().toISOString()
+    assert.equal(await rpc('sync_solicitar', { p_integracao: ig.id, p_escopo: 'batidas' }), 1)
+    await rodarFila()
+    const [ex2] = await execucoesDesde(`&integracao_id=eq.${ig.id}`)
+    assert.equal(ex2.tipo, 'rhid_batidas')
+    assert.equal(ex2.status, 'sucesso', ex2.erro)
+    assert.equal(ex2.registros_gravados, 0)
+    assert.ok(ex2.detalhes.equipamentos.every((e) => e.janela.modo === 'cursor' && e.janela.nsrInicial === i1.cursor.nsr_por_equipamento[e.chave] + 1))
+    assert.equal((await tabela(`ponto_batidas?select=id&integracao_id=eq.${ig.id}`)).length, bat.length)
   })
 })

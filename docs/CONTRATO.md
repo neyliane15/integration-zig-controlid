@@ -1,7 +1,7 @@
 # Meu Dia de Gerente — Contrato técnico
 
 Fonte única da verdade entre **banco (Supabase)**, **front (web/)** e **N8N (n8n/)**.
-Adendos: `docs/CONTRATO-ADENDO-envio-controlid.md`, `docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md` (ocorrências, extras, reservas/Tagme).
+Adendos: `docs/CONTRATO-ADENDO-envio-controlid.md`, `docs/CONTRATO-ADENDO-extras-ocorrencias-reservas.md` (ocorrências, extras, reservas/Tagme). RHiD (nuvem da Control iD, tipo `rhid`): `docs/CONTRATO-ADENDO-rhid.md`.
 Seis agentes implementam em paralelo a partir deste documento (divisão em `docs/DIVISAO.md`).
 Mudou algo? Atualize **aqui primeiro** e avise os donos afetados.
 
@@ -229,6 +229,7 @@ Nas tabelas `[api:crud]`, quem não tem política para a operação recebe 0 lin
 | `20261006000260_extras.sql` | backend | pontos extras (RPCs), diárias, `gastos_periodo` (adendo) |
 | `20261006000270_reservas.sql` | backend | reservas, importação CSV, `ingestao_reservas` (Tagme) (adendo) |
 | `20261006000280_escala.sql` | backend | escala rotativa (setores, membros, caminhos, ajustes, troca, férias → abono, integração com a apuração; `docs/CONTRATO-ADENDO-escala.md`) |
+| `20261006000310_rhid.sql` | integração RHiD | tipo `rhid`: `ingestao_rhid_pessoas`, `ingestao_rhid_batidas` (cursor por equipamento), `integracao_trocar_para_rhid` (`docs/CONTRATO-ADENDO-rhid.md`) |
 | `20261006000900_permissoes.sql` | backend-1 | varredura de privilégios por etiqueta (§2.2). **Sempre a última.** |
 
 O backend-2 escreve contra o DDL do §5 **exatamente** como está aqui (nomes, tipos, nulidade).
@@ -939,6 +940,29 @@ tolerância diária 10, tolerância batida 5. Relógio fixo `2026-10-06 12:00-03
 | `funcionario_jornadas` | `after insert/update/delete` | reapura o funcionário de `vigente_desde` (limitado a 93 dias atrás) até hoje. |
 | `jornada_dias`, `jornadas` | `after insert/update/delete` | reapura, nos últimos 31 dias, os funcionários com essa jornada vigente. |
 Funcionário inativo (`ativo = false`) **continua** sendo apurado dentro do vínculo (datas); `ativo` só esconde de listas.
+*(AFD)* O mesmo gatilho de `controlid_usuarios` vale para o REP (`controlid_rep`, `user_id_externo` = CPF/PIS): ligar o CPF passa as batidas
+pendentes ao funcionário; desligar devolve-as ao funcionário com esse CPF/PIS na ficha (ou a null). A ingestão do REP resolve o funcionário
+primeiro pelo vínculo do relógio e depois pelo CPF/PIS da ficha.
+
+### 7.9 Importar AFD pelo site (RHiD/arquivo) — `…0300_importar_afd.sql`
+O relógio REP da loja não é alcançável pela rede; o RHiD (nuvem Control iD) exporta o AFD (Relatórios → Relatório de AFDs → período → Buscar →
+baixar; o arquivo vem em Latin-1, às vezes num .zip com a assinatura .p7s). O navegador lê o arquivo com `n8n/controlid/lib/afd.mjs` (fonte
+única; `web/src/lib/afd.ts` importa a lib e também abre o .zip) e chama, em lotes de 2000:
+- `ponto_integracao_arquivo(p_empresa uuid default null) returns uuid` `[api]` G A M — devolve/cria o "Relógio de ponto (RHiD/arquivo)":
+  `controlid_rep` com `parametros.fonte = 'arquivo'`, sem segredos. Integração por arquivo fica fora do N8N (`ingestao_integracoes_ativas`)
+  e do "Sincronizar agora" (`sync_solicitar` → `Relógio por arquivo: use Importar AFD`).
+- `ponto_importar_afd(p_integracao uuid, p_marcacoes jsonb, p_empregados jsonb default '[]', p_arquivo_nome text default null) returns jsonb`
+  `[api]` G A M, só `controlid_rep` ativa, até 5000 marcações e 5000 empregados por chamada (`Lote maior que 5000 marcações`). Empregados
+  (registro tipo 5: `{cpf|pis, nome}`) e CPFs das marcações viram `controlid_usuarios` (`user_id_externo` = documento; nome não é apagado),
+  com vínculo automático pelo CPF/PIS da ficha (único, livre, nunca sobre vínculo manual); as marcações passam por `ingestao_controlid_batidas`
+  (idempotência por NSR, batidas sem funcionário, reapuração, cursor que não regride — gravado em nome do usuário via `app.ingestao_arquivo`).
+  Registra `sync_execucoes` (`controlid_batidas`, gatilho `manual`, `detalhes.origem = 'arquivo'`). Retorno:
+  `{lidas, gravadas, duplicadas, ignoradas, sem_funcionario: [{cpf, pis, nome, quantidade, controlid_usuario_id}], dias_reapurados,
+  periodo: {inicio, fim}, empregados: {lidos, novos, atualizados, vinculados_automaticamente}, execucao_id, erros?}`.
+- `ponto_afd_pendentes(p_integracao uuid)` `[api]` G A M — relógio `controlid_rep` ou `rhid` (outro tipo: `Tipo de integração incompatível`) — CPF/PIS do relógio sem funcionário (nome, `nome_sugerido`, quantidade, primeira/última data).
+- `ponto_afd_ligar(p_controlid_usuario uuid, p_funcionario uuid, p_renomear boolean default false, p_cadastrar_documento boolean default false)`
+  `[api]` G A M — liga o CPF a um funcionário (inclusive provisório da escala), opcionalmente renomeando-o com o nome do AFD
+  (`nome_proprio`: "CARLA DE SOUZA" → "Carla de Souza") e gravando o CPF/PIS na ficha (`CPF já cadastrado em outro funcionário`, 23505).
 
 ---
 
@@ -1634,7 +1658,7 @@ ao gerado a partir das migrações.
 - `n8n/cenario-revisao2.test.mjs` (dentro de `npm run test:integracao`): mocks controlados `n8n/mocks/cenario-revisao2.mjs` (REP com AFD que
   atravessa a meia-noite, batida esquecida e duplicada; Zig com Tip de dois garçons e balcão) → workflows reais → banco local → RPCs
   chamadas como master/administrador/gerente. Valores conferidos à mão (ponto, alarme, banco de horas, ranking, comissão 3845 − 20% = 3076
-  → 2051 + 1025), reimportação idempotente, fila + agendador simultâneos e CSV do e-mail sem fórmula.
+  no rateio diário com a presença do adendo §E.7.1: D-2 só Zeca (Yara sem batida) 1688, D-1 10:5 → 925 + 463; Zeca 2613, Yara 463), reimportação idempotente, fila + agendador simultâneos e CSV do e-mail sem fórmula.
 - `npm run test:fuzz` (`MDG_FUZZ_BANCO=1`, banco `MDG_PG_BANCO`, padrão `mdg_local`; `MDG_FUZZ_SEMENTE` muda a semente):
   `web/src/lib/comissao.fuzz.test.ts` (200 fechamentos aleatórios: `comissao_calcular` = `calcularComissao` centavo a centavo; a parte
   só-JS, 3.000 casos contra uma referência independente, roda sempre no `npm test`) e `web/src/lib/ponto.fuzz.test.ts` (~880 dias aleatórios

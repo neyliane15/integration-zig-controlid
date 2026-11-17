@@ -31,7 +31,7 @@ function VinculosDoFuncionario({ funcionarioId }: { funcionarioId: string }) {
   const perfil = usePerfil()
   const editavel = podeOperar(perfil.papel)
   const avisos = useAvisos()
-  const equipamentos = useEquipamentosControlId()
+  const equipamentos = useEquipamentosControlId({ comRhid: true })
   const usuarios = useControlIdUsuarios()
   const vincular = useVincularControlId()
   const idBase = useId()
@@ -167,7 +167,7 @@ function UsuariosDoEquipamento({ integracaoId }: { integracaoId: string }) {
       titulo: 'Funcionário',
       render: (u) =>
         editavel ? (
-          <div onClick={(e) => e.stopPropagation()} className="min-w-48">
+          <div onClick={(e) => e.stopPropagation()} className="min-w-0 md:min-w-48">
             <Selecao
               aria-label={`Funcionário vinculado a ${u.nome ?? u.user_id_externo}`}
               value={u.funcionario_id ?? ''}

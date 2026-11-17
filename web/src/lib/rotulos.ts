@@ -137,6 +137,7 @@ export const rotuloTipoIntegracao: Record<TipoIntegracao, string> = {
   controlid_acesso: 'Control iD — controle de acesso',
   controlid_rep: 'Control iD — relógio de ponto (REP)',
   tagme: 'Tagme — reservas',
+  rhid: 'Relógio de ponto (RHiD)',
 }
 
 export const rotuloStatusExecucao: Record<StatusExecucao, string> = {
@@ -202,6 +203,8 @@ export const rotuloTipoExecucao: Record<TipoExecucao, string> = {
   tarefas_gerar: 'Geração de tarefas',
   exportar_fechamento: 'Envio de fechamento',
   tagme_importar: 'Tagme · reservas',
+  rhid_pessoas: 'RHiD · pessoas',
+  rhid_batidas: 'RHiD · batidas',
 }
 
 export const rotuloGatilhoExecucao: Record<GatilhoExecucao, string> = {
