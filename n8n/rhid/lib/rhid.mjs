@@ -266,10 +266,21 @@ export async function abrirSessaoRhid(config, deps) {
       }
     }
   }
-  // O RHiD real responde HTTP 500 em GET /device sem start/length (a spec diz que são opcionais): sempre envia a paginação.
-  sessao.listar = (caminho, rotulo) =>
-    sessao.chamar((token) => ({ method: 'GET', url: urlRhid(base, caminho, { start: 0, length: 10000 }), headers: cabecalhosRhid(token), timeoutMs: deps.timeoutMs || 120000 }), rotulo)
-      .then((c) => registrosRhid(c, rotulo))
+  // RHiD real: GET /device sem start/length responde HTTP 500, e length > 100 também (a spec diz que são opcionais).
+  // Lista sempre paginada de 100 em 100 até vir menos que uma página ou atingir totalRecords.
+  sessao.listar = async (caminho, rotulo) => {
+    const POR_PAGINA = 100
+    const todos = []
+    for (let pagina = 0; pagina < 200; pagina++) {
+      const corpo = await sessao.chamar((token) => ({ method: 'GET', url: urlRhid(base, caminho, { start: pagina * POR_PAGINA, length: POR_PAGINA }), headers: cabecalhosRhid(token), timeoutMs: deps.timeoutMs || 120000 }), rotulo)
+      const registros = registrosRhid(corpo, rotulo)
+      todos.push(...registros)
+      const c = corpoJsonRhid(corpo)
+      const total = Number(c && typeof c === 'object' ? c.totalRecords : NaN)
+      if (registros.length < POR_PAGINA || (Number.isFinite(total) && todos.length >= total)) break
+    }
+    return todos
+  }
   await logar()
   return sessao
 }

@@ -115,15 +115,24 @@ export function criarTratadorRhid({ marcacoes, funcionarios }) {
     const auth = String(req.headers.authorization || '')
     if (!auth.startsWith('Bearer ') || !estado.tokens.has(auth.slice(7))) return [401, 'Unauthorized']
     if (req.method !== 'GET') return [405, { code: 405, error: 'Method not allowed' }]
-    if (rota === '/person') { const r = pessoas(); return [200, { totalRecords: r.length, records: r }] }
+    // como o RHiD real: /device sem start/length, e qualquer lista com length > 100, respondem 500 "Request Error" (HTML)
+    const pagina = (lista) => {
+      const temPag = url.searchParams.has('start') && url.searchParams.has('length')
+      const start = Number(url.searchParams.get('start') || 0), length = Number(url.searchParams.get('length') || 0)
+      if (temPag && length > 100) return null
+      return temPag ? lista.slice(start, start + length) : lista
+    }
+    const REQUEST_ERROR = [500, '<?xml version="1.0" encoding="utf-8"?><html><head><title>Request Error</title></head></html>']
+    if (rota === '/person') { const r = pessoas(); const p = pagina(r); return p ? [200, { totalRecords: r.length, records: p }] : REQUEST_ERROR }
     if (rota === '/device') {
       // como o RHiD real: sem start/length a API (WCF) responde 500 "Request Error" em HTML
-      if (!url.searchParams.has('start') || !url.searchParams.has('length')) return [500, '<?xml version="1.0" encoding="utf-8"?><html><head><title>Request Error</title></head></html>']
       const r = [
         { id: RHID_MOCK.rep, name: 'REP MACAW', serial: '00004004330000001', model: 1, status: 'online', numberOfPeople: 5, linkedCompanyId: 1, deviceCode: null, firstSyncPIS: null },
         { id: 56, name: 'iD Face Portaria', serial: '0M0100/000123', model: 3, status: 'online', numberOfPeople: 5, deviceCode: '01234567', statusAuth: 'A', firstSyncPIS: null },
       ]
-      return [200, { totalRecords: r.length, records: r }]
+      if (!url.searchParams.has('start') || !url.searchParams.has('length')) return REQUEST_ERROR
+      const p = pagina(r)
+      return p ? [200, { totalRecords: r.length, records: p }] : REQUEST_ERROR
     }
     const afd = rota === '/report/afd/download671'
     const coletor = rota === '/report/afd_coletor_marcacao/download671'
