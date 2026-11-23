@@ -16,6 +16,7 @@
   --color-noite-2: #efe8d6; /* barra lateral, rodapés fixos */
   --color-cartao: #fffdf7; /* --card */
   --color-cartao-2: #f1ecdf; /* hover de linha, cabeçalho de tabela */
+  --color-linha-listrada: #f0eadb; /* linhas alternadas da escala (zebra) */
   --color-entrada: #faf7ee; /* fundo de inputs */
   --color-borda: #e3dcc8; /* --ln */
   --color-borda-forte: #cbc2a6;
@@ -58,6 +59,7 @@
       --color-noite-2: #181b11;
       --color-cartao: #262a1b;
       --color-cartao-2: #2e3322;
+      --color-linha-listrada: #333923;
       --color-entrada: #1f2316;
       --color-borda: #3a3f2a;
       --color-borda-forte: #4d5438;
@@ -89,6 +91,7 @@
     --color-noite-2: #181b11;
     --color-cartao: #262a1b;
     --color-cartao-2: #2e3322;
+    --color-linha-listrada: #333923;
     --color-entrada: #1f2316;
     --color-borda: #3a3f2a;
     --color-borda-forte: #4d5438;

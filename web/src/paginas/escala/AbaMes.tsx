@@ -51,6 +51,7 @@ import {
 } from "@/consultas/faltas";
 import { comprimirImagem } from "@/lib/imagem";
 import { baixarElementoComoPdf } from "@/lib/pdf";
+import { useBancoHorasResumo } from "@/consultas/bancoHoras";
 import { useEmpresaAtual } from "@/lib/sessao";
 import {
   DIAS_SEMANA,
@@ -68,7 +69,7 @@ import {
   teclaNavega,
   textoCelula,
 } from "@/lib/escala";
-import { formatarData, somarDias } from "@/lib/formato";
+import { formatarData, formatarMinutos, somarDias } from "@/lib/formato";
 
 interface Selecionada {
   funcionarioId: string;
@@ -134,6 +135,12 @@ export function AbaMes({
   const areaTsv = useRef<HTMLTextAreaElement>(null);
   const tabela = useRef<HTMLDivElement>(null);
   const legenda = useRef<HTMLDivElement>(null);
+  /** saldo do banco de horas (até ontem) por funcionário — coluna BH */
+  const banco = useBancoHorasResumo(null);
+  const saldoBH = useMemo(
+    () => new Map((banco.data ?? []).map((l) => [l.funcionario_id, l.saldo_minutos])),
+    [banco.data],
+  );
   const { empresa } = useEmpresaAtual();
   const [gerandoPdf, setGerandoPdf] = useState(false);
 
@@ -383,6 +390,7 @@ export function AbaMes({
       <p className="text-xs leading-relaxed text-lavanda">
         As semanas vão de segunda a domingo e o rodízio é contínuo (não recomeça
         no mês). Quem está de férias aparece como FÉ e não conta em “Na escala”.
+        BH é o saldo do banco de horas de cada pessoa até ontem.
         {editar && (
           <>
             {" "}
@@ -462,26 +470,50 @@ export function AbaMes({
                   <th className="min-w-[52px] border-b border-borda px-1 text-center text-xs font-bold text-ouro-claro">
                     Folgas
                   </th>
+                  <th
+                    className="min-w-[58px] border-b border-borda px-1 text-center text-xs font-bold text-ouro-claro"
+                    title="Saldo do banco de horas até ontem"
+                  >
+                    BH
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {m.setores.map((s) => {
                   const inicio = linhas.findIndex((l) => l.setor.id === s.id);
                   return [
-                    <tr key={`s-${s.id}`}>
-                      <td
-                        colSpan={m.dias.length + 2}
-                        className="border-b border-borda bg-acento-suave p-0 text-xs font-bold text-ouro-claro"
+                    // faixa do setor com as datas de novo (facilita a leitura sem subir até o topo)
+                    <tr key={`s-${s.id}`} data-teste="datas-setor">
+                      <th
+                        scope="rowgroup"
+                        className="sticky left-0 z-10 border-b border-borda bg-acento-suave px-2 py-1 text-left text-xs font-bold text-ouro-claro"
                       >
-                        <span className="sticky left-0 inline-block px-2 py-1.5">
-                          {s.nome}
-                        </span>
-                      </td>
+                        {s.nome}
+                      </th>
+                      {m.dias.map((d) => (
+                        <td
+                          key={d.data}
+                          aria-hidden="true"
+                          className={clsx(
+                            "border-b border-borda bg-acento-suave px-0 py-0.5 text-center leading-tight text-lavanda",
+                            d.dia_semana === 0 && "border-l-2 border-l-borda-forte",
+                            d.data === m.hoje && "text-ouro-claro",
+                          )}
+                        >
+                          <span className="numero text-[10px] font-semibold text-creme">{Number(d.data.slice(8))}</span>
+                          <br />
+                          <small className="text-[8px] font-medium">{DIAS_SEMANA[d.dia_semana]}</small>
+                        </td>
+                      ))}
+                      <td className="border-b border-borda bg-acento-suave" />
+                      <td className="border-b border-borda bg-acento-suave" />
                     </tr>,
                     ...s.membros.map((x, k) => (
                       <LinhaMembro
                         key={x.funcionario_id}
                         membro={x}
+                        listrada={k % 2 === 1}
+                        saldoBH={saldoBH.get(x.funcionario_id) ?? null}
                         r={inicio + k}
                         totalLinhas={linhas.length}
                         totalColunas={m.dias.length}
@@ -521,6 +553,7 @@ export function AbaMes({
                     </td>
                   ))}
                   <td className="border-t-2 border-borda bg-cartao" />
+                  <td className="border-t-2 border-borda bg-cartao" />
                 </tr>
               </tbody>
             </table>
@@ -548,6 +581,8 @@ export function AbaMes({
 
 function LinhaMembro({
   membro,
+  listrada,
+  saldoBH,
   r,
   totalLinhas,
   totalColunas,
@@ -559,6 +594,10 @@ function LinhaMembro({
   tabela,
 }: {
   membro: EscalaMembroMes;
+  /** linhas alternadas em dois tons (como "formatar como tabela" do Excel) */
+  listrada: boolean;
+  /** saldo do banco de horas em minutos (null = sem apuração) */
+  saldoBH: number | null;
   limite: { min: string; max: string };
   r: number;
   totalLinhas: number;
@@ -570,9 +609,12 @@ function LinhaMembro({
   tabela: React.RefObject<HTMLDivElement | null>;
 }) {
   return (
-    <tr>
+    <tr className={listrada ? "bg-linha-listrada" : "bg-cartao"} data-listrada={listrada ? "1" : undefined}>
       <td
-        className="sticky left-0 z-10 max-w-[190px] min-w-[118px] truncate border-b border-borda bg-cartao px-2 py-1 text-xs font-semibold text-creme"
+        className={clsx(
+          "sticky left-0 z-10 max-w-[190px] min-w-[118px] truncate border-b border-borda px-2 py-1 text-xs font-semibold text-creme",
+          listrada ? "bg-linha-listrada" : "bg-cartao",
+        )}
         title={membro.nome}
       >
         {membro.nome}
@@ -607,6 +649,16 @@ function LinhaMembro({
             +{membro.ferias}FÉ
           </small>
         )}
+      </td>
+      <td
+        className={clsx(
+          "numero border-b border-borda px-1 text-center font-bold whitespace-nowrap",
+          saldoBH == null ? "text-lavanda" : saldoBH < 0 ? "text-perigo" : saldoBH > 0 ? "text-sucesso" : "text-creme",
+        )}
+        title="Saldo do banco de horas até ontem"
+        data-teste="bh"
+      >
+        {saldoBH == null ? "—" : formatarMinutos(saldoBH, { sinal: true })}
       </td>
     </tr>
   );
