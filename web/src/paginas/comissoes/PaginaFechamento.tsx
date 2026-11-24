@@ -122,12 +122,20 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
   const [edicoes, setEdicoes] = useState<Record<string, EdicaoItem>>({})
   const [adicionar, setAdicionar] = useState('')
 
-  useEffect(() => {
-    setParams(paramsDe(f))
-  }, [f])
-  useEffect(() => {
-    setEdicoes({})
-  }, [itens])
+  // O fechamento recarrega a cada ação (incluir, remover, recalcular): o que foi digitado e ainda não salvo continua.
+  // Parâmetros: só acompanham o banco se não foram mexidos; itens: some só a edição já igual ao banco (salva) ou de
+  // quem saiu da lista.
+  const [fAnterior, setFAnterior] = useState(f)
+  if (f !== fAnterior) {
+    setFAnterior(f)
+    if (JSON.stringify(params) === JSON.stringify(paramsDe(fAnterior))) setParams(paramsDe(f))
+  }
+  const [itensAnteriores, setItensAnteriores] = useState(itens)
+  if (itens !== itensAnteriores) {
+    setItensAnteriores(itens)
+    const porId = new Map(itens.map((i) => [i.id, i]))
+    setEdicoes((x) => Object.fromEntries(Object.entries(x).filter(([k, e]) => porId.has(k) && mudou(porId.get(k)!, e))))
+  }
 
   const percentual = lerNumero(params.percentual)
   const erroPercentual = percentual == null || percentual < 0 || percentual > 100 ? 'Entre 0 e 100' : null
