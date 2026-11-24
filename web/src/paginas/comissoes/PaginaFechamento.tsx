@@ -646,6 +646,7 @@ const AUSENCIAS_QUE_CONTAM: { id: AusenciaQueConta; rotulo: string }[] = [
   { id: 'atestado', rotulo: 'Atestado' },
   { id: 'banco_horas', rotulo: 'Folga de banco de horas (BH)' },
   { id: 'ferias', rotulo: 'Férias' },
+  { id: 'folga_escala', rotulo: 'Folga (escala)' },
 ]
 
 /** largura mínima do cartão (px) para a tabela de participantes caber sem cortar */

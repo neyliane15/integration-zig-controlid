@@ -190,7 +190,12 @@ select teste.ok('falta que conta: Bruno volta a 04/09 e a empresa guarda a escol
         where f.id = (select id from fp where nome = 'v7')) = array['falta_injustificada']);
 select teste.erro('opção de presença inválida', $$select public.comissao_definir_presenca((select id from fp where nome = 'v7'), array['folga'])$$,
   'Opção de presença inválida', '22023');
+select public.comissao_definir_presenca((select id from fp where nome = 'v7'), array['folga_escala']);
+select teste.ok('folga da escala que conta: Bruno entra em 02/09 (folga)',
+  exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-02'));
 select public.comissao_definir_presenca((select id from fp where nome = 'v7'), '{}');
+select teste.ok('sem a opção, Bruno fica fora da folga de 02/09',
+  not exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-02'));
 select teste.ok('sem a opção, a falta volta a tirar Bruno de 04/09',
   not exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-04'));
 select teste.ok('falta_remover devolve o anexo (null)', public.falta_remover('e5800000-0000-4000-8000-000000000302', '2026-09-04') is null);
