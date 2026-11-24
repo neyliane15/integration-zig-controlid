@@ -3771,7 +3771,9 @@ begin
   if v_falta is not null then v_abono := null; end if;
 
   v_k := 0;
-  if v_abono is null and v_falta is distinct from 'justificada' and j.id is not null
+  -- abono 'compensacao' (folga de banco de horas): o dia continua previsto — sem batida, o saldo fica −previsto (sai do
+  -- banco de horas) —, mas sem batidas esperadas nem alarmes
+  if (v_abono is null or v_abono = 'compensacao') and v_falta is distinct from 'justificada' and j.id is not null
      and v_esc.status is distinct from 'folga' and v_esc.status is distinct from 'ferias' then
     select * into jd from public.jornada_dias x
      where x.jornada_id = j.id and x.dia_semana = extract(dow from p_data)::smallint;
@@ -3810,7 +3812,7 @@ begin
 
   -- (adendo RHiD §R.9) previsto importado do RHiD (apuração do RHiD por dia: horário contratual, folga, feriado):
   -- prevalece sobre jornada e escala. Folga/feriado = previsto 0 (o trabalhado vira saldo positivo, como no RHiD).
-  if v_abono is null and v_falta is distinct from 'justificada' then
+  if (v_abono is null or v_abono = 'compensacao') and v_falta is distinct from 'justificada' then
     select x.previsto_minutos, x.horarios, x.tolerancia_extra_minutos, x.tolerancia_falta_minutos
       into v_ext_prev, v_ext_hor, v_ext_tol_e, v_ext_tol_f
       from public.ponto_previsto_externo_dia(f.id, p_data) x;
@@ -3839,6 +3841,13 @@ begin
         end loop;
       end if;
     end if;
+  end if;
+
+  if v_abono = 'compensacao' then
+    v_k := 0;
+    v_slots := '{}';
+    v_nomes := '{}';
+    v_esperadas := '[]'::jsonb;
   end if;
 
   -- 3. Batidas (duplicadas: a menos de N minutos da última válida; entrada repetida vale a 1ª, saída repetida vale a última)
@@ -7447,7 +7456,7 @@ create table if not exists public.escala_ajustes (
   membro_id        uuid not null references public.escala_membros (id) on delete cascade,
   funcionario_id   uuid not null references public.funcionarios (id) on delete cascade,
   data             date not null,
-  status           text check (status in ('trabalha', 'folga', 'ferias')),
+  status           text check (status in ('trabalha', 'folga', 'ferias', 'banco_horas')),
   chegada          time,
   motivo           text,
   criado_por       uuid references public.perfis (id) on delete set null,
@@ -7476,6 +7485,10 @@ end $$;
 alter table public.escala_config enable row level security;
 alter table public.escala_setores enable row level security;
 alter table public.escala_membros enable row level security;
+-- 'banco_horas' = folga de banco de horas (BH): abono 'compensacao' no ponto — o previsto do dia sai do banco de horas
+alter table public.escala_ajustes drop constraint if exists escala_ajustes_status_check;
+alter table public.escala_ajustes add constraint escala_ajustes_status_check
+  check (status in ('trabalha', 'folga', 'ferias', 'banco_horas'));
 alter table public.escala_ajustes enable row level security;
 drop policy if exists escala_config_ler on public.escala_config;
 create policy escala_config_ler on public.escala_config for select to authenticated
@@ -7708,12 +7721,12 @@ create or replace function public.escala_status_param(p_status text)
 returns text language plpgsql immutable set search_path = public, extensions, pg_temp as $$
 begin
   if p_status is null or p_status in ('auto', 'automatico') then return null; end if;
-  if p_status not in ('trabalha', 'folga', 'ferias') then
+  if p_status not in ('trabalha', 'folga', 'ferias', 'banco_horas') then
     raise exception 'Status inválido' using errcode = '22023';
   end if;
   return p_status;
 end $$;
-comment on function public.escala_status_param(text) is '[interno] Status do ajuste: trabalha/folga/ferias; null ou auto = automático.';
+comment on function public.escala_status_param(text) is '[interno] Status do ajuste: trabalha/folga/ferias/banco_horas; null ou auto = automático.';
 
 create or replace function public.escala_setor_para_operar(p_setor uuid)
 returns public.escala_setores language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
@@ -7791,29 +7804,32 @@ end $$;
 comment on function public.escala_gravar_membro(uuid, uuid, smallint[], time, smallint, smallint, int, text) is
   '[interno] Grava membro da escala (validações §S.7 nº 4), sem reapurar.';
 
--- Abono 'ferias' do ajuste (§S.4).
+-- Abono do ajuste (§S.4): férias → 'ferias'; folga de banco de horas (BH) → 'compensacao' (o previsto do dia sai do banco).
 create or replace function public.escala_sincronizar_abono(p_ajuste uuid)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare aj public.escala_ajustes; v_motivo text;
+declare aj public.escala_ajustes; v_motivo text; v_tipo text;
 begin
   select * into aj from public.escala_ajustes where id = p_ajuste;
   if not found then return; end if;
-  if aj.status is distinct from 'ferias' then
+  v_tipo := case aj.status when 'ferias' then 'ferias' when 'banco_horas' then 'compensacao' end;
+  if v_tipo is null then
     delete from public.ponto_abonos where escala_ajuste_id = aj.id;
     return;
   end if;
-  v_motivo := left(case when aj.motivo is null then 'Férias (escala)' else 'Férias (escala): ' || aj.motivo end, 500);
+  v_motivo := left(case v_tipo when 'ferias' then 'Férias (escala)' else 'Folga de banco de horas (escala)' end
+                   || coalesce(': ' || aj.motivo, ''), 500);
   if exists (select 1 from public.ponto_abonos a where a.escala_ajuste_id = aj.id) then
-    update public.ponto_abonos set motivo = v_motivo where escala_ajuste_id = aj.id and motivo is distinct from v_motivo;
+    update public.ponto_abonos set motivo = v_motivo, tipo = v_tipo
+     where escala_ajuste_id = aj.id and (motivo, tipo) is distinct from (v_motivo, v_tipo);
     return;
   end if;
   if exists (select 1 from public.ponto_abonos a where a.funcionario_id = aj.funcionario_id and a.data = aj.data) then
     raise exception 'Já existe abono para o funcionário em %', to_char(aj.data, 'DD/MM/YYYY') using errcode = '22023';
   end if;
   insert into public.ponto_abonos (empresa_id, funcionario_id, data, tipo, motivo, criado_por, escala_ajuste_id)
-  values (aj.empresa_id, aj.funcionario_id, aj.data, 'ferias', v_motivo, public.meu_perfil_id(), aj.id);
+  values (aj.empresa_id, aj.funcionario_id, aj.data, v_tipo, v_motivo, public.meu_perfil_id(), aj.id);
 end $$;
-comment on function public.escala_sincronizar_abono(uuid) is '[interno] Mantém o abono ''ferias'' de um ajuste de férias da escala.';
+comment on function public.escala_sincronizar_abono(uuid) is '[interno] Mantém o abono do ajuste: férias → ferias; folga de banco de horas → compensacao.';
 
 -- Grava o estado de um dia (status null = automático; chegada null = padrão; os dois null apagam o ajuste). Sem reapurar.
 create or replace function public.escala_gravar_dia(p_membro uuid, p_data date, p_status text, p_chegada time, p_motivo text)
@@ -8190,6 +8206,7 @@ begin
     select * into cb from public.escala_calcular(ma.empresa_id, p_data_b, p_data_b, p_funcionario_a) x;
     if ca.status = 'fora' or cb.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
     if 'ferias' in (ca.status, cb.status) then raise exception 'Não é possível trocar dia de férias' using errcode = '22023'; end if;
+    if 'banco_horas' in (ca.status, cb.status) then raise exception 'Não é possível trocar folga de banco de horas' using errcode = '22023'; end if;
     perform public.escala_checar_falta(p_funcionario_a, least(p_data_a, p_data_b));
     perform public.escala_checar_falta(p_funcionario_a, greatest(p_data_a, p_data_b));
     perform public.escala_gravar_dia(ma.id, p_data_a, nullif(cb.status, ca.status_auto), ca.ajuste_chegada,
@@ -8211,6 +8228,7 @@ begin
     select * into cb from public.escala_calcular(ma.empresa_id, v_d, v_d, p_funcionario_b) x;
     if ca.status = 'fora' or cb.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
     if 'ferias' in (ca.status, cb.status) then raise exception 'Não é possível trocar dia de férias' using errcode = '22023'; end if;
+    if 'banco_horas' in (ca.status, cb.status) then raise exception 'Não é possível trocar folga de banco de horas' using errcode = '22023'; end if;
     perform public.escala_checar_falta(p_funcionario_a, v_d);
     perform public.escala_checar_falta(p_funcionario_b, v_d);
   end loop;
@@ -8276,6 +8294,7 @@ begin
                             'trabalha', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'trabalha'),
                             'folgas', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'folga'),
                             'ferias', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'ferias'),
+                            'banco_horas', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'banco_horas'),
                             'faltas', (select count(*) from fal where fal.funcionario_id = m.funcionario_id),
                             'dias', coalesce((
                               select jsonb_agg(jsonb_build_object(
@@ -10005,6 +10024,71 @@ update public.ponto_alarmes a
    and a.data < public.dia_de_trabalho(public.agora(), em.id) - em.ponto_alarme_prazo_dias;
 
 -- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000330_ocorrencias_ponto.sql
+
+-- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 20261006000340_assistente.sql
+-- =====================================================================================================
+-- 20261006000340_assistente.sql — consultas do assistente de IA (n8n "MDG · Assistente")
+-- O assistente responde perguntas do gerente ("quem menos atrasou em novembro?", "qual dia mais vendeu?") chamando RPCs
+-- COM O LOGIN DE QUEM PERGUNTA (JWT do usuário + chave anon): RLS e as checagens de permissão valem como no site.
+-- Além das RPCs que o site já usa (vendas_*, ocorrencias_ponto, banco_horas_resumo, reservas_listar), duas novas:
+--   · assistente_ponto_resumo  — por funcionário no período: dias com batida, faltas, atrasos, horas, saldo
+--   · assistente_escala_dia    — quem trabalha / folga num dia, com a chegada da escala
+-- Idempotente.
+-- =====================================================================================================
+
+create or replace function public.assistente_ponto_resumo(p_inicio date, p_fim date, p_empresa uuid default null)
+returns table (funcionario_id uuid, funcionario_nome text, cargo text, dias_com_batida int, faltas int,
+               faltas_justificadas int, atrasos int, minutos_atraso int, trabalhado_minutos int, saldo_minutos int)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
+  if p_inicio is null or p_fim is null or p_fim < p_inicio or p_fim - p_inicio > 366 then
+    raise exception 'Período inválido (máximo de 366 dias)' using errcode = '22023';
+  end if;
+  return query
+  select f.id, f.nome, f.cargo,
+         count(*) filter (where d.batidas_validas > 0)::int,
+         (count(*) filter (where d.encerrado and d.situacao = 'ausente'
+                             and not exists (select 1 from public.funcionario_faltas x
+                                              where x.funcionario_id = f.id and x.data = d.data))
+          + (select count(*) from public.funcionario_faltas x
+              where x.funcionario_id = f.id and x.data between p_inicio and p_fim and x.tipo = 'injustificada'))::int,
+         (select count(*) from public.funcionario_faltas x
+           where x.funcionario_id = f.id and x.data between p_inicio and p_fim and x.tipo = 'justificada')::int,
+         count(*) filter (where d.atraso_minutos > 0)::int,
+         coalesce(sum(d.atraso_minutos), 0)::int,
+         coalesce(sum(d.trabalhado_minutos), 0)::int,
+         coalesce(sum(d.saldo_minutos) filter (where d.encerrado), 0)::int
+    from public.funcionarios f
+    left join public.ponto_dias d on d.funcionario_id = f.id and d.data between p_inicio and p_fim
+   where f.empresa_id = v_empresa
+     and (f.data_admissao is null or f.data_admissao <= p_fim)
+     and (f.data_desligamento is null or f.data_desligamento >= p_inicio)
+   group by f.id, f.nome, f.cargo
+   order by f.nome;
+end $$;
+comment on function public.assistente_ponto_resumo(date, date, uuid) is
+  '[api] Assistente: ponto por funcionário no período (dias com batida, faltas, atrasos, horas, saldo) (G A M).';
+
+create or replace function public.assistente_escala_dia(p_data date, p_empresa uuid default null)
+returns table (funcionario_id uuid, funcionario_nome text, setor text, status text, chegada text, ajustado boolean)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
+  if p_data is null then raise exception 'Informe a data' using errcode = '22023'; end if;
+  return query
+  select c.funcionario_id, f.nome, s.nome, c.status, public.escala_hora(c.chegada), c.ajustado
+    from public.escala_calcular(v_empresa, p_data, p_data) c
+    join public.funcionarios f on f.id = c.funcionario_id
+    join public.escala_setores s on s.id = c.setor_id
+   order by s.ordem, s.nome, f.nome;
+end $$;
+comment on function public.assistente_escala_dia(date, uuid) is
+  '[api] Assistente: escala de um dia (status trabalha/folga/ferias/banco_horas/fora e chegada) (G A M L).';
+
+-- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< fim de 20261006000340_assistente.sql
 
 -- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 20261006000900_permissoes.sql
 -- =====================================================================================================

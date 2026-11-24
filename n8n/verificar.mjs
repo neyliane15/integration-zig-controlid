@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 
 const N8N = dirname(fileURLToPath(import.meta.url))
 const ATUALIZAR = process.argv.includes('--atualizar')
-const DONO_N2 = (rel) => rel.startsWith('zig/') || rel.startsWith('tagme/') || rel.startsWith('comum/') || rel.startsWith('rhid/')
+const DONO_N2 = (rel) => rel.startsWith('zig/') || rel.startsWith('tagme/') || rel.startsWith('comum/') || rel.startsWith('rhid/') || rel.startsWith('assistente/')
 
 const T = {
   subfluxo: 'n8n-nodes-base.executeWorkflowTrigger',
@@ -39,6 +39,7 @@ const ESPERADOS = {
   'zig/workflows/zig-importar.json': { nome: 'MDG · Zig · Importar', gatilho: T.subfluxo },
   'tagme/workflows/tagme-importar.json': { nome: 'MDG · Tagme · Importar', gatilho: T.subfluxo },
   'rhid/workflows/rhid-importar.json': { nome: 'MDG · RHiD · Importar', gatilho: T.subfluxo },
+  'assistente/workflows/assistente.json': { nome: 'MDG · Assistente', gatilho: 'n8n-nodes-base.webhook' },
   'comum/workflows/sincronizar-agora.json': { nome: 'MDG · Sincronizar agora (fila)', gatilho: T.agenda, agenda: { field: 'minutes', minutesInterval: 1 } },
   'comum/workflows/agendador.json': { nome: 'MDG · Agendador', gatilho: T.agenda, agenda: { field: 'minutes', minutesInterval: 15 } },
   'comum/workflows/rotina-diaria.json': { nome: 'MDG · Rotina diária', gatilho: T.agenda, agenda: { field: 'cronExpression', expression: '30 5 * * *' } },

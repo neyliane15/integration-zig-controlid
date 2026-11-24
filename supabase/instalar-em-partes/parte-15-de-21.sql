@@ -315,7 +315,7 @@ create table if not exists public.escala_ajustes (
   membro_id        uuid not null references public.escala_membros (id) on delete cascade,
   funcionario_id   uuid not null references public.funcionarios (id) on delete cascade,
   data             date not null,
-  status           text check (status in ('trabalha', 'folga', 'ferias')),
+  status           text check (status in ('trabalha', 'folga', 'ferias', 'banco_horas')),
   chegada          time,
   motivo           text,
   criado_por       uuid references public.perfis (id) on delete set null,
@@ -344,6 +344,10 @@ end $$;
 alter table public.escala_config enable row level security;
 alter table public.escala_setores enable row level security;
 alter table public.escala_membros enable row level security;
+-- 'banco_horas' = folga de banco de horas (BH): abono 'compensacao' no ponto — o previsto do dia sai do banco de horas
+alter table public.escala_ajustes drop constraint if exists escala_ajustes_status_check;
+alter table public.escala_ajustes add constraint escala_ajustes_status_check
+  check (status in ('trabalha', 'folga', 'ferias', 'banco_horas'));
 alter table public.escala_ajustes enable row level security;
 drop policy if exists escala_config_ler on public.escala_config;
 create policy escala_config_ler on public.escala_config for select to authenticated

@@ -27,6 +27,7 @@ export const ORDEM_IMPORTACAO = [
   { arquivo: 'comum/workflows/sincronizar-agora.json', variavel: null, ativar: true },
   { arquivo: 'comum/workflows/agendador.json', variavel: null, ativar: true },
   { arquivo: 'comum/workflows/rotina-diaria.json', variavel: null, ativar: true },
+  { arquivo: 'assistente/workflows/assistente.json', variavel: null, ativar: true },
 ]
 
 const base = (arq) => arq.split('/').pop()
@@ -64,6 +65,8 @@ ZIG_BASE_URL=https://api.zigcore.com.br/integration
 TAGME_BASE_URL=
 # URL da API do RHiD (integração "Relógio de ponto (RHiD)"). Vazio = https://www.rhid.com.br/v2/api.svc.
 RHID_BASE_URL=
+# Assistente de IA (workflow 12): chave da API da Anthropic (console.anthropic.com → API Keys). Segredo: não versionar.
+ANTHROPIC_API_KEY=
 MDG_EMAIL_RELATORIOS=
 MDG_EMAIL_REMETENTE=
 `

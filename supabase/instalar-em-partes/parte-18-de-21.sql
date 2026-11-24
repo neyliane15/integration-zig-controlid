@@ -3,6 +3,15 @@
 -- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000290_comissao_presenca.sql. Não edite à mão.
 
 begin;
+-- ================================================================ RPCs de faltas
+create or replace function public.falta_json(p_falta uuid)
+returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  select jsonb_build_object('id', fl.id, 'funcionario_id', fl.funcionario_id, 'funcionario_nome', f.nome, 'data', fl.data,
+                            'tipo', fl.tipo, 'motivo', fl.motivo, 'anexo_caminho', fl.anexo_caminho, 'anexo_nome', fl.anexo_nome,
+                            'criado_por_nome', fl.criado_por_nome, 'criado_em', fl.criado_em, 'atualizado_em', fl.atualizado_em)
+    from public.funcionario_faltas fl join public.funcionarios f on f.id = fl.funcionario_id
+   where fl.id = p_falta
+$$;
 comment on function public.falta_json(uuid) is '[interno] Objeto-falta (§E.7.2).';
 
 create or replace function public.falta_validar_anexo(p_empresa uuid, p_funcionario uuid, p_caminho text, p_ignorar uuid)

@@ -132,4 +132,31 @@ insert into public.ponto_batidas (empresa_id, funcionario_id, origem, instante, 
   ('e8200000-0000-4000-8000-00000000000a', 'e8200000-0000-4000-8000-000000000301', 'manual', '2026-11-01 12:30-03', 't');
 select teste.ok('membro da escala, antes de a escala começar (01/11, âncora 02/11): sem atraso pelo horário do RHiD',
   (select c.atraso_minutos = 0 from public.ponto_calcular_dia('e8200000-0000-4000-8000-000000000301', '2026-11-01') c));
+
+-- folga de banco de horas (BH) na escala: abono 'compensacao'; o previsto do dia sai do banco (saldo −previsto)
+select teste.como_dono();
+delete from public.funcionario_faltas where funcionario_id = 'e8200000-0000-4000-8000-000000000301' and data = '2026-11-13';
+select teste.como('ocp.ger@teste.local');
+select public.escala_ajustar('e8200000-0000-4000-8000-000000000301', '2026-11-13', 'banco_horas', null, null);
+select teste.ok('BH: ajuste banco_horas e abono compensacao no ponto',
+  (select status = 'banco_horas' from public.escala_ajustes where funcionario_id = 'e8200000-0000-4000-8000-000000000301' and data = '2026-11-13')
+  and (select tipo = 'compensacao' and motivo like 'Folga de banco de horas%' from public.ponto_abonos
+        where funcionario_id = 'e8200000-0000-4000-8000-000000000301' and data = '2026-11-13'));
+select teste.como_dono();
+select public.ponto_apurar('e8200000-0000-4000-8000-000000000301', '2026-11-13', '2026-11-13');
+select teste.ok('BH: dia abonado, previsto 7h20 mantido, saldo −7h20 (sai do banco), sem alarme',
+  (select situacao = 'abonado' and previsto_minutos = 440 and saldo_minutos = -440 and batidas_esperadas = 0 and alarmes_abertos = 0
+     from public.ponto_dias where funcionario_id = 'e8200000-0000-4000-8000-000000000301' and data = '2026-11-13'));
+select teste.ok('BH: escala do mês conta 1 folga de banco de horas',
+  (select (x ->> 'banco_horas')::int = 1
+     from jsonb_array_elements(public.escala_mes('2026-11', 'e8200000-0000-4000-8000-00000000000a') -> 'setores') st,
+          jsonb_array_elements(st -> 'membros') x
+    where x ->> 'funcionario_id' = 'e8200000-0000-4000-8000-000000000301'));
+select teste.como('ocp.ger@teste.local');
+select public.escala_ajustar('e8200000-0000-4000-8000-000000000301', '2026-11-13', 'ferias', null, null);
+select teste.ok('BH → férias: o abono vira ferias', (select tipo from public.ponto_abonos
+   where funcionario_id = 'e8200000-0000-4000-8000-000000000301' and data = '2026-11-13') = 'ferias');
+select public.escala_ajustar('e8200000-0000-4000-8000-000000000301', '2026-11-13', null, null, null);
+select teste.ok('automático de novo: sem abono', not exists (select 1 from public.ponto_abonos
+   where funcionario_id = 'e8200000-0000-4000-8000-000000000301' and data = '2026-11-13'));
 rollback;

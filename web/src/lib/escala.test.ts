@@ -327,3 +327,16 @@ describe("faltas na escala (v3, §S.11)", () => {
     expect(tsv.split("\n")[2]).toBe("Ana\tFI\t17h\t0");
   });
 });
+
+describe("folga de banco de horas (BH)", () => {
+  it("bh/banco viram BH, ajuste banco_horas, texto BH e total no TSV", () => {
+    expect(normT("bh")).toBe("BH");
+    expect(normT("Banco")).toBe("BH");
+    expect(interpretarCelula("bh", { folga: false, ferias: false })).toEqual({ estado: "banco_horas", chegada: null });
+    expect(interpretarCelula("BH", { folga: true, ferias: false })).toEqual({ estado: "banco_horas", chegada: null });
+    expect(textoCelula("banco_horas", null)).toBe("BH");
+    const dias = diasDoMes("2026-11").slice(0, 1);
+    const tsv = montarTsv(dias, [{ nome: "Bar", linhas: [{ nome: "Bia", celulas: ["BH"], chegadaPadrao: "", folgas: 1, ferias: 0, bancoHoras: 1 }] }], [0]);
+    expect(tsv.split("\n")[2]).toBe("Bia\tBH\t1 +1BH");
+  });
+});

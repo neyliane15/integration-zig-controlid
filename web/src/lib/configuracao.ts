@@ -11,6 +11,9 @@ export const configuracao = {
   supabaseAnonKey: (env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim() ?? '',
   /** Botão "Entrar com Google": escondido só com VITE_LOGIN_GOOGLE=false (contrato §14.2). */
   loginGoogle: String(env.VITE_LOGIN_GOOGLE ?? 'true').trim().toLowerCase() !== 'false',
+  /** Webhook do assistente de IA (workflow "MDG · Assistente" no n8n). VITE_ASSISTENTE_URL troca o endereço. */
+  assistenteUrl:
+    (env.VITE_ASSISTENTE_URL as string | undefined)?.trim() || 'https://n8n.srv1848886.hstgr.cloud/webhook/mdg-assistente',
   fusoPadrao: 'America/Sao_Paulo',
   viradaPadrao: '05:00',
 } as const

@@ -1179,8 +1179,9 @@ type ArgsPeriodoVendas = { p_inicio: DataISO; p_fim: DataISO; p_loja?: string | 
 // ------------------------------------------------------------ escala (adendo escala v2)
 /** Dia da semana da escala: 0 = SEG … 6 = DOM (diferente do dow do Postgres). */
 export type DiaSemanaEscala = 0 | 1 | 2 | 3 | 4 | 5 | 6
-export type StatusEscala = 'trabalha' | 'folga' | 'ferias' | 'fora'
-export type StatusAjusteEscala = 'trabalha' | 'folga' | 'ferias'
+/** banco_horas = folga de banco de horas (BH): o previsto do dia sai do banco */
+export type StatusEscala = 'trabalha' | 'folga' | 'ferias' | 'banco_horas' | 'fora'
+export type StatusAjusteEscala = 'trabalha' | 'folga' | 'ferias' | 'banco_horas'
 
 export interface EscalaDiaMembro {
   data: DataISO
@@ -1213,6 +1214,8 @@ export interface EscalaMembroMes {
   trabalha: number
   folgas: number
   ferias: number
+  /** dias de folga de banco de horas (BH) no mês */
+  banco_horas: number
   /** v3: nº de faltas no mês */
   faltas?: number
   dias: EscalaDiaMembro[]
