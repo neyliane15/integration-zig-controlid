@@ -153,6 +153,16 @@ select public.comissao_excluir_rascunho((select id from fx where nome = 'f_loja'
 select teste.ok('rascunho excluído (com itens)', not exists (select 1 from public.comissao_fechamentos where id = (select id from fx where nome = 'f_loja'))
   and not exists (select 1 from public.comissao_itens where fechamento_id = (select id from fx where nome = 'f_loja')));
 
+-- funcionário com 0 ponto também entra (para ser pontuado no fechamento), mas não recebe
+insert into public.funcionarios (id, empresa_id, nome, cargo, pontos_comissao, data_admissao) values
+  ('e2000000-0000-4000-8000-000000000306', 'e2000000-0000-4000-8000-00000000000a', 'Zeca Sem Pontos', 'Cumim', 0, '2026-01-01');
+insert into fx select 'zero', public.comissao_criar_fechamento('2026-09-01', '2026-09-30', 'Zero', p_modo_rateio => 'periodo');
+select teste.ok('0 ponto aparece no fechamento sem receber',
+  (select (pontos, valor_centavos) = (0::numeric, 0::bigint) from public.comissao_itens
+    where fechamento_id = (select id from fx where nome = 'zero') and funcionario_id = 'e2000000-0000-4000-8000-000000000306'));
+select public.comissao_excluir_rascunho((select id from fx where nome = 'zero'));
+update public.funcionarios set ativo = false where id = 'e2000000-0000-4000-8000-000000000306';
+
 -- sem participantes
 insert into fx select 'vazio', public.comissao_criar_fechamento('2026-09-01', '2026-09-30', 'Vazio', p_modo_rateio => 'periodo');
 select public.comissao_definir_item((select id from fx where nome = 'vazio'), f, 1, false)

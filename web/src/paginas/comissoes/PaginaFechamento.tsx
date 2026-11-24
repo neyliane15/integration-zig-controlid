@@ -273,6 +273,7 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
   const diasIncluidos = previa.itens.reduce((s, i) => s + (i.incluido ? i.diasPresentes : 0), 0)
   const participantes = previa.itens.filter((i) => i.incluido && i.valorCentavos > 0).length
   const extras = itens.filter((i) => i.tipo === 'extra').length
+  const semPontos = previa.itens.filter((i, k) => i.incluido && itens[k]?.tipo === 'funcionario' && i.pontos === 0).length
 
   return (
     <div className="mx-auto w-full max-w-7xl">
@@ -356,6 +357,13 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
         <p role="alert" className="mb-4 flex items-start gap-2 rounded-cartao border border-perigo/40 bg-perigo/10 p-4 text-sm text-perigo">
           <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
           {diasSemParticipantes} dia(s) com serviço sem ninguém para ratear. Inclua funcionários com pontos para poder fechar.
+        </p>
+      )}
+      {rascunho && semPontos > 0 && (
+        <p data-teste="aviso-sem-pontos" className="mb-4 flex items-start gap-2 rounded-cartao border border-alerta/50 bg-alerta/10 p-4 text-sm text-alerta">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          {semPontos} funcionário(s) com 0 ponto não recebem comissão. Digite os pontos na coluna Pontos e clique em Salvar (vale só
+          para este fechamento), ou defina os pontos no cadastro em Funcionários para valer sempre.
         </p>
       )}
       {extrasPendentes > 0 && (
@@ -627,8 +635,8 @@ function ListaParticipantes(props: PropsLista) {
         aria-label={`Pontos de ${i.nome}`}
         className="numero ml-auto h-9 w-24! min-w-20! shrink-0 px-3! text-right"
         inputMode="decimal"
-        placeholder={diario ? 'auto' : fmtPontos(i.pontos)}
-        title={diario ? 'Vazio = automático (pontos vigentes de cada dia)' : 'Vazio = pontos vigentes no fim do período'}
+        placeholder={fmtPontos(i.pontos)}
+        title={`Cadastro: ${fmtPontos(i.pontos)} pts. Digite para mudar só neste fechamento (vazio = pontos do cadastro${diario ? ' de cada dia' : ''})`}
         value={edicoes[i.id]?.pontos ?? edicaoOriginal(i).pontos}
         onChange={(ev) => editar(i, { pontos: ev.target.value.replace(/[^\d,.]/g, '') })}
       />
@@ -661,6 +669,9 @@ function ListaParticipantes(props: PropsLista) {
       <span>{i.nome}</span>
       {i.tipo === 'extra' && <Selo tom="info">Extra</Selo>}
       {i.tipo === 'extra' && i.pontos_pendente && <Selo tom="alerta">Pontuação pendente</Selo>}
+      {i.tipo === 'funcionario' && !i.pontos_manual && Number(i.pontos) === 0 && !(edicoes[i.id] && lerNumero(edicoes[i.id]!.pontos)) && (
+        <Selo tom="alerta">Sem pontos</Selo>
+      )}
     </p>
   )
   const classeLinha = (i: ComissaoDetalheItem) => clsx('border-t border-borda', !incluidoDe(i) && 'opacity-60', mudou(i, edicoes[i.id]) && 'bg-ouro/5')
