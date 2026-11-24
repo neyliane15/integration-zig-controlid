@@ -160,3 +160,15 @@ test('ponta a ponta: libs (HTTP real) × mock da Zig × Supabase falso', async (
     else process.env.MOCK_AGORA = anterior
   }
 })
+
+test('lojas: "Token inválido" da Zig vira mensagem que manda conferir também o id da REDE', async () => {
+  const config = { tipo: 'zig', integracao_id: 'i', segredos: { token: 't' }, parametros: { rede: 'id-de-uma-loja', dias_retroativos: 1 }, dia_trabalho_atual: '2026-11-24' }
+  const erroZig = Object.assign(new Error('Zig /erp/lojas: HTTP 400 — Token inválido'), { status: 400, tentativas: 1, corpo: { message: 'Token inválido', type: 'InvalidToken' } })
+  await assert.rejects(
+    importarZig(config, {}, { requisitar: async () => { throw erroZig }, rpc: async () => ({}), dormir: async () => {} }),
+    (e) => /Token inválido para esta rede/.test(e.message) && /id da REDE, não o de uma loja/.test(e.message) && e.status === 400,
+  )
+  // outros erros passam como vieram
+  const outro = Object.assign(new Error('Zig /erp/lojas: HTTP 500'), { status: 500 })
+  await assert.rejects(importarZig(config, {}, { requisitar: async () => { throw outro }, rpc: async () => ({}), dormir: async () => {} }), /HTTP 500$/)
+})
