@@ -37,6 +37,19 @@ create index if not exists comissao_fechamentos_criado_por_idx on public.comissa
 create index if not exists comissao_fechamentos_fechado_por_idx on public.comissao_fechamentos (fechado_por);
 comment on table public.comissao_fechamentos is '[api:leitura] Fechamentos de comissão (rascunho → fechado, imutável).';
 
+-- Dias de ausência que contam como presença no rateio diário (padrão: nenhum = quem falta não recebe no dia).
+-- A empresa guarda o último usado: o próximo fechamento já nasce com ele.
+alter table public.comissao_fechamentos add column if not exists conta_presenca text[] not null default '{}';
+alter table public.empresas add column if not exists comissao_conta_presenca text[] not null default '{}';
+do $$ begin
+  alter table public.comissao_fechamentos add constraint comissao_conta_presenca_ok
+    check (conta_presenca <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias']::text[]);
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.empresas add constraint empresas_comissao_conta_presenca_ok
+    check (comissao_conta_presenca <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias']::text[]);
+exception when duplicate_object then null; end $$;
+
 create table if not exists public.comissao_itens (
   id                uuid primary key default gen_random_uuid(),
   empresa_id        uuid not null references public.empresas (id) on delete cascade,
@@ -280,7 +293,7 @@ create or replace function public.comissao_criar_fechamento(p_data_inicio date, 
                                                             p_loja text default null, p_proporcional_dias boolean default false,
                                                             p_empresa uuid default null, p_modo_rateio text default 'diario')
 returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_empresa uuid; v_id uuid; v_pct numeric;
+declare v_empresa uuid; v_id uuid; v_pct numeric; v_conta text[];
 begin
   v_empresa := public.ponto_resolver_empresa(p_empresa, 'operar');
   perform public.ponto_validar_periodo(p_data_inicio, p_data_fim, 93);
@@ -291,14 +304,15 @@ begin
                                          where l.empresa_id = v_empresa and l.loja_id_externo = p_loja) then
     raise exception 'Loja não encontrada' using errcode = 'P0002';
   end if;
-  select e.comissao_percentual_retencao into v_pct from public.empresas e where e.id = v_empresa;
+  select e.comissao_percentual_retencao, e.comissao_conta_presenca into v_pct, v_conta from public.empresas e where e.id = v_empresa;
 
   insert into public.comissao_fechamentos (empresa_id, titulo, data_inicio, data_fim, loja_id_externo, percentual_retencao,
-                                           proporcional_dias, modo_rateio, criado_por)
+                                           proporcional_dias, modo_rateio, criado_por, conta_presenca)
   values (v_empresa,
           coalesce(nullif(btrim(p_titulo), ''),
                    'Comissão ' || to_char(p_data_inicio, 'DD/MM') || ' a ' || to_char(p_data_fim, 'DD/MM/YYYY')),
-          p_data_inicio, p_data_fim, p_loja, coalesce(v_pct, 20), coalesce(p_proporcional_dias, false), p_modo_rateio, auth.uid())
+          p_data_inicio, p_data_fim, p_loja, coalesce(v_pct, 20), coalesce(p_proporcional_dias, false), p_modo_rateio, auth.uid(),
+          coalesce(v_conta, '{}'))
   returning id into v_id;
 
   insert into public.comissao_itens (empresa_id, fechamento_id, funcionario_id, funcionario_nome, cargo, pontos)

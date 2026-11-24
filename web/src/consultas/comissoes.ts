@@ -3,7 +3,7 @@
  * Leitura direta de comissao_fechamentos/comissao_itens (RLS G A M); escrita só por RPC.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ComissaoDetalhe, ComissaoFechamento, ComissaoItem, ModoRateio } from '@/tipos/banco'
+import type { AusenciaQueConta, ComissaoDetalhe, ComissaoFechamento, ComissaoItem, ModoRateio } from '@/tipos/banco'
 import { chamarRpc, exigir, supabase } from '@/lib/supabase'
 import { chaves, invalidar } from '@/lib/consultas'
 import { useEmpresaAtual } from '@/lib/sessao'
@@ -180,6 +180,13 @@ export function useDefinirItens() {
     },
     onSuccess: () => invalidar(qc, 'comissoes', 'fechamento', 'funcionarios', 'funcionario'),
   })
+}
+
+/** Quais ausências recebem no dia (vira o padrão da empresa para a próxima comissão) e recalcula. */
+export function useDefinirPresenca() {
+  return useMutacaoComissao((a: { id: string; conta: AusenciaQueConta[] }) =>
+    chamarRpc('comissao_definir_presenca', { p_fechamento: a.id, p_conta: a.conta }),
+  )
 }
 
 /** Inclui/tira um extra do fechamento (adendo E.3.4). */

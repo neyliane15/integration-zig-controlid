@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import clsx from 'clsx'
 import { AlertTriangle, ArrowLeft, CalendarPlus, Check, Download, Lock, Mail, RefreshCw, Trash2, UserPlus, X } from 'lucide-react'
-import type { ComissaoDetalhe, ComissaoDetalheItem, ComissaoFechamento, ModoRateio } from '@/tipos/banco'
+import type { AusenciaQueConta, ComissaoDetalhe, ComissaoDetalheItem, ComissaoFechamento, ModoRateio } from '@/tipos/banco'
 import {
   AreaTexto,
   Botao,
@@ -27,6 +27,7 @@ import {
   useAtualizarFechamento,
   useComissaoDetalhe,
   useDefinirExtra,
+  useDefinirPresenca,
   useDefinirItens,
   useEnviarFechamentoPorEmail,
   useExcluirRascunho,
@@ -110,6 +111,7 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
   const atualizar = useAtualizarFechamento()
   const definirItens = useDefinirItens()
   const definirExtra = useDefinirExtra()
+  const definirPresenca = useDefinirPresenca()
   const removerItem = useRemoverItem()
   const recalcular = useRecalcularFechamento()
   const fechar = useFecharComissao()
@@ -464,6 +466,30 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
                 />
               </div>
             )}
+            <fieldset className="flex flex-col gap-2 pt-2" data-teste="conta-presenca">
+              <legend className="mb-1.5 text-lavanda">Recebe comissão no dia de</legend>
+              {AUSENCIAS_QUE_CONTAM.map((o) => {
+                const conta = f.conta_presenca ?? []
+                return (
+                  <Caixa
+                    key={o.id}
+                    rotulo={o.rotulo}
+                    marcado={conta.includes(o.id)}
+                    desabilitado={!rascunho || definirPresenca.isPending}
+                    aoMudar={async (v) => {
+                      try {
+                        await definirPresenca.mutateAsync({ id: f.id, conta: v ? [...conta, o.id] : conta.filter((x) => x !== o.id) })
+                      } catch (e) {
+                        avisos.erro(e)
+                      }
+                    }}
+                  />
+                )
+              })}
+              <span className="text-xs text-lavanda">
+                Desmarcado: quem teve essa ausência não recebe no dia. A escolha vale para a próxima comissão também.
+              </span>
+            </fieldset>
             {rascunho && (
               <>
                 <Campo rotulo="Título" htmlFor={`${id}-tit`}>
@@ -612,6 +638,15 @@ interface PropsLista {
   diasIncluidos: number
   aoRemover(i: ComissaoDetalheItem): void
 }
+
+/** Ausências que o gerente pode escolher pagar no dia (ordem da tela). */
+const AUSENCIAS_QUE_CONTAM: { id: AusenciaQueConta; rotulo: string }[] = [
+  { id: 'falta_justificada', rotulo: 'Falta justificada' },
+  { id: 'falta_injustificada', rotulo: 'Falta injustificada' },
+  { id: 'atestado', rotulo: 'Atestado' },
+  { id: 'banco_horas', rotulo: 'Folga de banco de horas (BH)' },
+  { id: 'ferias', rotulo: 'Férias' },
+]
 
 /** largura mínima do cartão (px) para a tabela de participantes caber sem cortar */
 const LARGURA_TABELA = 900

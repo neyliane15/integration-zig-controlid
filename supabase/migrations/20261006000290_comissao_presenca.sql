@@ -237,7 +237,10 @@ end $$;
 comment on function public.faltas_listar(date, date, uuid, uuid) is '[api] Faltas do período (G A M).';
 
 -- ================================================================ presença do dia (§E.7.1)
-create or replace function public.comissao_presenca(p_empresa uuid, p_inicio date, p_fim date, p_funcionario uuid default null)
+-- v2: p_conta = ausências que contam como presença (fechamento.conta_presenca)
+drop function if exists public.comissao_presenca(uuid, date, date, uuid);
+create or replace function public.comissao_presenca(p_empresa uuid, p_inicio date, p_fim date, p_funcionario uuid default null,
+                                                    p_conta text[] default '{}')
 returns table (funcionario_id uuid, data date, presente boolean, fallback boolean, bloqueado boolean, motivo text, origem text)
 language sql stable security definer rows 200 set search_path = public, extensions, pg_temp set jit = off as $$
   with dias as (select g::date as d from generate_series(p_inicio, p_fim, interval '1 day') g),
@@ -264,6 +267,7 @@ language sql stable security definer rows 200 set search_path = public, extensio
              when ab.tipo in ('suspensao', 'ferias', 'atestado') then ab.tipo
              when esc.status = 'ferias' then 'ferias'
              when coalesce(pd.batidas_validas, 0) > 0 then null
+             when ab.tipo = 'compensacao' or esc.status = 'banco_horas' then 'banco_horas'
              when ab.tipo is not null then 'abono'
              when pe.data is not null and fu.no_ponto then 'sem_batida'
              when esc.status = 'trabalha' then null
@@ -280,14 +284,15 @@ language sql stable security definer rows 200 set search_path = public, extensio
       left join esc on esc.funcionario_id = fu.id and esc.data = dd.d
       left join ponto_emp pe on pe.data = dd.d
   )
-  select m.id, m.d, m.motivo is null, coalesce(m.motivo = 'sem_registro', false),
-         coalesce(m.motivo in ('fora_vinculo', 'falta_justificada', 'falta_injustificada', 'suspensao', 'ferias', 'atestado', 'abono'),
-                  false),
-         m.motivo, case when m.motivo is null then m.origem_bruta end
-    from m
+  , r as (select m.*, coalesce(m.motivo = any (coalesce(p_conta, '{}')), false) as conta from m)
+  select r.id, r.d, r.motivo is null or r.conta, coalesce(r.motivo = 'sem_registro', false),
+         coalesce(not r.conta and r.motivo in ('fora_vinculo', 'falta_justificada', 'falta_injustificada', 'suspensao', 'ferias',
+                                               'atestado', 'abono', 'banco_horas'), false),
+         r.motivo, case when r.motivo is null then r.origem_bruta when r.conta then 'regra' end
+    from r
 $$;
-comment on function public.comissao_presenca(uuid, date, date, uuid) is
-  '[interno] Presença de cada funcionário em cada dia para a comissão (adendo extras v3, §E.7.1).';
+comment on function public.comissao_presenca(uuid, date, date, uuid, text[]) is
+  '[interno] Presença de cada funcionário em cada dia para a comissão (adendo extras v3, §E.7.1); p_conta: ausências que contam.';
 
 -- ================================================================ cálculo (§9 / E.3 / E.7)
 create or replace function public.comissao_calcular(p_fechamento uuid)
@@ -315,7 +320,7 @@ begin
   -- presença do período (uma vez por cálculo)
   if to_regclass('pg_temp._mdg_presenca') is not null then drop table pg_temp._mdg_presenca; end if;
   create temp table _mdg_presenca on commit drop as
-    select * from public.comissao_presenca(fc.empresa_id, fc.data_inicio, fc.data_fim);
+    select * from public.comissao_presenca(fc.empresa_id, fc.data_inicio, fc.data_fim, null, fc.conta_presenca);
   create index on _mdg_presenca (funcionario_id, data);
 
   -- (adendo E.3.2 passo 8) extras com dia lançado no período entram; extra sem lançamento no período sai
@@ -581,6 +586,24 @@ end $$;
 comment on function public.comissao_fechar(uuid) is '[api] Recalcula e fecha (administrador). Depois é imutável.';
 
 -- ================================================================ detalhe (adendo E.3.4 + v3 §E.7.7)
+-- ================================================================ ausências que contam como presença
+create or replace function public.comissao_definir_presenca(p_fechamento uuid, p_conta text[])
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos; v text[];
+begin
+  fc := public.comissao_rascunho_para_editar(p_fechamento);
+  select coalesce(array_agg(distinct x order by x), '{}') into v from unnest(coalesce(p_conta, '{}')) x;
+  if not v <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias']::text[] then
+    raise exception 'Opção de presença inválida' using errcode = '22023';
+  end if;
+  update public.comissao_fechamentos set conta_presenca = v where id = fc.id;
+  -- a próxima comissão nasce com a última escolha
+  update public.empresas set comissao_conta_presenca = v where id = fc.empresa_id;
+  perform public.comissao_calcular(fc.id);
+end $$;
+comment on function public.comissao_definir_presenca(uuid, text[]) is
+  '[api] Escolhe quais ausências (falta justificada/injustificada, atestado, banco de horas, férias) recebem no dia e recalcula.';
+
 create or replace function public.comissao_detalhe(p_fechamento uuid)
 returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare fc public.comissao_fechamentos;
@@ -589,7 +612,8 @@ begin
   if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
   if public.pode_operar(fc.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   return (
-    with pres as materialized (select * from public.comissao_presenca(fc.empresa_id, fc.data_inicio, fc.data_fim))
+    with pres as materialized (select * from public.comissao_presenca(fc.empresa_id, fc.data_inicio, fc.data_fim, null,
+                                                                      fc.conta_presenca))
     select jsonb_build_object(
     'fechamento', to_jsonb(fc),
     'servico_dias', (
