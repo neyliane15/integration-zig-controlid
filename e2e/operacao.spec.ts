@@ -91,6 +91,25 @@ test('vendas: faturamento e ranking de garçons', async ({ page }) => {
   await semRolagemHorizontal(page)
 })
 
+test('consultas rápidas: perguntas prontas respondidas com os dados (ponto, vendas, escala)', async ({ page }) => {
+  await entrar(page, USUARIOS_DEMO.gerente)
+  await page.goto('/consultas')
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Consultas')
+  for (const pergunta of ['Quem teve menos atrasos?', 'Quem mais faltou?', 'Qual dia mais vendeu?', 'Qual garçom mais vendeu?', 'Quem trabalha e quem folga?']) {
+    await expect(page.getByText(pergunta)).toBeVisible()
+  }
+  // as respostas saem do banco (carga demo): o dia que mais vendeu vem com valor em reais
+  await expect(page.locator('[data-teste="resposta"]').filter({ hasText: /R\$ [\d.]+,\d{2}/ }).first()).toBeVisible()
+  await page.getByRole('button', { name: 'Mês anterior' }).click()
+  await expect(page.locator('[data-teste="resposta"]').first()).toBeVisible()
+  await semRolagemHorizontal(page)
+})
+
+test('leitura: sem a tela de consultas', async ({ page }) => {
+  await entrar(page, USUARIOS_DEMO.leitura)
+  await expect(page.getByRole('link', { name: 'Consultas' })).toHaveCount(0)
+})
+
 test('comissões: lista e detalhe com prévia', async ({ page }) => {
   await entrar(page, USUARIOS_DEMO.admin)
   await page.goto('/comissoes')

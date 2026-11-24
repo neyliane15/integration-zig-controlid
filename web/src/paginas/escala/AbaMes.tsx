@@ -51,7 +51,6 @@ import {
 } from "@/consultas/faltas";
 import { comprimirImagem } from "@/lib/imagem";
 import { baixarElementoComoPdf } from "@/lib/pdf";
-import { useBancoHorasResumo } from "@/consultas/bancoHoras";
 import { useEmpresaAtual } from "@/lib/sessao";
 import {
   DIAS_SEMANA,
@@ -69,7 +68,7 @@ import {
   teclaNavega,
   textoCelula,
 } from "@/lib/escala";
-import { formatarData, formatarMinutos, somarDias } from "@/lib/formato";
+import { formatarData, somarDias } from "@/lib/formato";
 
 interface Selecionada {
   funcionarioId: string;
@@ -135,12 +134,6 @@ export function AbaMes({
   const areaTsv = useRef<HTMLTextAreaElement>(null);
   const tabela = useRef<HTMLDivElement>(null);
   const legenda = useRef<HTMLDivElement>(null);
-  /** saldo do banco de horas (até ontem) por funcionário — coluna BH */
-  const banco = useBancoHorasResumo(null);
-  const saldoBH = useMemo(
-    () => new Map((banco.data ?? []).map((l) => [l.funcionario_id, l.saldo_minutos])),
-    [banco.data],
-  );
   const { empresa } = useEmpresaAtual();
   const [gerandoPdf, setGerandoPdf] = useState(false);
 
@@ -299,6 +292,7 @@ export function AbaMes({
           chegadaPadrao: "",
           folgas: x.folgas,
           ferias: x.ferias,
+          bancoHoras: x.banco_horas,
         })),
       })),
       m.na_escala,
@@ -390,12 +384,13 @@ export function AbaMes({
       <p className="text-xs leading-relaxed text-lavanda">
         As semanas vão de segunda a domingo e o rodízio é contínuo (não recomeça
         no mês). Quem está de férias aparece como FÉ e não conta em “Na escala”.
-        BH é o saldo do banco de horas de cada pessoa até ontem.
+
         {editar && (
           <>
             {" "}
             Clique na célula e digite o horário de chegada (8 vira 8h, 11:30
-            vira 11h30). Digite <b>f</b> para folga e <b>fe</b> para férias;
+            vira 11h30). Digite <b>f</b> para folga, <b>fe</b> para férias e{" "}
+            <b>bh</b> para folga de banco de horas (as horas do dia saem do banco);
             deixe vazio para limpar. <b>fj</b> registra falta justificada (pede o
             motivo) e <b>fi</b> falta injustificada; as duas tiram a comissão do
             dia. Enter ou ↓ desce, ↑ sobe e ← → andam para o lado. Células com
@@ -470,12 +465,6 @@ export function AbaMes({
                   <th className="min-w-[52px] border-b border-borda px-1 text-center text-xs font-bold text-ouro-claro">
                     Folgas
                   </th>
-                  <th
-                    className="min-w-[58px] border-b border-borda px-1 text-center text-xs font-bold text-ouro-claro"
-                    title="Saldo do banco de horas até ontem"
-                  >
-                    BH
-                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -506,14 +495,12 @@ export function AbaMes({
                         </td>
                       ))}
                       <td className="border-b border-borda bg-acento-suave" />
-                      <td className="border-b border-borda bg-acento-suave" />
                     </tr>,
                     ...s.membros.map((x, k) => (
                       <LinhaMembro
                         key={x.funcionario_id}
                         membro={x}
                         listrada={k % 2 === 1}
-                        saldoBH={saldoBH.get(x.funcionario_id) ?? null}
                         r={inicio + k}
                         totalLinhas={linhas.length}
                         totalColunas={m.dias.length}
@@ -553,7 +540,6 @@ export function AbaMes({
                     </td>
                   ))}
                   <td className="border-t-2 border-borda bg-cartao" />
-                  <td className="border-t-2 border-borda bg-cartao" />
                 </tr>
               </tbody>
             </table>
@@ -582,7 +568,6 @@ export function AbaMes({
 function LinhaMembro({
   membro,
   listrada,
-  saldoBH,
   r,
   totalLinhas,
   totalColunas,
@@ -596,8 +581,6 @@ function LinhaMembro({
   membro: EscalaMembroMes;
   /** linhas alternadas em dois tons (como "formatar como tabela" do Excel) */
   listrada: boolean;
-  /** saldo do banco de horas em minutos (null = sem apuração) */
-  saldoBH: number | null;
   limite: { min: string; max: string };
   r: number;
   totalLinhas: number;
@@ -641,7 +624,7 @@ function LinhaMembro({
       ))}
       <td
         className="numero border-b border-borda px-1 text-center font-bold text-ouro-claro"
-        title={`${membro.ferias} dia(s) de férias${membro.faltas ? ` · ${membro.faltas} falta(s)` : ""}`}
+        title={`${membro.ferias} dia(s) de férias · ${membro.banco_horas ?? 0} folga(s) de banco de horas${membro.faltas ? ` · ${membro.faltas} falta(s)` : ""}`}
       >
         {membro.folgas}
         {membro.ferias > 0 && (
@@ -649,16 +632,11 @@ function LinhaMembro({
             +{membro.ferias}FÉ
           </small>
         )}
-      </td>
-      <td
-        className={clsx(
-          "numero border-b border-borda px-1 text-center font-bold whitespace-nowrap",
-          saldoBH == null ? "text-lavanda" : saldoBH < 0 ? "text-perigo" : saldoBH > 0 ? "text-sucesso" : "text-creme",
+        {(membro.banco_horas ?? 0) > 0 && (
+          <small className="ml-0.5 text-[9px] font-medium text-ouro-claro">
+            +{membro.banco_horas}BH
+          </small>
         )}
-        title="Saldo do banco de horas até ontem"
-        data-teste="bh"
-      >
-        {saldoBH == null ? "—" : formatarMinutos(saldoBH, { sinal: true })}
       </td>
     </tr>
   );
@@ -740,6 +718,7 @@ function Celula({
         fora && "bg-cartao-2/60",
         dia.status === "folga" && "bg-folga-suave",
         dia.status === "ferias" && "bg-acento-suave",
+        dia.status === "banco_horas" && "bg-ouro/15",
         dia.falta === "injustificada" && "bg-falta",
         dia.falta === "justificada" && "bg-falta-j-suave",
         dia.ajustado && "shadow-[inset_0_0_0_2px_var(--color-ouro)]",
@@ -779,6 +758,7 @@ function Celula({
             "focus:outline-2 focus:-outline-offset-2 focus:outline-ouro",
             dia.status === "folga" && "font-bold text-perigo",
             dia.status === "ferias" && "font-bold text-lavanda",
+            dia.status === "banco_horas" && "font-bold text-ouro-claro",
             dia.falta === "injustificada" && "font-bold text-tinta-falta!",
             dia.falta === "justificada" && "font-bold text-falta-j!",
             !editar && "cursor-default",
@@ -815,6 +795,7 @@ function Legenda() {
       {item("17h", "Trabalha (chegada do dia)", "bg-cartao text-creme")}
       {item("F", "Folga", "bg-folga-suave text-perigo")}
       {item("FÉ", "Férias", "bg-acento-suave text-lavanda")}
+      {item("BH", "Folga de banco de horas", "bg-ouro/15 text-ouro-claro")}
       {item("FJ", "Falta justificada", "bg-falta-j-suave text-falta-j")}
       {item("FI", "Falta injustificada", "bg-falta text-tinta-falta")}
       {item(
@@ -920,7 +901,9 @@ function PainelDia({
             ? "Trabalha (ajustado)"
             : ajusteStatus === "ferias"
               ? "Férias ajustadas"
-              : `Automático (${dia.status === "folga" ? "folga" : "trabalha"})`;
+              : ajusteStatus === "banco_horas"
+                ? "Folga de banco de horas (as horas do dia saem do banco)"
+                : `Automático (${dia.status === "folga" ? "folga" : "trabalha"})`;
   const semana = DIAS_SEMANA[mes.dias[j]?.dia_semana ?? 0];
   const comFalta = !!dia.falta;
   const fora = dia.status === "fora" || foraLimite || comFalta;
@@ -939,7 +922,9 @@ function PainelDia({
             ? "Dia de folga na escala"
             : dia.status === "ferias"
               ? "Dia de férias"
-              : null;
+              : dia.status === "banco_horas"
+                ? "Folga de banco de horas"
+                : null;
   const ocupadoFalta = registrarFalta.isPending || removerFalta.isPending;
 
   async function lancarFalta(tipo: "justificada" | "injustificada") {
@@ -1073,6 +1058,7 @@ function PainelDia({
         {botao("Folga", "folga", ajusteStatus === "folga")}
         {botao("Trabalha", "trabalha", ajusteStatus === "trabalha")}
         {botao("Férias", "ferias", ajusteStatus === "ferias")}
+        {botao("Folga BH", "banco_horas", ajusteStatus === "banco_horas")}
         {botao("Automático", null, !ajusteStatus && !fora)}
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2">

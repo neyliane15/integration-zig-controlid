@@ -30,7 +30,8 @@ const HRE = /^(\d{1,2})(?:[:.,h]?(\d{2}))?\s*(?:h|hs|hrs|hr)?$/i;
 
 /**
  * Normaliza o que foi digitado numa célula (igual ao `normT` do modelo):
- * '' → '' · 'f'/'folga' → 'F' · 'fe'/'fé'/'ferias'/'férias' → 'FÉ' · 'fj' → 'FJ' · 'fi' → 'FI' · '8' → '8h' · '11:30' → '11h30' · '9h00' → '9h'.
+ * '' → '' · 'f'/'folga' → 'F' · 'fe'/'fé'/'ferias'/'férias' → 'FÉ' · 'bh' → 'BH' (folga de banco de horas) · 'fj' → 'FJ' ·
+ * 'fi' → 'FI' · '8' → '8h' · '11:30' → '11h30' · '9h00' → '9h'.
  * Texto que não é horário é cortado em 6 caracteres.
  */
 export function normT(bruto: unknown): string {
@@ -39,6 +40,7 @@ export function normT(bruto: unknown): string {
   const l = s.toLowerCase();
   if (l === "f" || l === "folga") return "F";
   if (["fe", "fé", "ferias", "férias"].includes(l)) return "FÉ";
+  if (["bh", "banco", "banco de horas"].includes(l)) return "BH";
   if (["fj", "falta justificada"].includes(l)) return "FJ";
   if (["fi", "falta", "falta injustificada"].includes(l)) return "FI";
   const m = HRE.exec(s);
@@ -72,7 +74,7 @@ export function chegadaValida(bruto: unknown): string {
 // ------------------------------------------------------------------ estado de um dia
 
 /** Estado efetivo de uma pessoa num dia: trabalha, folga ou férias. */
-export type EstadoDia = "trabalha" | "folga" | "ferias";
+export type EstadoDia = "trabalha" | "folga" | "ferias" | "banco_horas";
 /** Ajuste manual guardado para o dia (null = automático). */
 export type EstadoAjuste = EstadoDia | null;
 
@@ -114,6 +116,8 @@ export function interpretarCelula(
   if (v === "F")
     return { estado: folga && !ferias ? null : "folga", chegada: null };
   if (v === "FÉ") return { estado: ferias ? null : "ferias", chegada: null };
+  // folga de banco de horas: sempre ajuste (o automático nunca é BH)
+  if (v === "BH") return { estado: "banco_horas", chegada: null };
   const hora = chegadaParaHora(v);
   return {
     estado: folga || ferias ? "trabalha" : null,
@@ -143,6 +147,7 @@ export function textoCelula(
 ): string {
   if (falta) return codigoFalta(falta);
   if (estado === "ferias") return "FÉ";
+  if (estado === "banco_horas") return "BH";
   if (estado === "folga") return "F";
   return horaParaChegada(chegadaDia);
 }
@@ -265,6 +270,8 @@ export interface LinhaTsv {
   chegadaPadrao: string;
   folgas: number;
   ferias: number;
+  /** folgas de banco de horas */
+  bancoHoras?: number;
 }
 export interface SecaoTsv {
   nome: string;
@@ -292,7 +299,7 @@ export function montarTsv(
   for (const s of secoes) {
     linhas.push(limpo(s.nome));
     for (const l of s.linhas) {
-      const total = `${l.folgas}${l.ferias ? ` +${l.ferias}FÉ` : ""}`;
+      const total = `${l.folgas}${l.ferias ? ` +${l.ferias}FÉ` : ""}${l.bancoHoras ? ` +${l.bancoHoras}BH` : ""}`;
       linhas.push(
         [
           limpo(l.nome),

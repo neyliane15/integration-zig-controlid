@@ -49,6 +49,7 @@ function normalizarMes(m: EscalaMes): EscalaMes {
         trabalha: num(x.trabalha),
         folgas: num(x.folgas),
         ferias: num(x.ferias),
+        banco_horas: num(x.banco_horas),
         faltas: num(x.faltas),
         dias: (x.dias ?? []).map((d) => ({ ...d, chegada: hhmm(d.chegada), falta: d.falta ?? null })),
       })),
@@ -121,6 +122,7 @@ export function recontar(m: EscalaMes): EscalaMes {
       let trabalha = 0;
       let folgas = 0;
       let ferias = 0;
+      let bancoHoras = 0;
       let faltas = 0;
       x.dias.forEach((d, j) => {
         if (d.falta) faltas++;
@@ -130,8 +132,9 @@ export function recontar(m: EscalaMes): EscalaMes {
           total[j]!++;
         } else if (d.status === "folga") folgas++;
         else if (d.status === "ferias") ferias++;
+        else if (d.status === "banco_horas") bancoHoras++;
       });
-      return { ...x, trabalha, folgas, ferias, faltas };
+      return { ...x, trabalha, folgas, ferias, banco_horas: bancoHoras, faltas };
     });
     return { ...s, membros, na_escala: na };
   });

@@ -1124,6 +1124,30 @@ export interface VendaPorGarcom {
   transacoes: number
 }
 
+/** `consultas_ponto_resumo`: ponto de cada funcionário no período (consultas rápidas). */
+export interface LinhaConsultaPonto {
+  funcionario_id: Uuid
+  funcionario_nome: string
+  cargo: string | null
+  dias_com_batida: number
+  faltas: number
+  faltas_justificadas: number
+  atrasos: number
+  minutos_atraso: Minutos
+  trabalhado_minutos: Minutos
+  saldo_minutos: Minutos
+}
+
+/** `consultas_escala_dia`: escala de um dia. */
+export interface LinhaConsultaEscala {
+  funcionario_id: Uuid
+  funcionario_nome: string
+  setor: string
+  status: StatusEscala
+  chegada: string | null
+  ajustado: boolean
+}
+
 export interface PainelDoDia {
   empresa_id: Uuid
   dia_trabalho: DataISO
@@ -1179,8 +1203,9 @@ type ArgsPeriodoVendas = { p_inicio: DataISO; p_fim: DataISO; p_loja?: string | 
 // ------------------------------------------------------------ escala (adendo escala v2)
 /** Dia da semana da escala: 0 = SEG … 6 = DOM (diferente do dow do Postgres). */
 export type DiaSemanaEscala = 0 | 1 | 2 | 3 | 4 | 5 | 6
-export type StatusEscala = 'trabalha' | 'folga' | 'ferias' | 'fora'
-export type StatusAjusteEscala = 'trabalha' | 'folga' | 'ferias'
+/** banco_horas = folga de banco de horas (BH): o previsto do dia sai do banco */
+export type StatusEscala = 'trabalha' | 'folga' | 'ferias' | 'banco_horas' | 'fora'
+export type StatusAjusteEscala = 'trabalha' | 'folga' | 'ferias' | 'banco_horas'
 
 export interface EscalaDiaMembro {
   data: DataISO
@@ -1213,6 +1238,8 @@ export interface EscalaMembroMes {
   trabalha: number
   folgas: number
   ferias: number
+  /** dias de folga de banco de horas (BH) no mês */
+  banco_horas: number
   /** v3: nº de faltas no mês */
   faltas?: number
   dias: EscalaDiaMembro[]
@@ -1455,6 +1482,8 @@ export interface Rpcs {
   ocorrencias_listar: { args: { p_funcionario: Uuid }; retorno: Ocorrencia[] }
   ocorrencias_contagem: { args: { p_funcionario?: Uuid | null; p_empresa?: Uuid | null }; retorno: ContagemOcorrencias[] }
   ocorrencias_resumo: { args: { p_dias?: number; p_empresa?: Uuid | null }; retorno: ResumoOcorrencias }
+  consultas_ponto_resumo: { args: { p_inicio: DataISO; p_fim: DataISO; p_empresa?: Uuid | null }; retorno: LinhaConsultaPonto[] }
+  consultas_escala_dia: { args: { p_data: DataISO; p_empresa?: Uuid | null }; retorno: LinhaConsultaEscala[] }
   ocorrencias_ponto: {
     args: { p_inicio: DataISO; p_fim: DataISO; p_funcionario?: Uuid | null; p_empresa?: Uuid | null }
     retorno: OcorrenciaPonto[]

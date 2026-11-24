@@ -478,7 +478,9 @@ begin
   if v_falta is not null then v_abono := null; end if;
 
   v_k := 0;
-  if v_abono is null and v_falta is distinct from 'justificada' and j.id is not null
+  -- abono 'compensacao' (folga de banco de horas): o dia continua previsto — sem batida, o saldo fica −previsto (sai do
+  -- banco de horas) —, mas sem batidas esperadas nem alarmes
+  if (v_abono is null or v_abono = 'compensacao') and v_falta is distinct from 'justificada' and j.id is not null
      and v_esc.status is distinct from 'folga' and v_esc.status is distinct from 'ferias' then
     select * into jd from public.jornada_dias x
      where x.jornada_id = j.id and x.dia_semana = extract(dow from p_data)::smallint;
@@ -517,7 +519,7 @@ begin
 
   -- (adendo RHiD §R.9) previsto importado do RHiD (apuração do RHiD por dia: horário contratual, folga, feriado):
   -- prevalece sobre jornada e escala. Folga/feriado = previsto 0 (o trabalhado vira saldo positivo, como no RHiD).
-  if v_abono is null and v_falta is distinct from 'justificada' then
+  if (v_abono is null or v_abono = 'compensacao') and v_falta is distinct from 'justificada' then
     select x.previsto_minutos, x.horarios, x.tolerancia_extra_minutos, x.tolerancia_falta_minutos
       into v_ext_prev, v_ext_hor, v_ext_tol_e, v_ext_tol_f
       from public.ponto_previsto_externo_dia(f.id, p_data) x;
@@ -546,6 +548,13 @@ begin
         end loop;
       end if;
     end if;
+  end if;
+
+  if v_abono = 'compensacao' then
+    v_k := 0;
+    v_slots := '{}';
+    v_nomes := '{}';
+    v_esperadas := '[]'::jsonb;
   end if;
 
   -- 3. Batidas (duplicadas: a menos de N minutos da última válida; entrada repetida vale a 1ª, saída repetida vale a última)

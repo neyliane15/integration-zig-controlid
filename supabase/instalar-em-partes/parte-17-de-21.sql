@@ -163,6 +163,7 @@ begin
     select * into cb from public.escala_calcular(ma.empresa_id, p_data_b, p_data_b, p_funcionario_a) x;
     if ca.status = 'fora' or cb.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
     if 'ferias' in (ca.status, cb.status) then raise exception 'Não é possível trocar dia de férias' using errcode = '22023'; end if;
+    if 'banco_horas' in (ca.status, cb.status) then raise exception 'Não é possível trocar folga de banco de horas' using errcode = '22023'; end if;
     perform public.escala_checar_falta(p_funcionario_a, least(p_data_a, p_data_b));
     perform public.escala_checar_falta(p_funcionario_a, greatest(p_data_a, p_data_b));
     perform public.escala_gravar_dia(ma.id, p_data_a, nullif(cb.status, ca.status_auto), ca.ajuste_chegada,
@@ -184,6 +185,7 @@ begin
     select * into cb from public.escala_calcular(ma.empresa_id, v_d, v_d, p_funcionario_b) x;
     if ca.status = 'fora' or cb.status = 'fora' then raise exception 'Dia fora da escala' using errcode = '22023'; end if;
     if 'ferias' in (ca.status, cb.status) then raise exception 'Não é possível trocar dia de férias' using errcode = '22023'; end if;
+    if 'banco_horas' in (ca.status, cb.status) then raise exception 'Não é possível trocar folga de banco de horas' using errcode = '22023'; end if;
     perform public.escala_checar_falta(p_funcionario_a, v_d);
     perform public.escala_checar_falta(p_funcionario_b, v_d);
   end loop;
@@ -249,6 +251,7 @@ begin
                             'trabalha', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'trabalha'),
                             'folgas', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'folga'),
                             'ferias', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'ferias'),
+                            'banco_horas', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'banco_horas'),
                             'faltas', (select count(*) from fal where fal.funcionario_id = m.funcionario_id),
                             'dias', coalesce((
                               select jsonb_agg(jsonb_build_object(
@@ -407,16 +410,6 @@ create trigger zz_comissao_vinculo after update of data_admissao, data_desligame
   for each row
   when (old.data_admissao is distinct from new.data_admissao or old.data_desligamento is distinct from new.data_desligamento)
   execute function public.comissao_gatilho_funcionario_vinculo();
-
--- ================================================================ RPCs de faltas
-create or replace function public.falta_json(p_falta uuid)
-returns jsonb language sql stable security definer set search_path = public, extensions, pg_temp as $$
-  select jsonb_build_object('id', fl.id, 'funcionario_id', fl.funcionario_id, 'funcionario_nome', f.nome, 'data', fl.data,
-                            'tipo', fl.tipo, 'motivo', fl.motivo, 'anexo_caminho', fl.anexo_caminho, 'anexo_nome', fl.anexo_nome,
-                            'criado_por_nome', fl.criado_por_nome, 'criado_em', fl.criado_em, 'atualizado_em', fl.atualizado_em)
-    from public.funcionario_faltas fl join public.funcionarios f on f.id = fl.funcionario_id
-   where fl.id = p_falta
-$$;
 
 commit;
 select 'parte 17 de 21 instalada' as resultado;
