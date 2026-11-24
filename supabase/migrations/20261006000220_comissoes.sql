@@ -307,8 +307,8 @@ begin
     cross join lateral (select public.comissao_pontos_vigentes(f.id, p_data_fim) as pontos) pv
    where f.empresa_id = v_empresa and f.ativo and f.participa_comissao
      and (f.data_admissao is null or f.data_admissao <= p_data_fim)
-     and (f.data_desligamento is null or f.data_desligamento >= p_data_inicio)
-     and pv.pontos > 0;
+     and (f.data_desligamento is null or f.data_desligamento >= p_data_inicio);
+  -- todos os que participam entram (mesmo com 0 ponto: aparecem na lista para o gerente pontuar; 0 ponto não recebe)
 
   perform public.comissao_calcular(v_id);
   return v_id;
