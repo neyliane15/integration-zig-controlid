@@ -16,6 +16,7 @@ export type MotivoPresencaDia =
   | 'ferias'
   | 'atestado'
   | 'abono'
+  | 'banco_horas'
   | 'sem_batida'
   | 'folga_escala'
   | 'sem_registro'
@@ -36,13 +37,13 @@ export interface EntradaDiaParticipante {
   /** falta, suspensão, férias, atestado, abono sem batida, fora do vínculo: nunca entra (nem no último recurso) */
   bloqueado?: boolean
   motivo?: MotivoPresencaDia | null
-  origem?: 'ponto' | 'escala' | null
+  origem?: 'ponto' | 'escala' | 'regra' | null
   /** extra: dia com pontuação pendente (vale 0, não entra) */
   pendente?: boolean
 }
 
 /** De onde veio a participação no dia (para exibir). */
-export type OrigemRateio = 'ponto' | 'escala' | 'fallback' | 'ultimo_recurso' | 'extra' | 'presente'
+export type OrigemRateio = 'ponto' | 'escala' | 'regra' | 'fallback' | 'ultimo_recurso' | 'extra' | 'presente'
 
 export interface ParticipanteComissao {
   /** id do item (último critério de desempate do banco) */

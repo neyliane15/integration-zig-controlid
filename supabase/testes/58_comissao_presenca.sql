@@ -182,6 +182,17 @@ select teste.ok('antes do desligamento Davi entra em 03 e 04 pela escala',
 select public.falta_registrar('e5800000-0000-4000-8000-000000000302', '2026-09-04', 'injustificada');
 select teste.ok('falta recalcula o rascunho (Bruno sai de 04/09)',
   not exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-04'));
+-- opção do fechamento: falta injustificada recebe no dia (e vira o padrão da empresa para a próxima comissão)
+select public.comissao_definir_presenca((select id from fp where nome = 'v7'), array['falta_injustificada']);
+select teste.ok('falta que conta: Bruno volta a 04/09 e a empresa guarda a escolha',
+  exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-04')
+  and (select comissao_conta_presenca from public.empresas e join public.comissao_fechamentos f on f.empresa_id = e.id
+        where f.id = (select id from fp where nome = 'v7')) = array['falta_injustificada']);
+select teste.erro('opção de presença inválida', $$select public.comissao_definir_presenca((select id from fp where nome = 'v7'), array['folga'])$$,
+  'Opção de presença inválida', '22023');
+select public.comissao_definir_presenca((select id from fp where nome = 'v7'), '{}');
+select teste.ok('sem a opção, a falta volta a tirar Bruno de 04/09',
+  not exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-04'));
 select teste.ok('falta_remover devolve o anexo (null)', public.falta_remover('e5800000-0000-4000-8000-000000000302', '2026-09-04') is null);
 select teste.ok('falta removida: rascunho recalculado', exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-04'));
 select teste.erro('remover falta inexistente', $$select public.falta_remover('e5800000-0000-4000-8000-000000000302', '2026-09-04')$$, 'Falta não encontrada', 'P0002');

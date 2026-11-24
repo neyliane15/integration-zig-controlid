@@ -612,6 +612,8 @@ export interface ComissaoFechamento {
   calculado_em: InstanteISO | null
   fechado_por: Uuid | null
   fechado_em: InstanteISO | null
+  /** ausências que recebem no dia (contam como presença no rateio) */
+  conta_presenca: AusenciaQueConta[]
   /** adendo E.3 — 'diario' (padrão dos novos) ou 'periodo' (§9) */
   modo_rateio: ModoRateio
   /** modo diário: dias com base > 0 rateados pelo fallback (sem presença registrada) */
@@ -761,8 +763,12 @@ export interface ComissaoDetalheItem {
   entrada: ComissaoEntradaDia[]
 }
 /** Motivo de não estar presente no dia (§E.7.1). */
+/** Ausências que o fechamento pode contar como presença (`comissao_definir_presenca`). */
+export type AusenciaQueConta = 'falta_justificada' | 'falta_injustificada' | 'atestado' | 'banco_horas' | 'ferias'
+
 export type MotivoPresenca =
   | 'fora_vinculo'
+  | 'banco_horas'
   | 'falta_justificada'
   | 'falta_injustificada'
   | 'suspensao'
@@ -783,7 +789,7 @@ export interface ComissaoEntradaDia {
   bloqueado?: boolean
   motivo?: MotivoPresenca | null
   /** de onde veio a presença */
-  origem?: 'ponto' | 'escala' | null
+  origem?: 'ponto' | 'escala' | 'regra' | null
   /** extra: dia sem pontuação (vale 0) */
   pendente?: boolean
 }
@@ -1444,6 +1450,7 @@ export interface Rpcs {
     retorno: null
   }
   comissao_definir_extra: { args: { p_fechamento: Uuid; p_extra: Uuid; p_incluido: boolean }; retorno: null }
+  comissao_definir_presenca: { args: { p_fechamento: Uuid; p_conta: AusenciaQueConta[] }; retorno: null }
   comissao_detalhe: { args: { p_fechamento: Uuid }; retorno: ComissaoDetalhe }
   comissao_remover_item: { args: { p_fechamento: Uuid; p_funcionario: Uuid }; retorno: null }
   comissao_recalcular: { args: { p_fechamento: Uuid }; retorno: null }
