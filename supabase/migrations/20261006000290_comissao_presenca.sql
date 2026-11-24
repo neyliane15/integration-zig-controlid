@@ -269,9 +269,9 @@ language sql stable security definer rows 200 set search_path = public, extensio
              when coalesce(pd.batidas_validas, 0) > 0 then null
              when ab.tipo = 'compensacao' or esc.status = 'banco_horas' then 'banco_horas'
              when ab.tipo is not null then 'abono'
+             when esc.status = 'folga' then 'folga_escala'
              when pe.data is not null and fu.no_ponto then 'sem_batida'
              when esc.status = 'trabalha' then null
-             when esc.status = 'folga' then 'folga_escala'
              else 'sem_registro'
            end as motivo,
            case when coalesce(pd.batidas_validas, 0) > 0 then 'ponto' when esc.status = 'trabalha' then 'escala' end as origem_bruta
@@ -593,7 +593,7 @@ declare fc public.comissao_fechamentos; v text[];
 begin
   fc := public.comissao_rascunho_para_editar(p_fechamento);
   select coalesce(array_agg(distinct x order by x), '{}') into v from unnest(coalesce(p_conta, '{}')) x;
-  if not v <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias']::text[] then
+  if not v <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias', 'folga_escala']::text[] then
     raise exception 'Opção de presença inválida' using errcode = '22023';
   end if;
   update public.comissao_fechamentos set conta_presenca = v where id = fc.id;
@@ -602,7 +602,7 @@ begin
   perform public.comissao_calcular(fc.id);
 end $$;
 comment on function public.comissao_definir_presenca(uuid, text[]) is
-  '[api] Escolhe quais ausências (falta justificada/injustificada, atestado, banco de horas, férias) recebem no dia e recalcula.';
+  '[api] Escolhe quais ausências (falta justificada/injustificada, atestado, banco de horas, férias, folga da escala) recebem no dia e recalcula.';
 
 create or replace function public.comissao_detalhe(p_fechamento uuid)
 returns jsonb language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$

@@ -764,7 +764,7 @@ export interface ComissaoDetalheItem {
 }
 /** Motivo de não estar presente no dia (§E.7.1). */
 /** Ausências que o fechamento pode contar como presença (`comissao_definir_presenca`). */
-export type AusenciaQueConta = 'falta_justificada' | 'falta_injustificada' | 'atestado' | 'banco_horas' | 'ferias'
+export type AusenciaQueConta = 'falta_justificada' | 'falta_injustificada' | 'atestado' | 'banco_horas' | 'ferias' | 'folga_escala'
 
 export type MotivoPresenca =
   | 'fora_vinculo'

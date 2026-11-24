@@ -41,14 +41,12 @@ comment on table public.comissao_fechamentos is '[api:leitura] Fechamentos de co
 -- A empresa guarda o último usado: o próximo fechamento já nasce com ele.
 alter table public.comissao_fechamentos add column if not exists conta_presenca text[] not null default '{}';
 alter table public.empresas add column if not exists comissao_conta_presenca text[] not null default '{}';
-do $$ begin
-  alter table public.comissao_fechamentos add constraint comissao_conta_presenca_ok
-    check (conta_presenca <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias']::text[]);
-exception when duplicate_object then null; end $$;
-do $$ begin
-  alter table public.empresas add constraint empresas_comissao_conta_presenca_ok
-    check (comissao_conta_presenca <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias']::text[]);
-exception when duplicate_object then null; end $$;
+alter table public.comissao_fechamentos drop constraint if exists comissao_conta_presenca_ok;
+alter table public.comissao_fechamentos add constraint comissao_conta_presenca_ok
+  check (conta_presenca <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias', 'folga_escala']::text[]);
+alter table public.empresas drop constraint if exists empresas_comissao_conta_presenca_ok;
+alter table public.empresas add constraint empresas_comissao_conta_presenca_ok
+  check (comissao_conta_presenca <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias', 'folga_escala']::text[]);
 
 create table if not exists public.comissao_itens (
   id                uuid primary key default gen_random_uuid(),
