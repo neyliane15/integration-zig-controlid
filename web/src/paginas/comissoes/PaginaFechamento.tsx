@@ -17,7 +17,6 @@ import {
   Interruptor,
   Pilulas,
   Selecao,
-  useMidia,
   Selo,
   Vazio,
 } from '@/componentes/ui'
@@ -267,9 +266,6 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
     }
   }
 
-  // tabela só quando cabe: 768–1023 px (sem menu lateral) ou ≥ 1280 px; entre 1024 e 1279 o menu lateral aperta e a
-  // tabela cortava a coluna Valor → cartões
-  const telaLarga = useMidia('(min-width: 768px) and (max-width: 1023.98px), (min-width: 1280px)')
   const ocupado = atualizar.isPending || definirItens.isPending || definirExtra.isPending || removerItem.isPending || recalcular.isPending
   const somaIncluidos = previa.itens.reduce((s, i) => s + (i.incluido ? i.pontos : 0), 0)
   const diasIncluidos = previa.itens.reduce((s, i) => s + (i.incluido ? i.diasPresentes : 0), 0)
@@ -539,7 +535,6 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
               </div>
             ) : (
               <ListaParticipantes
-                larga={telaLarga}
                 itens={itens}
                 previa={previa}
                 rascunho={rascunho}
@@ -597,7 +592,6 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
 }
 
 interface PropsLista {
-  larga: boolean
   itens: ComissaoDetalheItem[]
   previa: ResultadoComissao
   rascunho: boolean
@@ -611,9 +605,26 @@ interface PropsLista {
   aoRemover(i: ComissaoDetalheItem): void
 }
 
+/** largura mínima do cartão (px) para a tabela de participantes caber sem cortar */
+const LARGURA_TABELA = 900
+
 /** Participantes: tabela (quando cabe) ou cartões (celular e telas médias com menu lateral). Um só é montado, para não duplicar rótulos acessíveis. */
 function ListaParticipantes(props: PropsLista) {
-  const { larga, itens, previa, rascunho, diario, diasPeriodo, edicoes, editar, ocupado } = props
+  const { itens, previa, rascunho, diario, diasPeriodo, edicoes, editar, ocupado } = props
+  // tabela só quando o cartão tem largura para ela (o menu lateral e, em telas grandes, a coluna do cálculo apertam o
+  // cartão e a tabela cortava a coluna Valor) — senão, cartões
+  const [caixa, setCaixa] = useState<HTMLDivElement | null>(null)
+  const [largura, setLargura] = useState(0)
+  useEffect(() => {
+    if (!caixa) return
+    const medir = () => setLargura(caixa.clientWidth)
+    medir()
+    if (typeof ResizeObserver === 'undefined') return
+    const obs = new ResizeObserver(medir)
+    obs.observe(caixa)
+    return () => obs.disconnect()
+  }, [caixa])
+  const larga = largura >= LARGURA_TABELA
 
   const incluidoDe = (i: ComissaoDetalheItem) => (edicoes[i.id] ? edicoes[i.id]!.incluido : i.incluido)
   const ctrlIncluido = (i: ComissaoDetalheItem, comTexto = false) =>
@@ -680,7 +691,8 @@ function ListaParticipantes(props: PropsLista) {
 
   if (!larga)
     return (
-      <ul aria-label="Participantes">
+      <div ref={setCaixa}>
+        <ul aria-label="Participantes">
         {itens.map((i, k) => (
           <li key={i.id} className={clsx(classeLinha(i), 'px-5 py-3.5')}>
             <div className="flex items-start justify-between gap-3">
@@ -711,11 +723,12 @@ function ListaParticipantes(props: PropsLista) {
           <span className="text-creme">Total · {fmtPontos(props.somaIncluidos)} pts</span>
           <span className="numero text-ouro-claro">{formatarCentavos(previa.totalDistribuidoCentavos)}</span>
         </li>
-      </ul>
+        </ul>
+      </div>
     )
 
   return (
-    <div className="relative overflow-x-auto">
+    <div ref={setCaixa} className="relative overflow-x-auto">
       <table className="w-full min-w-[620px] text-sm">
         <thead>
           <tr className="bg-cartao-2/70 text-[11px] font-bold tracking-[0.14em] whitespace-nowrap text-lavanda uppercase">
