@@ -267,7 +267,9 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
     }
   }
 
-  const telaLarga = useMidia('(min-width: 768px)')
+  // tabela só quando cabe: 768–1023 px (sem menu lateral) ou ≥ 1280 px; entre 1024 e 1279 o menu lateral aperta e a
+  // tabela cortava a coluna Valor → cartões
+  const telaLarga = useMidia('(min-width: 768px) and (max-width: 1023.98px), (min-width: 1280px)')
   const ocupado = atualizar.isPending || definirItens.isPending || definirExtra.isPending || removerItem.isPending || recalcular.isPending
   const somaIncluidos = previa.itens.reduce((s, i) => s + (i.incluido ? i.pontos : 0), 0)
   const diasIncluidos = previa.itens.reduce((s, i) => s + (i.incluido ? i.diasPresentes : 0), 0)
@@ -609,7 +611,7 @@ interface PropsLista {
   aoRemover(i: ComissaoDetalheItem): void
 }
 
-/** Participantes: tabela (≥ 768 px) ou cartões (celular). Um só é montado, para não duplicar rótulos acessíveis. */
+/** Participantes: tabela (quando cabe) ou cartões (celular e telas médias com menu lateral). Um só é montado, para não duplicar rótulos acessíveis. */
 function ListaParticipantes(props: PropsLista) {
   const { larga, itens, previa, rascunho, diario, diasPeriodo, edicoes, editar, ocupado } = props
 

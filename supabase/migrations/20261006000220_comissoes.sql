@@ -359,10 +359,15 @@ begin
   on conflict (fechamento_id, funcionario_id) do update
     set funcionario_nome = excluded.funcionario_nome, cargo = excluded.cargo,
         incluido = excluded.incluido, pontos = excluded.pontos, pontos_manual = excluded.pontos_manual;
+  -- pontos digitados no fechamento viram os pontos do cadastro (histórico a partir de hoje): a próxima comissão
+  -- já nasce com o último valor; o gerente muda de novo quando precisar
+  if p_pontos is not null and p_pontos is distinct from f.pontos_comissao then
+    update public.funcionarios set pontos_comissao = p_pontos where id = f.id;
+  end if;
   perform public.comissao_calcular(p_fechamento);
 end $$;
 comment on function public.comissao_definir_item(uuid, uuid, numeric, boolean) is
-  '[api] Inclui/atualiza funcionário participante (p_pontos null = automático) e recalcula.';
+  '[api] Inclui/atualiza funcionário participante (p_pontos null = automático; pontos digitados também atualizam o cadastro) e recalcula.';
 
 create or replace function public.comissao_definir_extra(p_fechamento uuid, p_extra uuid, p_incluido boolean)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$

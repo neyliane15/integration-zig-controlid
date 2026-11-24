@@ -160,6 +160,10 @@ insert into fx select 'zero', public.comissao_criar_fechamento('2026-09-01', '20
 select teste.ok('0 ponto aparece no fechamento sem receber',
   (select (pontos, valor_centavos) = (0::numeric, 0::bigint) from public.comissao_itens
     where fechamento_id = (select id from fx where nome = 'zero') and funcionario_id = 'e2000000-0000-4000-8000-000000000306'));
+select public.comissao_definir_item((select id from fx where nome = 'zero'), 'e2000000-0000-4000-8000-000000000306', 7);
+select teste.ok('pontos digitados no fechamento viram os do cadastro (próxima comissão)',
+  (select pontos_comissao from public.funcionarios where id = 'e2000000-0000-4000-8000-000000000306') = 7
+  and public.pontos_vigentes('e2000000-0000-4000-8000-000000000306', '2026-12-01') = 7);
 select public.comissao_excluir_rascunho((select id from fx where nome = 'zero'));
 update public.funcionarios set ativo = false where id = 'e2000000-0000-4000-8000-000000000306';
 
