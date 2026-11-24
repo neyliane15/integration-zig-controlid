@@ -135,6 +135,8 @@ export interface Funcionario {
   zig_employee_name: string | null
   pontos_comissao: number
   participa_comissao: boolean
+  /** não bate ponto (ex.: chef): na comissão a presença vem da escala */
+  dispensa_ponto: boolean
   data_admissao: DataISO | null
   data_desligamento: DataISO | null
   ativo: boolean

@@ -29,6 +29,8 @@ create table if not exists public.funcionarios (
                                        or data_desligamento >= data_admissao)
 );
 create index if not exists funcionarios_empresa_idx on public.funcionarios (empresa_id);
+-- Não bate ponto (ex.: chef): na comissão a presença vem da escala, sem "sem batida".
+alter table public.funcionarios add column if not exists dispensa_ponto boolean not null default false;
 create unique index if not exists funcionarios_matricula_uk on public.funcionarios (empresa_id, matricula)
   where matricula is not null;
 create unique index if not exists funcionarios_cpf_uk on public.funcionarios (empresa_id, cpf) where cpf is not null;

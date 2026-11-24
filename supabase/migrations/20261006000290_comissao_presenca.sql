@@ -79,11 +79,12 @@ begin
   perform public.comissao_recalcular_rascunhos(new.empresa_id, null, null, new.id);
   return null;
 end $$;
-comment on function public.comissao_gatilho_funcionario_vinculo() is '[interno] Mudança de admissão/desligamento → recalcula rascunhos.';
+comment on function public.comissao_gatilho_funcionario_vinculo() is '[interno] Mudança de admissão/desligamento/"não bate ponto" → recalcula rascunhos.';
 drop trigger if exists zz_comissao_vinculo on public.funcionarios;
-create trigger zz_comissao_vinculo after update of data_admissao, data_desligamento on public.funcionarios
+create trigger zz_comissao_vinculo after update of data_admissao, data_desligamento, dispensa_ponto on public.funcionarios
   for each row
-  when (old.data_admissao is distinct from new.data_admissao or old.data_desligamento is distinct from new.data_desligamento)
+  when (old.data_admissao is distinct from new.data_admissao or old.data_desligamento is distinct from new.data_desligamento
+        or old.dispensa_ponto is distinct from new.dispensa_ponto)
   execute function public.comissao_gatilho_funcionario_vinculo();
 
 -- ================================================================ RPCs de faltas
@@ -246,9 +247,11 @@ language sql stable security definer rows 200 set search_path = public, extensio
   with dias as (select g::date as d from generate_series(p_inicio, p_fim, interval '1 day') g),
   fu as (
     select f.id, f.data_admissao, f.data_desligamento,
-           (exists (select 1 from public.controlid_usuarios cu where cu.funcionario_id = f.id)
-            or exists (select 1 from public.ponto_dias pd where pd.funcionario_id = f.id
-                          and pd.data between p_inicio and p_fim and pd.batidas_validas > 0)) as no_ponto
+           -- quem não bate ponto (dispensa_ponto) nunca fica "sem batida": vale a escala
+           (not f.dispensa_ponto
+            and (exists (select 1 from public.controlid_usuarios cu where cu.funcionario_id = f.id)
+                 or exists (select 1 from public.ponto_dias pd where pd.funcionario_id = f.id
+                               and pd.data between p_inicio and p_fim and pd.batidas_validas > 0))) as no_ponto
       from public.funcionarios f
      where f.empresa_id = p_empresa and (p_funcionario is null or f.id = p_funcionario)
   ),

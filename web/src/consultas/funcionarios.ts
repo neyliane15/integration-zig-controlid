@@ -47,6 +47,7 @@ export type DadosFuncionario = Partial<
     | 'zig_employee_name'
     | 'pontos_comissao'
     | 'participa_comissao'
+    | 'dispensa_ponto'
     | 'data_admissao'
     | 'data_desligamento'
     | 'ativo'
