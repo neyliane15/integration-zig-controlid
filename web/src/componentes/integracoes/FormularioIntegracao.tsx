@@ -276,7 +276,12 @@ export function FormularioIntegracao({
             </>
           )}
           {tipo === 'zig' && (
-            <Campo rotulo="Id da rede na Zig" htmlFor={`${id}-rede`} obrigatorio>
+            <Campo
+              rotulo="Id da rede na Zig"
+              htmlFor={`${id}-rede`}
+              obrigatorio
+              ajuda="É o id da REDE (o grupo), não o de uma loja. A Zig responde “Token inválido” se a rede não for a do token. Depois da primeira sincronização, escolha as lojas em “Lojas da Zig”."
+            >
               <Entrada id={`${id}-rede`} value={p.rede ?? ''} onChange={(e) => definir('rede', e.target.value)} disabled={ro} />
             </Campo>
           )}

@@ -189,7 +189,21 @@ export async function importarZig(config, entrada, deps) {
   const resumo = novoResumoZig()
   resumo.periodo = { inicio: periodo.inicio, fim: periodo.fim, truncado: periodo.truncado }
 
-  const rLojas = await deps.requisitar(requisicaoZig(base, token, '/erp/lojas', { rede }, deps.timeoutMs), { ...opcoesHttp, rotulo: 'Zig /erp/lojas' })
+  let rLojas
+  try {
+    rLojas = await deps.requisitar(requisicaoZig(base, token, '/erp/lojas', { rede }, deps.timeoutMs), { ...opcoesHttp, rotulo: 'Zig /erp/lojas' })
+  } catch (e) {
+    // A Zig responde 400 "Token inválido" tanto para token errado quanto para token certo com a REDE errada (por exemplo,
+    // o id de uma loja no lugar do id da rede): a mensagem diz as duas coisas para o gerente conferir.
+    if (e && e.status === 400 && /InvalidToken|Token inv/i.test(JSON.stringify(e.corpo ?? e.message ?? ''))) {
+      const m = new Error('Zig /erp/lojas: HTTP 400 — Token inválido para esta rede. Confira o token de integração e o "Id da rede" ' +
+        '(é o id da REDE, não o de uma loja: a Zig também responde "Token inválido" quando a rede não é a do token).')
+      m.status = e.status
+      m.tentativas = e.tentativas
+      throw m
+    }
+    throw e
+  }
   resumo.tentativas_max = Math.max(resumo.tentativas_max, rLojas.tentativas || 1)
   const lojasApi = itensDaResposta(rLojas.corpo)
   await deps.rpc('ingestao_zig_lojas', { p_integracao: config.integracao_id, p_lojas: lojasApi })
