@@ -238,10 +238,28 @@ end $$;
 comment on function public.faltas_listar(date, date, uuid, uuid) is '[api] Faltas do período (G A M).';
 
 -- ================================================================ presença do dia (§E.7.1)
--- v2: p_conta = ausências que contam como presença (fechamento.conta_presenca)
+-- Dia marcado à mão no fechamento (trabalhou / folga): vale mais que ponto, escala e ausências (menos fora do vínculo).
+create table if not exists public.comissao_presenca_manual (
+  fechamento_id  uuid not null references public.comissao_fechamentos (id) on delete cascade,
+  empresa_id     uuid not null references public.empresas (id) on delete cascade,
+  funcionario_id uuid not null references public.funcionarios (id) on delete cascade,
+  data           date not null,
+  presente       boolean not null,
+  criado_por     uuid references public.perfis (id) on delete set null,
+  criado_em      timestamptz not null default now(),
+  primary key (fechamento_id, funcionario_id, data)
+);
+create index if not exists comissao_presenca_manual_funcionario_idx on public.comissao_presenca_manual (funcionario_id);
+create index if not exists comissao_presenca_manual_empresa_idx on public.comissao_presenca_manual (empresa_id);
+create index if not exists comissao_presenca_manual_criado_por_idx on public.comissao_presenca_manual (criado_por);
+comment on table public.comissao_presenca_manual is '[api:nenhum] Comissão: dia marcado à mão como trabalhado ou folga, por fechamento.';
+alter table public.comissao_presenca_manual enable row level security;
+
+-- v2: p_conta = ausências que contam como presença (fechamento.conta_presenca); v3: p_fechamento = dias marcados à mão
 drop function if exists public.comissao_presenca(uuid, date, date, uuid);
+drop function if exists public.comissao_presenca(uuid, date, date, uuid, text[]);
 create or replace function public.comissao_presenca(p_empresa uuid, p_inicio date, p_fim date, p_funcionario uuid default null,
-                                                    p_conta text[] default '{}')
+                                                    p_conta text[] default '{}', p_fechamento uuid default null)
 returns table (funcionario_id uuid, data date, presente boolean, fallback boolean, bloqueado boolean, motivo text, origem text)
 language sql stable security definer rows 200 set search_path = public, extensions, pg_temp set jit = off as $$
   with dias as (select g::date as d from generate_series(p_inicio, p_fim, interval '1 day') g),
@@ -287,15 +305,24 @@ language sql stable security definer rows 200 set search_path = public, extensio
       left join esc on esc.funcionario_id = fu.id and esc.data = dd.d
       left join ponto_emp pe on pe.data = dd.d
   )
-  , r as (select m.*, coalesce(m.motivo = any (coalesce(p_conta, '{}')), false) as conta from m)
-  select r.id, r.d, r.motivo is null or r.conta, coalesce(r.motivo = 'sem_registro', false),
-         coalesce(not r.conta and r.motivo in ('fora_vinculo', 'falta_justificada', 'falta_injustificada', 'suspensao', 'ferias',
-                                               'atestado', 'abono', 'banco_horas'), false),
-         r.motivo, case when r.motivo is null then r.origem_bruta when r.conta then 'regra' end
+  , r as (select m.*, coalesce(m.motivo = any (coalesce(p_conta, '{}')), false) as conta,
+                case when m.motivo is distinct from 'fora_vinculo' then pm.presente end as manual
+             from m
+             left join public.comissao_presenca_manual pm
+               on pm.fechamento_id = p_fechamento and pm.funcionario_id = m.id and pm.data = m.d)
+  select r.id, r.d,
+         case when r.manual is not null then r.manual else r.motivo is null or r.conta end,
+         r.manual is null and coalesce(r.motivo = 'sem_registro', false),
+         case when r.manual is not null then not r.manual
+              else coalesce(not r.conta and r.motivo in ('fora_vinculo', 'falta_justificada', 'falta_injustificada', 'suspensao',
+                                                         'ferias', 'atestado', 'abono', 'banco_horas'), false) end,
+         case when r.manual then null when r.manual = false then 'folga_manual' else r.motivo end,
+         case when r.manual then 'manual' when r.manual is not null then null
+              when r.motivo is null then r.origem_bruta when r.conta then 'regra' end
     from r
 $$;
-comment on function public.comissao_presenca(uuid, date, date, uuid, text[]) is
-  '[interno] Presença de cada funcionário em cada dia para a comissão (adendo extras v3, §E.7.1); p_conta: ausências que contam.';
+comment on function public.comissao_presenca(uuid, date, date, uuid, text[], uuid) is
+  '[interno] Presença de cada funcionário em cada dia para a comissão (adendo extras v3, §E.7.1); p_conta: ausências que contam; p_fechamento: dias marcados à mão.';
 
 -- ================================================================ cálculo (§9 / E.3 / E.7)
 create or replace function public.comissao_calcular(p_fechamento uuid)
@@ -323,7 +350,7 @@ begin
   -- presença do período (uma vez por cálculo)
   if to_regclass('pg_temp._mdg_presenca') is not null then drop table pg_temp._mdg_presenca; end if;
   create temp table _mdg_presenca on commit drop as
-    select * from public.comissao_presenca(fc.empresa_id, fc.data_inicio, fc.data_fim, null, fc.conta_presenca);
+    select * from public.comissao_presenca(fc.empresa_id, fc.data_inicio, fc.data_fim, null, fc.conta_presenca, fc.id);
   create index on _mdg_presenca (funcionario_id, data);
 
   -- (adendo E.3.2 passo 8) extras com dia lançado no período entram; extra sem lançamento no período sai
@@ -589,6 +616,32 @@ end $$;
 comment on function public.comissao_fechar(uuid) is '[api] Recalcula e fecha (administrador). Depois é imutável.';
 
 -- ================================================================ detalhe (adendo E.3.4 + v3 §E.7.7)
+-- ================================================================ dia marcado à mão (trabalhou / folga)
+create or replace function public.comissao_definir_presenca_dia(p_fechamento uuid, p_funcionario uuid, p_data date, p_presente boolean)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos;
+begin
+  fc := public.comissao_rascunho_para_editar(p_fechamento);
+  if p_data is null or p_data < fc.data_inicio or p_data > fc.data_fim then
+    raise exception 'Dia fora do período do fechamento' using errcode = '22023';
+  end if;
+  if not exists (select 1 from public.comissao_itens it where it.fechamento_id = fc.id and it.funcionario_id = p_funcionario) then
+    raise exception 'Funcionário não está no fechamento' using errcode = 'P0002';
+  end if;
+  if p_presente is null then
+    delete from public.comissao_presenca_manual
+     where fechamento_id = fc.id and funcionario_id = p_funcionario and data = p_data;
+  else
+    insert into public.comissao_presenca_manual (fechamento_id, empresa_id, funcionario_id, data, presente, criado_por)
+    values (fc.id, fc.empresa_id, p_funcionario, p_data, p_presente, public.meu_perfil_id())
+    on conflict (fechamento_id, funcionario_id, data) do update
+      set presente = excluded.presente, criado_por = excluded.criado_por, criado_em = now();
+  end if;
+  perform public.comissao_calcular(fc.id);
+end $$;
+comment on function public.comissao_definir_presenca_dia(uuid, uuid, date, boolean) is
+  '[api] Marca à mão um dia do funcionário no fechamento: true = trabalhou, false = folga, null = automático; recalcula.';
+
 -- ================================================================ ausências que contam como presença
 create or replace function public.comissao_definir_presenca(p_fechamento uuid, p_conta text[])
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -616,7 +669,7 @@ begin
   if public.pode_operar(fc.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
   return (
     with pres as materialized (select * from public.comissao_presenca(fc.empresa_id, fc.data_inicio, fc.data_fim, null,
-                                                                      fc.conta_presenca))
+                                                                      fc.conta_presenca, fc.id))
     select jsonb_build_object(
     'fechamento', to_jsonb(fc),
     'servico_dias', (

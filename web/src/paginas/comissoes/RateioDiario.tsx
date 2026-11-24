@@ -17,6 +17,7 @@ const fmtPontos = (n: number) => n.toLocaleString('pt-BR', { maximumFractionDigi
 const ORIGEM: Record<OrigemRateio, { rotulo: string; titulo: string } | null> = {
   ponto: { rotulo: 'Ponto', titulo: 'Bateu o ponto no dia' },
   escala: { rotulo: 'Escala', titulo: 'Sem ponto no dia: escalado para trabalhar' },
+  manual: { rotulo: 'Manual', titulo: 'Marcado à mão como trabalhado neste fechamento' },
   regra: { rotulo: 'Ausência paga', titulo: 'Ausente, mas esse tipo de ausência recebe neste fechamento' },
   fallback: { rotulo: 'Sem registro', titulo: 'Sem ponto e fora da escala: entrou pelo fallback' },
   ultimo_recurso: { rotulo: 'Último recurso', titulo: 'Ninguém presente no dia: rateado entre os incluídos sem bloqueio' },

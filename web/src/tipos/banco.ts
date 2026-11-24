@@ -771,6 +771,7 @@ export type AusenciaQueConta = 'falta_justificada' | 'falta_injustificada' | 'at
 export type MotivoPresenca =
   | 'fora_vinculo'
   | 'banco_horas'
+  | 'folga_manual'
   | 'falta_justificada'
   | 'falta_injustificada'
   | 'suspensao'
@@ -791,7 +792,7 @@ export interface ComissaoEntradaDia {
   bloqueado?: boolean
   motivo?: MotivoPresenca | null
   /** de onde veio a presença */
-  origem?: 'ponto' | 'escala' | 'regra' | null
+  origem?: 'ponto' | 'escala' | 'regra' | 'manual' | null
   /** extra: dia sem pontuação (vale 0) */
   pendente?: boolean
 }
@@ -1453,6 +1454,7 @@ export interface Rpcs {
   }
   comissao_definir_extra: { args: { p_fechamento: Uuid; p_extra: Uuid; p_incluido: boolean }; retorno: null }
   comissao_definir_presenca: { args: { p_fechamento: Uuid; p_conta: AusenciaQueConta[] }; retorno: null }
+  comissao_definir_presenca_dia: { args: { p_fechamento: Uuid; p_funcionario: Uuid; p_data: DataISO; p_presente: boolean | null }; retorno: null }
   comissao_detalhe: { args: { p_fechamento: Uuid }; retorno: ComissaoDetalhe }
   comissao_remover_item: { args: { p_fechamento: Uuid; p_funcionario: Uuid }; retorno: null }
   comissao_recalcular: { args: { p_fechamento: Uuid }; retorno: null }

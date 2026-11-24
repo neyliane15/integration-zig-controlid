@@ -189,6 +189,13 @@ export function useDefinirPresenca() {
   )
 }
 
+/** Marca à mão um dia do funcionário: true = trabalhou, false = folga, null = automático (recalcula). */
+export function useDefinirPresencaDia() {
+  return useMutacaoComissao((a: { id: string; funcionarioId: string; data: string; presente: boolean | null }) =>
+    chamarRpc('comissao_definir_presenca_dia', { p_fechamento: a.id, p_funcionario: a.funcionarioId, p_data: a.data, p_presente: a.presente }),
+  )
+}
+
 /** Inclui/tira um extra do fechamento (adendo E.3.4). */
 export function useDefinirExtra() {
   return useMutacaoComissao((a: { id: string; extraId: string; incluido: boolean }) =>
