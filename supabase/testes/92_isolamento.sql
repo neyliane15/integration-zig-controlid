@@ -75,6 +75,12 @@ begin
     (ana, public.dia_de_trabalho_atual(a) - 50, a, 440),
     (paolo, public.dia_de_trabalho_atual(b) - 50, b, 440)
   on conflict (funcionario_id, data) do nothing;
+  -- dia de comissão marcado à mão: direto na tabela, nos fechamentos da carga demo
+  insert into public.comissao_presenca_manual (fechamento_id, empresa_id, funcionario_id, data, presente)
+  select fc.id, fc.empresa_id, x.f, fc.data_inicio, false
+    from public.comissao_fechamentos fc
+    join (values (a, ana), (b, paolo)) x(e, f) on x.e = fc.empresa_id
+  on conflict do nothing;
 end $$;
 
 -- ------------------------------------------------------------------ catálogo: tabelas com empresa_id (+ empresas)
@@ -115,7 +121,7 @@ end $$;
 select teste.ok('toda tabela com empresa_id tem dados da empresa A para o teste ' || (select coalesce(string_agg(t, ', '), '') from _tabs where t not in (select t from _amostras where empresa = 'a0000000-0000-4000-8000-00000000000a')),
   (select coalesce(string_agg(t, ', '), '') from _tabs where t not in (select t from _amostras where empresa = 'a0000000-0000-4000-8000-00000000000a')) = '');
 select teste.ok('e quase todas têm dados da empresa B (exceto as da Zig/comissão, que B não usa)',
-  (select count(*) from _amostras where empresa = 'b0000000-0000-4000-8000-00000000000b') >= (select count(*) from _tabs) - 10);
+  (select count(*) from _amostras where empresa = 'b0000000-0000-4000-8000-00000000000b') >= (select count(*) from _tabs) - 11);
 
 create temp table _falhas (quem text, t text, problema text) on commit drop;
 grant select on _tabs, _amostras to authenticated;

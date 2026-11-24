@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import clsx from 'clsx'
-import { AlertTriangle, ArrowLeft, CalendarPlus, Check, Download, Lock, Mail, RefreshCw, Trash2, UserPlus, X } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CalendarDays, CalendarPlus, Check, Download, Lock, Mail, RefreshCw, Trash2, UserPlus, X } from 'lucide-react'
 import type { AusenciaQueConta, ComissaoDetalhe, ComissaoDetalheItem, ComissaoFechamento, ModoRateio } from '@/tipos/banco'
 import {
   AreaTexto,
@@ -42,6 +42,7 @@ import { baixarCsv } from '@/lib/csv'
 import { descricaoModoRateio, rotuloModoRateio, rotuloStatusFechamento } from '@/lib/rotulos'
 import { calcularComissao, csvComissao, type ParticipanteComissao, type ResultadoComissao } from '@/lib/comissao'
 import { RateioDiario } from './RateioDiario'
+import { DiasDoParticipante } from './DiasDoParticipante'
 
 interface Parametros {
   titulo: string
@@ -123,6 +124,8 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
   const [params, setParams] = useState<Parametros>(() => paramsDe(f))
   const [edicoes, setEdicoes] = useState<Record<string, EdicaoItem>>({})
   const [adicionar, setAdicionar] = useState('')
+  /** item com a janela de dias aberta (pelo id: o item é relido a cada recálculo) */
+  const [diasAberto, setDiasAberto] = useState<string | null>(null)
 
   // O fechamento recarrega a cada ação (incluir, remover, recalcular): o que foi digitado e ainda não salvo continua.
   // Parâmetros: só acompanham o banco se não foram mexidos; itens: some só a edição já igual ao banco (salva) ou de
@@ -579,6 +582,7 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
                 ocupado={ocupado}
                 somaIncluidos={somaIncluidos}
                 diasIncluidos={diasIncluidos}
+                aoVerDias={(i) => setDiasAberto(i.id)}
                 aoRemover={async (i) => {
                   if (!(await avisos.confirmar({ titulo: `Remover ${i.nome} do fechamento?`, textoConfirmar: 'Remover', perigo: true }))) return
                   try {
@@ -619,6 +623,12 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
           </Cartao>
 
           {diario && <RateioDiario dias={previa.dias} itens={previa.itens} previa={sujo} />}
+          <DiasDoParticipante
+            item={itens.find((i) => i.id === diasAberto) ?? null}
+            fechamentoId={f.id}
+            rascunho={rascunho}
+            aoFechar={() => setDiasAberto(null)}
+          />
         </div>
       </div>
     </div>
@@ -637,6 +647,7 @@ interface PropsLista {
   somaIncluidos: number
   diasIncluidos: number
   aoRemover(i: ComissaoDetalheItem): void
+  aoVerDias(i: ComissaoDetalheItem): void
 }
 
 /** Ausências que o gerente pode escolher pagar no dia (ordem da tela). */
@@ -702,6 +713,17 @@ function ListaParticipantes(props: PropsLista) {
         {fmtPontos(i.pontos)}
       </span>
     )
+  const ctrlDias = (i: ComissaoDetalheItem) =>
+    i.tipo === 'funcionario' && i.funcionario_id ? (
+      <Botao
+        variante="fantasma"
+        tamanho="p"
+        aria-label={`Dias de ${i.nome}`}
+        title="Ver e marcar os dias (trabalhou / folga)"
+        icone={<CalendarDays aria-hidden className="size-4" />}
+        onClick={() => props.aoVerDias(i)}
+      />
+    ) : null
   const ctrlRemover = (i: ComissaoDetalheItem) =>
     rascunho && i.tipo === 'funcionario' && i.funcionario_id ? (
       <Botao variante="fantasma" tamanho="p" aria-label={`Remover ${i.nome}`} icone={<X aria-hidden className="size-4" />} disabled={ocupado} onClick={() => props.aoRemover(i)} />
@@ -758,6 +780,7 @@ function ListaParticipantes(props: PropsLista) {
               {ctrlIncluido(i, true)}
               <span className="flex items-center gap-2 text-sm text-lavanda">
                 Pontos {ctrlPontos(i)}
+                {ctrlDias(i)}
                 {ctrlRemover(i)}
               </span>
             </div>
@@ -784,11 +807,9 @@ function ListaParticipantes(props: PropsLista) {
             <th scope="col" className="px-3 py-3 text-right">Dias presentes</th>
             <th scope="col" className="px-3 py-3 text-right">{diario ? 'Pts nos dias' : 'Pts efetivos'}</th>
             <th scope="col" className="px-3 py-3 text-right">Valor</th>
-            {rascunho && (
-              <th scope="col" className="px-3 py-3">
-                <span className="sr-only">Ações</span>
-              </th>
-            )}
+            <th scope="col" className="px-3 py-3">
+              <span className="sr-only">Ações</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -803,7 +824,10 @@ function ListaParticipantes(props: PropsLista) {
               <td className="numero px-3 py-3 text-right text-lavanda">{dias(i, k)}</td>
               <td className="numero px-3 py-3 text-right">{fmtPontos(previa.itens[k]?.pontosEfetivos ?? 0, 6)}</td>
               <td className="numero px-3 py-3 text-right font-semibold whitespace-nowrap text-ouro-claro">{valor(k)}</td>
-              {rascunho && <td className="px-3 py-3 text-right">{ctrlRemover(i)}</td>}
+              <td className="px-3 py-3 text-right whitespace-nowrap">
+                {ctrlDias(i)}
+                {ctrlRemover(i)}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -815,7 +839,7 @@ function ListaParticipantes(props: PropsLista) {
             <td className="numero px-3 py-3 text-right text-lavanda">{props.diasIncluidos}</td>
             <td className="numero px-3 py-3 text-right">{fmtPontos(previa.somaPontosEfetivos, 6)}</td>
             <td className="numero px-3 py-3 text-right text-ouro-claro">{formatarCentavos(previa.totalDistribuidoCentavos)}</td>
-            {rascunho && <td />}
+            <td />
           </tr>
         </tfoot>
       </table>

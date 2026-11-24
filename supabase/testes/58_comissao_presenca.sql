@@ -243,6 +243,24 @@ select teste.ok('não bate ponto: Eva deixa de ficar "sem batida" em 01/09',
     where i ->> 'nome' = 'Eva Martins') -> 0 = '"sem_registro"');
 update public.funcionarios set dispensa_ponto = false where id = 'e5800000-0000-4000-8000-000000000305';
 
+-- dia marcado à mão: folga tira, trabalhou põe, null volta ao automático
+select public.comissao_definir_presenca_dia((select id from fp where nome = 'v7'), 'e5800000-0000-4000-8000-000000000301', '2026-09-01', false);
+select teste.ok('folga manual: Ana sai de 01/09 (motivo folga_manual, bloqueada)',
+  not exists (select 1 from vri where funcionario_nome = 'Ana Souza' and data = '2026-09-01')
+  and (select (e ->> 'motivo') || '/' || (e ->> 'bloqueado') from jsonb_array_elements(public.comissao_detalhe((select id from fp where nome = 'v7')) -> 'itens') i,
+              jsonb_array_elements(i -> 'entrada') e where i ->> 'nome' = 'Ana Souza' and e ->> 'data' = '2026-09-01') = 'folga_manual/true');
+select public.comissao_definir_presenca_dia((select id from fp where nome = 'v7'), 'e5800000-0000-4000-8000-000000000301', '2026-09-03', true);
+select teste.ok('trabalhou manual: Ana entra em 03/09 com origem manual',
+  exists (select 1 from vri where funcionario_nome = 'Ana Souza' and data = '2026-09-03')
+  and (select e ->> 'origem' from jsonb_array_elements(public.comissao_detalhe((select id from fp where nome = 'v7')) -> 'itens') i,
+              jsonb_array_elements(i -> 'entrada') e where i ->> 'nome' = 'Ana Souza' and e ->> 'data' = '2026-09-03') = 'manual');
+select teste.erro('dia fora do período', $$select public.comissao_definir_presenca_dia((select id from fp where nome = 'v7'), 'e5800000-0000-4000-8000-000000000301', '2026-10-01', true)$$,
+  'Dia fora do período do fechamento', '22023');
+select public.comissao_definir_presenca_dia((select id from fp where nome = 'v7'), 'e5800000-0000-4000-8000-000000000301', '2026-09-01', null);
+select public.comissao_definir_presenca_dia((select id from fp where nome = 'v7'), 'e5800000-0000-4000-8000-000000000301', '2026-09-03', null);
+select teste.ok('null volta ao automático', exists (select 1 from vri where funcionario_nome = 'Ana Souza' and data = '2026-09-01')
+  and not exists (select 1 from vri where funcionario_nome = 'Ana Souza' and data = '2026-09-03'));
+
 select teste.como('cp.adm@teste.local');
 select teste.erro('fechar com extra sem pontuação', $$select public.comissao_fechar((select id from fp where nome = 'v7'))$$,
   'Há extras sem pontuação: preencha antes de fechar', '22023');
