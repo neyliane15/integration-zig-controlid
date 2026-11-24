@@ -1,4 +1,4 @@
--- 84_assistente.sql — RPCs do assistente de IA: resumo de ponto por funcionário e escala de um dia (com permissões).
+-- 84_consultas.sql — consultas rápidas: resumo de ponto por funcionário e escala de um dia (com permissões).
 begin;
 set local app.agora = '2026-11-17 12:00:00-03';
 select teste.como_dono();
@@ -28,16 +28,16 @@ select teste.como('ass.ger@teste.local');
 select teste.ok('resumo do ponto: Ana 2 dias, 1 falta, 2 atrasos (20 min), saldo −7h20; Bia 1 falta justificada',
   (select array_agg(funcionario_nome || ' ' || dias_com_batida || ' ' || faltas || ' ' || faltas_justificadas || ' ' || atrasos || ' '
                     || minutos_atraso || ' ' || trabalhado_minutos || ' ' || saldo_minutos order by funcionario_nome)
-     from public.assistente_ponto_resumo('2026-11-01', '2026-11-17'))
+     from public.consultas_ponto_resumo('2026-11-01', '2026-11-17'))
   = array['Ana 2 1 0 2 20 880 -440', 'Bia 1 0 1 0 0 440 0']);
-select teste.erro('período inválido', $$select * from public.assistente_ponto_resumo('2026-11-10', '2026-11-01')$$,
+select teste.erro('período inválido', $$select * from public.consultas_ponto_resumo('2026-11-10', '2026-11-01')$$,
   'Período inválido (máximo de 366 dias)', '22023');
 select teste.erro('outra empresa: sem permissão',
-  $$select * from public.assistente_ponto_resumo('2026-11-01', '2026-11-17', 'e8400000-0000-4000-8000-00000000000b')$$, 'Sem permissão', '42501');
-select teste.ok('escala de um dia sem escala configurada: vazia', not exists (select 1 from public.assistente_escala_dia('2026-11-17')));
+  $$select * from public.consultas_ponto_resumo('2026-11-01', '2026-11-17', 'e8400000-0000-4000-8000-00000000000b')$$, 'Sem permissão', '42501');
+select teste.ok('escala de um dia sem escala configurada: vazia', not exists (select 1 from public.consultas_escala_dia('2026-11-17')));
 
 select teste.como('ass.leit@teste.local');
 select teste.erro('leitura não vê o resumo de ponto',
-  $$select * from public.assistente_ponto_resumo('2026-11-01', '2026-11-17')$$, 'Sem permissão', '42501');
-select teste.ok('leitura vê a escala do dia', (select count(*) = 0 from public.assistente_escala_dia('2026-11-17')));
+  $$select * from public.consultas_ponto_resumo('2026-11-01', '2026-11-17')$$, 'Sem permissão', '42501');
+select teste.ok('leitura vê a escala do dia', (select count(*) = 0 from public.consultas_escala_dia('2026-11-17')));
 rollback;

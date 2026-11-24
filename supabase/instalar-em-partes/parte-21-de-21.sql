@@ -1,6 +1,6 @@
 -- Meu Dia de Gerente — instalação do banco, PARTE 21 DE 21.
 -- Rode as partes NA ORDEM (01, 02, 03...), cada uma numa query do SQL Editor do Supabase → Run.
--- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000330_ocorrencias_ponto.sql, 20261006000340_assistente.sql, 20261006000900_permissoes.sql. Não edite à mão.
+-- Gerado por ferramentas/dividir-instalar.py a partir de: 20261006000330_ocorrencias_ponto.sql, 20261006000340_consultas.sql, 20261006000900_permissoes.sql. Não edite à mão.
 
 begin;
 -- Faltas e atrasos de uma empresa no período (opcional: um funcionário). Sem checagem (uso interno).
@@ -108,16 +108,19 @@ update public.ponto_alarmes a
   from public.empresas em
  where em.id = a.empresa_id and a.status = 'aberto'
    and a.data < public.dia_de_trabalho(public.agora(), em.id) - em.ponto_alarme_prazo_dias;-- =====================================================================================================
--- 20261006000340_assistente.sql — consultas do assistente de IA (n8n "MDG · Assistente")
--- O assistente responde perguntas do gerente ("quem menos atrasou em novembro?", "qual dia mais vendeu?") chamando RPCs
--- COM O LOGIN DE QUEM PERGUNTA (JWT do usuário + chave anon): RLS e as checagens de permissão valem como no site.
--- Além das RPCs que o site já usa (vendas_*, ocorrencias_ponto, banco_horas_resumo, reservas_listar), duas novas:
---   · assistente_ponto_resumo  — por funcionário no período: dias com batida, faltas, atrasos, horas, saldo
---   · assistente_escala_dia    — quem trabalha / folga num dia, com a chegada da escala
+-- 20261006000340_consultas.sql — "Consultas rápidas" (perguntas prontas, sem IA)
+-- Duas consultas novas para a tela /consultas (as outras perguntas usam RPCs que o site já tem: vendas_*,
+-- ocorrencias_ponto):
+--   · consultas_ponto_resumo — por funcionário no período: dias com batida, faltas, atrasos, horas, saldo (G A M)
+--   · consultas_escala_dia   — quem trabalha / folga num dia, com a chegada da escala (G A M L)
 -- Idempotente.
 -- =====================================================================================================
 
-create or replace function public.assistente_ponto_resumo(p_inicio date, p_fim date, p_empresa uuid default null)
+-- (nomes provisórios de um rascunho que nunca foi instalado — removidos se existirem)
+drop function if exists public.assistente_ponto_resumo(date, date, uuid);
+drop function if exists public.assistente_escala_dia(date, uuid);
+
+create or replace function public.consultas_ponto_resumo(p_inicio date, p_fim date, p_empresa uuid default null)
 returns table (funcionario_id uuid, funcionario_nome text, cargo text, dias_com_batida int, faltas int,
                faltas_justificadas int, atrasos int, minutos_atraso int, trabalhado_minutos int, saldo_minutos int)
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
@@ -149,10 +152,10 @@ begin
    group by f.id, f.nome, f.cargo
    order by f.nome;
 end $$;
-comment on function public.assistente_ponto_resumo(date, date, uuid) is
-  '[api] Assistente: ponto por funcionário no período (dias com batida, faltas, atrasos, horas, saldo) (G A M).';
+comment on function public.consultas_ponto_resumo(date, date, uuid) is
+  '[api] Consultas: ponto por funcionário no período (dias com batida, faltas, atrasos, horas, saldo) (G A M).';
 
-create or replace function public.assistente_escala_dia(p_data date, p_empresa uuid default null)
+create or replace function public.consultas_escala_dia(p_data date, p_empresa uuid default null)
 returns table (funcionario_id uuid, funcionario_nome text, setor text, status text, chegada text, ajustado boolean)
 language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
 declare v_empresa uuid;
@@ -166,8 +169,8 @@ begin
     join public.escala_setores s on s.id = c.setor_id
    order by s.ordem, s.nome, f.nome;
 end $$;
-comment on function public.assistente_escala_dia(date, uuid) is
-  '[api] Assistente: escala de um dia (status trabalha/folga/ferias/banco_horas/fora e chegada) (G A M L).';-- =====================================================================================================
+comment on function public.consultas_escala_dia(date, uuid) is
+  '[api] Consultas: escala de um dia (status trabalha/folga/ferias/banco_horas/fora e chegada) (G A M L).';-- =====================================================================================================
 -- 20261006000900_permissoes.sql  (backend-1) — SEMPRE A ÚLTIMA MIGRAÇÃO.
 -- Varre o catálogo de public e concede privilégios pela etiqueta no início do comment (§2.2):
 --   tabela  [api:crud] → authenticated: select, insert, update, delete

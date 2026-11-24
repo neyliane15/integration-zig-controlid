@@ -23,7 +23,6 @@ import { Carregando, FOCO, Vazio } from "../ui";
 import { Marca } from "./Marca";
 import { MenuLateral, itensDoPapel } from "./Menu";
 import { SeletorEmpresa } from "./SeletorEmpresa";
-import { Assistente } from "@/componentes/dominio/Assistente";
 
 function iniciais(nome: string): string {
   const partes = nome.trim().split(/\s+/);
@@ -310,8 +309,6 @@ export function Casca() {
           )}
         </div>
       </main>
-
-      <Assistente />
 
       {/* menu inferior — celular */}
       <nav

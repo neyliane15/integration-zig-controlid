@@ -14,9 +14,8 @@ Passo a passo completo: docs/IMPLANTACAO-N8N-HOSTINGER.md
 09-sincronizar-agora.json                MDG · Sincronizar agora (fila)               → ATIVAR
 10-agendador.json                        MDG · Agendador                              → ATIVAR
 11-rotina-diaria.json                    MDG · Rotina diária                          → ATIVAR
-12-assistente.json                       MDG · Assistente                             → ATIVAR
 
 2. Anote o id de cada subfluxo (na URL: .../workflow/<id>) e preencha a variável indicada em env.hostinger.exemplo.
-3. Reinicie o N8N (docker compose up -d), aponte o Error workflow, configure o SMTP e ative 09 → 10 → 11 → 12.
+3. Reinicie o N8N (docker compose up -d), aponte o Error workflow, configure o SMTP e ative 09 → 10 → 11.
 
 Gerado por n8n/pacote/gerar.mjs — não edite à mão (as cópias são conferidas por npm run n8n:verificar).

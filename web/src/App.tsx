@@ -33,6 +33,7 @@ const PaginaConfiguracoes = lazy(() =>
 const PaginaUsuarios = lazy(() => import('./paginas/configuracoes/PaginaUsuarios').then((m) => ({ default: m.PaginaUsuarios })))
 const PaginaEmpresas = lazy(() => import('./paginas/master/PaginaEmpresas').then((m) => ({ default: m.PaginaEmpresas })))
 const PaginaEmpresa = lazy(() => import('./paginas/master/PaginaEmpresa').then((m) => ({ default: m.PaginaEmpresa })))
+const PaginaConsultas = lazy(() => import('./paginas/consultas/PaginaConsultas').then((m) => ({ default: m.PaginaConsultas })))
 const PaginaNaoEncontrada = lazy(() => import('./paginas/PaginaNaoEncontrada').then((m) => ({ default: m.PaginaNaoEncontrada })))
 
 // ----------------------------------------------------------------- operação (f2)
@@ -101,6 +102,7 @@ export function App() {
           <Route path="/banco-de-horas/:id" element={<PaginaExtratoBancoHoras />} />
 
           <Route path="/vendas" element={<PaginaVendas />} />
+          <Route path="/consultas" element={<So permitir={podeOperar}><PaginaConsultas /></So>} />
 
           <Route path="/comissoes" element={<So permitir={podeVerComissoes}><PaginaComissoes /></So>} />
           <Route path="/comissoes/:id" element={<So permitir={podeVerComissoes}><PaginaFechamento /></So>} />
