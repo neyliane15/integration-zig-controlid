@@ -65,6 +65,7 @@ interface Formulario {
   zig_employee_name: string
   pontos_comissao: string
   participa_comissao: boolean
+  dispensa_ponto: boolean
   data_admissao: string | null
   data_desligamento: string | null
   ativo: boolean
@@ -83,6 +84,7 @@ const VAZIO: Formulario = {
   zig_employee_name: '',
   pontos_comissao: '0',
   participa_comissao: true,
+  dispensa_ponto: false,
   data_admissao: null,
   data_desligamento: null,
   ativo: true,
@@ -102,6 +104,7 @@ function paraFormulario(f: Funcionario): Formulario {
     zig_employee_name: f.zig_employee_name ?? '',
     pontos_comissao: String(f.pontos_comissao ?? 0).replace('.', ','),
     participa_comissao: f.participa_comissao,
+    dispensa_ponto: f.dispensa_ponto,
     data_admissao: f.data_admissao,
     data_desligamento: f.data_desligamento,
     ativo: f.ativo,
@@ -141,6 +144,7 @@ function paraDados(f: Formulario): DadosFuncionario {
     zig_employee_name: vazioParaNull(f.zig_employee_name),
     pontos_comissao: lerPontos(f.pontos_comissao) ?? 0,
     participa_comissao: f.participa_comissao,
+    dispensa_ponto: f.dispensa_ponto,
     data_admissao: f.data_admissao,
     data_desligamento: f.data_desligamento,
     ativo: f.ativo,
@@ -596,6 +600,11 @@ function AbaComissao({
             />
           </Campo>
           <Interruptor rotulo="Participa da comissão" marcado={form.participa_comissao} aoMudar={(v) => mudar('participa_comissao', v)} />
+          <Interruptor
+            rotulo="Não bate ponto (presença na comissão pela escala)"
+            marcado={form.dispensa_ponto}
+            aoMudar={(v) => mudar('dispensa_ponto', v)}
+          />
         </div>
       </Cartao>
       {operar && (

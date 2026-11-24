@@ -236,6 +236,13 @@ select teste.ok('detalhe: entradas com presença v3 (Davi, Eva, Ana) e extra pen
   and (select i -> 'entrada' -> 0 ->> 'pendente' from det, jsonb_array_elements(j -> 'itens') i where i ->> 'nome' = 'Zé Pereira') = 'true'
   and (select (j -> 'fechamento' ->> 'extras_sem_pontuacao')::int from det) = 1);
 
+-- "não bate ponto": quem está no relógio mas é dispensado nunca fica "sem batida" (vale a escala / sem registro)
+update public.funcionarios set dispensa_ponto = true where id = 'e5800000-0000-4000-8000-000000000305';
+select teste.ok('não bate ponto: Eva deixa de ficar "sem batida" em 01/09',
+  (select jsonb_path_query_array(i, '$.entrada[*].motivo') from jsonb_array_elements(public.comissao_detalhe((select id from fp where nome = 'v7')) -> 'itens') i
+    where i ->> 'nome' = 'Eva Martins') -> 0 = '"sem_registro"');
+update public.funcionarios set dispensa_ponto = false where id = 'e5800000-0000-4000-8000-000000000305';
+
 select teste.como('cp.adm@teste.local');
 select teste.erro('fechar com extra sem pontuação', $$select public.comissao_fechar((select id from fp where nome = 'v7'))$$,
   'Há extras sem pontuação: preencha antes de fechar', '22023');
