@@ -7,10 +7,10 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import clsx from 'clsx'
-import { AlarmClock, CalendarDays, CalendarX, Clock, Medal, Receipt, TrendingDown, TrendingUp } from 'lucide-react'
-import { CabecalhoPagina, Carregando, Cartao, EntradaData, ErroCarga, FiltroPeriodo, FOCO } from '@/componentes/ui'
+import { AlarmClock, CalendarDays, CalendarOff, CalendarX, Clock, Medal, Receipt, Search, TrendingDown, TrendingUp } from 'lucide-react'
+import { CabecalhoPagina, Campo, Carregando, Cartao, Entrada, EntradaData, ErroCarga, FiltroPeriodo, FOCO } from '@/componentes/ui'
 import { useContextoEmpresa } from '@/consultas/funcionarios'
-import { useConsultaEscala, useConsultaPonto } from '@/consultas/consultas'
+import { useConsultaEscala, useConsultaEscalaPeriodo, useConsultaPonto } from '@/consultas/consultas'
 import { useFaturamentoPorDia, useVendasPorGarcom } from '@/consultas/vendas'
 import { formatarCentavos, formatarData, formatarMinutos } from '@/lib/formato'
 import type { LinhaConsultaEscala, LinhaConsultaPonto } from '@/tipos/banco'
@@ -102,26 +102,42 @@ function Pergunta({
 
 const ficha = (id: string) => `/funcionarios/${id}?aba=ocorrencias`
 
+/** minúsculas sem acento, para a busca por nome */
+const normalizar = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+
+/** a escala do período vai até 93 dias: períodos maiores usam os últimos 93 */
+function limitarPeriodo(inicio: string, fim: string): string {
+  const f = new Date(`${fim}T12:00:00`)
+  f.setDate(f.getDate() - 92)
+  const min = f.toISOString().slice(0, 10)
+  return inicio < min ? min : inicio
+}
+
 export function PaginaConsultas() {
   const { hoje, empresa } = useContextoEmpresa()
   const [inicio, setInicio] = useState(() => primeiroDoMes(hoje))
   const [fim, setFim] = useState(hoje)
   const [dia, setDia] = useState(hoje)
+  const [busca, setBusca] = useState('')
+  const q = normalizar(busca)
+  const casa = (nome: string | null | undefined) => !q || normalizar(nome ?? '').includes(q)
 
   const ponto = useConsultaPonto(inicio, fim)
   const vendasDia = useFaturamentoPorDia(inicio, fim, null)
   const garcons = useVendasPorGarcom(inicio, fim, null)
   const escala = useConsultaEscala(dia)
+  const inicioEscala = limitarPeriodo(inicio, fim)
+  const escalaPeriodo = useConsultaEscalaPeriodo(inicioEscala, fim)
 
   const p = useMemo(() => {
-    const todos = (ponto.data ?? []) as LinhaConsultaPonto[]
+    const todos = ((ponto.data ?? []) as LinhaConsultaPonto[]).filter((l) => casa(l.funcionario_nome))
     const comPonto = todos.filter((l) => l.dias_com_batida > 0)
     const menosAtraso = [...comPonto].sort((a, b) => a.atrasos - b.atrasos || a.minutos_atraso - b.minutos_atraso || a.funcionario_nome.localeCompare(b.funcionario_nome))
     const maisAtraso = [...comPonto].filter((l) => l.atrasos > 0).sort((a, b) => b.minutos_atraso - a.minutos_atraso || b.atrasos - a.atrasos)
     const faltas = [...todos].filter((l) => l.faltas + l.faltas_justificadas > 0).sort((a, b) => b.faltas - a.faltas || b.faltas_justificadas - a.faltas_justificadas)
     const horas = [...comPonto].sort((a, b) => b.trabalhado_minutos - a.trabalhado_minutos)
     return { comPonto, menosAtraso, maisAtraso, faltas, horas }
-  }, [ponto.data])
+  }, [ponto.data, q])
 
   const v = useMemo(() => {
     const dias = (vendasDia.data ?? []).filter((d) => d.valor > 0)
@@ -131,10 +147,20 @@ export function PaginaConsultas() {
   }, [vendasDia.data])
 
   const e = useMemo(() => {
-    const l = (escala.data ?? []) as LinhaConsultaEscala[]
+    const l = ((escala.data ?? []) as LinhaConsultaEscala[]).filter((x) => casa(x.funcionario_nome))
     const por = (s: string) => l.filter((x) => x.status === s)
     return { trabalha: por('trabalha'), folga: por('folga'), bh: por('banco_horas'), ferias: por('ferias'), total: l.length }
-  }, [escala.data])
+  }, [escala.data, q])
+
+  const folgas = useMemo(
+    () =>
+      (escalaPeriodo.data ?? [])
+        .filter((l) => casa(l.funcionario_nome))
+        .filter((l) => l.folgas + l.banco_horas > 0)
+        .sort((a, b) => b.folgas + b.banco_horas - (a.folgas + a.banco_horas) || a.funcionario_nome.localeCompare(b.funcionario_nome)),
+    [escalaPeriodo.data, q],
+  )
+  const garconsFiltrados = (garcons.data ?? []).filter((g) => casa(g.funcionario_nome ?? g.employee_name))
 
   const periodo = inicio === fim ? formatarData(inicio) : `${formatarData(inicio)} a ${formatarData(fim)}`
   const linhaPonto = (l: LinhaConsultaPonto, valor: string, detalhe?: string): Linha => ({
@@ -163,16 +189,25 @@ export function PaginaConsultas() {
         }
         subtitulo={`${empresa?.nome ?? 'Loja'} · ${periodo}`}
       />
-      <div className="mb-5">
-        <FiltroPeriodo
-          hoje={hoje}
-          inicio={inicio}
-          fim={fim}
-          aoMudar={(de, ate) => {
-            setInicio(de)
-            setFim(ate)
-          }}
-        />
+      <div className="mb-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,18rem)] lg:items-end">
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <span className="text-sm font-semibold text-creme">Período da consulta</span>
+          <FiltroPeriodo
+            hoje={hoje}
+            inicio={inicio}
+            fim={fim}
+            aoMudar={(de, ate) => {
+              setInicio(de)
+              setFim(ate)
+            }}
+          />
+        </div>
+        <Campo rotulo="Buscar funcionário" htmlFor="consulta-busca">
+          <div className="relative">
+            <Search aria-hidden className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-lavanda" />
+            <Entrada id="consulta-busca" className="pl-9!" placeholder="Nome" value={busca} onChange={(ev) => setBusca(ev.target.value)} />
+          </div>
+        </Campo>
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -310,21 +345,51 @@ export function PaginaConsultas() {
           erro={garcons.error}
           aoTentar={() => void garcons.refetch()}
           resposta={
-            !(garcons.data ?? []).length ? (
+            !garconsFiltrados.length ? (
               'Sem vendas por garçom no período.'
             ) : (
               <>
-                <b>{garcons.data![0]!.funcionario_nome ?? garcons.data![0]!.employee_name ?? 'Sem nome'}</b>: {formatarCentavos(garcons.data![0]!.valor_vendas)} vendidos (
-                {formatarCentavos(garcons.data![0]!.valor_servico)} de serviço).
+                <b>{garconsFiltrados[0]!.funcionario_nome ?? garconsFiltrados[0]!.employee_name ?? 'Sem nome'}</b>: {formatarCentavos(garconsFiltrados[0]!.valor_vendas)}{' '}
+                vendidos ({formatarCentavos(garconsFiltrados[0]!.valor_servico)} de serviço).
               </>
             )
           }
-          linhas={(garcons.data ?? []).map((g, i) => ({
+          linhas={garconsFiltrados.map((g, i) => ({
             chave: `${g.funcionario_id ?? g.employee_name ?? i}`,
             nome: g.funcionario_nome ?? g.employee_name ?? 'Sem nome',
             valor: formatarCentavos(g.valor_vendas),
             detalhe: `${g.transacoes} vendas`,
           }))}
+        />
+
+        <Pergunta
+          pergunta="Quem mais folgou?"
+          icone={<CalendarOff className="size-4" />}
+          carregando={escalaPeriodo.isLoading}
+          erro={escalaPeriodo.error}
+          aoTentar={() => void escalaPeriodo.refetch()}
+          resposta={
+            !folgas.length ? (
+              'Ninguém de folga na escala no período.'
+            ) : (
+              <>
+                <b>{folgas[0]!.funcionario_nome}</b>: {folgas[0]!.folgas} folga{folgas[0]!.folgas === 1 ? '' : 's'}
+                {folgas[0]!.banco_horas > 0 && ` + ${folgas[0]!.banco_horas} de banco de horas`}.
+              </>
+            )
+          }
+          linhas={folgas.map((l) => ({
+            chave: l.funcionario_id,
+            nome: l.funcionario_nome,
+            valor: String(l.folgas + l.banco_horas),
+            detalhe: [l.setor, l.banco_horas ? `${l.banco_horas} BH` : '', l.ferias ? `${l.ferias} férias` : ''].filter(Boolean).join(' · '),
+            para: `/funcionarios/${l.funcionario_id}`,
+          }))}
+          rodape={
+            inicioEscala !== inicio
+              ? `Escala de ${formatarData(inicioEscala)} a ${formatarData(fim)} (máximo de 93 dias).`
+              : 'Pela escala: folgas da escala e folgas de banco de horas (BH).'
+          }
         />
 
         <Cartao

@@ -14,7 +14,7 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import { Botao, Campo, Cartao, Entrada, FOCO, Selecao } from "@/componentes/ui";
+import { Botao, Campo, Cartao, Entrada, FOCO, Interruptor, Selecao } from "@/componentes/ui";
 import { useAvisos } from "@/componentes/avisos";
 import type { EscalaSemana, EscalaSetorSemana } from "@/tipos/banco";
 import {
@@ -27,6 +27,7 @@ import {
   useRemoverMembro,
   useSalvarMembro,
   useSalvarSetor,
+  useDefinirAreas,
 } from "@/consultas/escala";
 import {
   useFuncionarios,
@@ -450,6 +451,8 @@ function CartaoSetor({
         </div>
       )}
 
+      {editar && setor.caminhos.length > 1 && <AreasDoSetor setor={setor} />}
+
       {linhas.length === 0 && (
         <p className="text-sm text-lavanda">Ninguém neste setor ainda.</p>
       )}
@@ -491,6 +494,94 @@ function CartaoSetor({
         />
       )}
     </Cartao>
+  );
+}
+
+/**
+ * Áreas do setor: cada caminho trabalha numa área (nomes na ordem dos caminhos). Com o rodízio mensal ligado, a cada
+ * mês a equipe do caminho 1 vai para a área 2, a do 2 para a 3 e a do último volta para a 1. Só muda a área, não as folgas.
+ */
+function AreasDoSetor({ setor }: { setor: EscalaSetorSemana }) {
+  const avisos = useAvisos();
+  const definir = useDefinirAreas();
+  const n = setor.caminhos.length;
+  const original = useMemo(
+    () => Array.from({ length: n }, (_, i) => setor.areas?.[i] ?? ""),
+    [setor.areas, n],
+  );
+  const [nomes, setNomes] = useState(original);
+  useEffect(() => setNomes(original), [original]);
+  const rodizio = !!setor.rodizio_areas_desde;
+  const nomeDe = (a: number | null | undefined) =>
+    a == null ? "—" : (setor.areas?.[a - 1]?.trim() || `Área ${a}`);
+  const sujo = nomes.join("|") !== original.join("|");
+
+  async function salvar(novoRodizio: boolean) {
+    try {
+      await definir.mutateAsync({
+        setorId: setor.id,
+        rodizio: novoRodizio,
+        areas: nomes.map((x) => x.trim()),
+      });
+      avisos.sucesso(
+        novoRodizio === rodizio
+          ? "Áreas salvas."
+          : novoRodizio
+            ? "Rodízio mensal de área ligado: este mês é o ponto de partida."
+            : "Rodízio mensal de área desligado.",
+      );
+    } catch (e) {
+      avisos.erro(e);
+    }
+  }
+
+  return (
+    <div className="mb-4 rounded-entrada border border-borda bg-cartao-2/40 p-3" data-teste="areas-setor">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-creme">Áreas dos caminhos</p>
+        <Interruptor
+          rotulo="Rodízio mensal de área"
+          marcado={rodizio}
+          desabilitado={definir.isPending}
+          aoMudar={(v) => void salvar(v)}
+        />
+      </div>
+      <p className="mt-1 text-xs text-lavanda">
+        Dê um nome à área de cada caminho (ex.: Salão, Varanda, Areia). Com o rodízio ligado, a cada mês a equipe do
+        caminho 1 vai para a área 2, a do 2 para a 3, e a do último volta para a 1. As folgas não mudam.
+      </p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {setor.caminhos.map((c, i) => (
+          <Campo key={c.caminho} rotulo={`Área ${i + 1}`} htmlFor={`area-${setor.id}-${i}`}>
+            <Entrada
+              id={`area-${setor.id}-${i}`}
+              value={nomes[i] ?? ""}
+              maxLength={40}
+              placeholder={`Área ${i + 1}`}
+              onChange={(e) =>
+                setNomes((xs) => xs.map((x, j) => (j === i ? e.target.value : x)))
+              }
+            />
+          </Campo>
+        ))}
+      </div>
+      <p className="mt-2 text-xs text-lavanda">
+        Neste mês:{" "}
+        {setor.caminhos
+          .map((c) => `caminho ${c.caminho} → ${nomeDe(c.area)}`)
+          .join(" · ")}
+      </p>
+      {sujo && (
+        <div className="mt-2 flex justify-end gap-2">
+          <Botao variante="fantasma" onClick={() => setNomes(original)}>
+            Descartar
+          </Botao>
+          <Botao carregando={definir.isPending} onClick={() => void salvar(rodizio)}>
+            Salvar áreas
+          </Botao>
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -35,6 +35,9 @@ select teste.erro('período inválido', $$select * from public.consultas_ponto_r
 select teste.erro('outra empresa: sem permissão',
   $$select * from public.consultas_ponto_resumo('2026-11-01', '2026-11-17', 'e8400000-0000-4000-8000-00000000000b')$$, 'Sem permissão', '42501');
 select teste.ok('escala de um dia sem escala configurada: vazia', not exists (select 1 from public.consultas_escala_dia('2026-11-17')));
+select teste.ok('escala do período sem escala configurada: vazia', not exists (select 1 from public.consultas_escala_periodo('2026-11-01', '2026-11-17')));
+select teste.erro('escala do período: máximo de 93 dias', $$select * from public.consultas_escala_periodo('2026-01-01', '2026-11-17')$$,
+  'Período inválido (máximo de 93 dias)', '22023');
 
 select teste.como('ass.leit@teste.local');
 select teste.erro('leitura não vê o resumo de ponto',

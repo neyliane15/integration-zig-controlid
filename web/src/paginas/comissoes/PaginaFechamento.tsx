@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import clsx from 'clsx'
-import { AlertTriangle, ArrowLeft, CalendarDays, CalendarPlus, Check, Download, Lock, Mail, RefreshCw, Trash2, UserPlus, X } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, BadgeCheck, CalendarDays, CalendarPlus, Check, Download, Lock, Mail, RefreshCw, Trash2, UserPlus, X } from 'lucide-react'
 import type { AusenciaQueConta, ComissaoDetalhe, ComissaoDetalheItem, ComissaoFechamento, ModoRateio } from '@/tipos/banco'
 import {
   AreaTexto,
@@ -23,11 +23,13 @@ import {
 import { useAvisos } from '@/componentes/avisos'
 import { BotaoLink } from '@/componentes/dominio/BotaoLink'
 import { useContextoEmpresa, useFuncionarios } from '@/consultas/funcionarios'
+import { useExtras } from '@/consultas/extras'
 import {
   useAtualizarFechamento,
   useComissaoDetalhe,
   useDefinirExtra,
   useDefinirPresenca,
+  useTornarPontosOficiais,
   useDefinirItens,
   useEnviarFechamentoPorEmail,
   useExcluirRascunho,
@@ -113,6 +115,7 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
   const definirItens = useDefinirItens()
   const definirExtra = useDefinirExtra()
   const definirPresenca = useDefinirPresenca()
+  const tornarOficiais = useTornarPontosOficiais()
   const removerItem = useRemoverItem()
   const recalcular = useRecalcularFechamento()
   const fechar = useFecharComissao()
@@ -489,6 +492,29 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
                   />
                 )
               })}
+              {(() => {
+                const conta = f.conta_presenca ?? []
+                const comFolga = conta.includes('folga_escala')
+                return (
+                  <div className="pl-7">
+                    <Caixa
+                      rotulo="Falta injustificada tira a folga seguinte"
+                      marcado={comFolga && conta.includes('perde_folga_apos_falta')}
+                      desabilitado={!rascunho || !comFolga || definirPresenca.isPending}
+                      aoMudar={async (v) => {
+                        try {
+                          await definirPresenca.mutateAsync({
+                            id: f.id,
+                            conta: v ? [...conta, 'perde_folga_apos_falta'] : conta.filter((x) => x !== 'perde_folga_apos_falta'),
+                          })
+                        } catch (e) {
+                          avisos.erro(e)
+                        }
+                      }}
+                    />
+                  </div>
+                )
+              })()}
               <span className="text-xs text-lavanda">
                 Desmarcado: quem teve essa ausência não recebe no dia. A escolha vale para a próxima comissão também.
               </span>
@@ -557,6 +583,31 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
             acoes={
               <>
                 {confere ? <Selo tom="sucesso">Prévia confere com o banco</Selo> : sujo ? <Selo tom="ouro">Prévia</Selo> : null}
+                <Botao
+                  variante="fantasma"
+                  tamanho="p"
+                  icone={<BadgeCheck aria-hidden className="size-4" />}
+                  disabled={sujo || tornarOficiais.isPending}
+                  title={sujo ? 'Salve as alterações antes' : 'Os pontos desta comissão passam a ser os do cadastro de cada funcionário'}
+                  onClick={async () => {
+                    if (
+                      !(await avisos.confirmar({
+                        titulo: 'Tornar estes pontos oficiais?',
+                        mensagem: 'Os pontos de cada funcionário nesta comissão passam a ser os do cadastro, valendo para as próximas comissões.',
+                        textoConfirmar: 'Tornar oficiais',
+                      }))
+                    )
+                      return
+                    try {
+                      const n = await tornarOficiais.mutateAsync(f.id)
+                      avisos.sucesso(n ? `${n} funcionário(s) com pontos atualizados no cadastro` : 'O cadastro já tinha esses pontos')
+                    } catch (e) {
+                      avisos.erro(e)
+                    }
+                  }}
+                >
+                  Tornar pontos oficiais
+                </Botao>
                 {rascunho && (
                   <BotaoLink to={`/extras?aba=dias&de=${f.data_inicio}&ate=${f.data_fim}`} variante="fantasma" tamanho="p" icone={<CalendarPlus aria-hidden className="size-4" />}>
                     Dias dos extras
@@ -622,6 +673,7 @@ function Fechamento({ detalhe }: { detalhe: ComissaoDetalhe }) {
             )}
           </Cartao>
 
+          <ExtrasDoFechamento f={f} itens={itens} previa={previa} />
           {diario && <RateioDiario dias={previa.dias} itens={previa.itens} previa={sujo} />}
           <DiasDoParticipante
             item={itens.find((i) => i.id === diasAberto) ?? null}
@@ -648,6 +700,53 @@ interface PropsLista {
   diasIncluidos: number
   aoRemover(i: ComissaoDetalheItem): void
   aoVerDias(i: ComissaoDetalheItem): void
+}
+
+/** Quais extras entram nesta comissão (dias lançados no período), com pontos e valor; sem nenhum, diz como incluir. */
+function ExtrasDoFechamento({ f, itens, previa }: { f: ComissaoFechamento; itens: ComissaoDetalheItem[]; previa: ResultadoComissao }) {
+  const cadastrados = useExtras()
+  const linhas = itens.map((i, k) => ({ i, p: previa.itens[k] })).filter((x) => x.i.tipo === 'extra')
+  const ativos = (cadastrados.data ?? []).length
+  const link = `/extras?aba=dias&de=${f.data_inicio}&ate=${f.data_fim}`
+  return (
+    <Cartao
+      sobrancelha="Extras"
+      titulo={linhas.length ? `${linhas.length} extra(s) nesta comissão` : 'Nenhum extra nesta comissão'}
+      acoes={
+        <BotaoLink to={link} variante="fantasma" tamanho="p" icone={<CalendarPlus aria-hidden className="size-4" />}>
+          Lançar dias e pontos
+        </BotaoLink>
+      }
+      semPreenchimento
+    >
+      {linhas.length ? (
+        <ul aria-label="Extras nesta comissão" data-teste="extras-comissao">
+          {linhas.map(({ i, p }) => (
+            <li key={i.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-borda px-5 py-3 first:border-t-0">
+              <div className="min-w-0">
+                <p className="flex flex-wrap items-center gap-1.5 font-semibold text-creme">
+                  {i.nome}
+                  {i.pontos_pendente && <Selo tom="alerta">Pontuação pendente</Selo>}
+                </p>
+                <p className="text-xs text-lavanda">
+                  {[i.cargo, `${i.dias_presentes} dia(s) lançado(s)`, `${fmtPontos(i.pontos)} pts por dia`].filter(Boolean).join(' · ')}
+                </p>
+              </div>
+              <span className="numero font-semibold text-ouro-claro">{formatarCentavos(p?.valorCentavos ?? 0)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="px-5 pb-5 text-sm text-lavanda" data-teste="extras-comissao-vazio">
+          Extra entra na comissão quando tem dia trabalhado lançado entre {formatarData(f.data_inicio)} e {formatarData(f.data_fim)}, com os pontos do
+          dia.{' '}
+          {ativos
+            ? `Há ${ativos} extra(s) cadastrado(s): lance os dias em Extras → Dias trabalhados e recalcule.`
+            : 'Cadastre os extras em Extras (com a pontuação padrão) e lance os dias trabalhados.'}
+        </p>
+      )}
+    </Cartao>
+  )
 }
 
 /** Ausências que o gerente pode escolher pagar no dia (ordem da tela). */

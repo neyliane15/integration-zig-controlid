@@ -36,3 +36,20 @@ export function useConsultaEscala(data: string) {
     queryFn: async () => (await chamarRpc('consultas_escala_dia', { p_data: data, p_empresa: empresaId })) ?? [],
   })
 }
+
+/** Escala do período por funcionário (dias trabalhando, folgas, BH, férias); período até 93 dias. */
+export function useConsultaEscalaPeriodo(inicio: string, fim: string) {
+  const { empresaId } = useEmpresaAtual()
+  return useQuery({
+    queryKey: chaves.consultaEscalaPeriodo(empresaId, inicio, fim),
+    enabled: !!empresaId && !!inicio && !!fim,
+    queryFn: async () =>
+      ((await chamarRpc('consultas_escala_periodo', { p_inicio: inicio, p_fim: fim, p_empresa: empresaId })) ?? []).map((l) => ({
+        ...l,
+        trabalha: num(l.trabalha),
+        folgas: num(l.folgas),
+        banco_horas: num(l.banco_horas),
+        ferias: num(l.ferias),
+      })),
+  })
+}

@@ -18,6 +18,7 @@ export type MotivoPresencaDia =
   | 'abono'
   | 'banco_horas'
   | 'folga_manual'
+  | 'folga_apos_falta'
   | 'sem_batida'
   | 'folga_escala'
   | 'sem_registro'

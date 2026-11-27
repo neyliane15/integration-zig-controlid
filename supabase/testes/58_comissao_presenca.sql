@@ -193,6 +193,22 @@ select teste.erro('opção de presença inválida', $$select public.comissao_def
 select public.comissao_definir_presenca((select id from fp where nome = 'v7'), array['folga_escala']);
 select teste.ok('folga da escala que conta: Bruno entra em 02/09 (folga)',
   exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-02'));
+-- falta injustificada em 01/09 (direto na tabela) seguida da folga de 02/09: com "perde a folga", 02/09 não paga
+select teste.como_dono();
+insert into public.funcionario_faltas (empresa_id, funcionario_id, data, tipo, criado_por_nome)
+values ('e5800000-0000-4000-8000-00000000000a', 'e5800000-0000-4000-8000-000000000302', '2026-09-01', 'injustificada', 'teste');
+select teste.como('cp.ger@teste.local');
+select public.comissao_definir_presenca((select id from fp where nome = 'v7'), array['folga_escala', 'perde_folga_apos_falta']);
+select teste.ok('perde a folga depois da falta injustificada: Bruno fora de 02/09 (motivo folga_apos_falta)',
+  not exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-02')
+  and (select e ->> 'motivo' from jsonb_array_elements(public.comissao_detalhe((select id from fp where nome = 'v7')) -> 'itens') i,
+              jsonb_array_elements(i -> 'entrada') e where i ->> 'nome' = 'Bruno Lima' and e ->> 'data' = '2026-09-02') = 'folga_apos_falta');
+select public.comissao_definir_presenca((select id from fp where nome = 'v7'), array['folga_escala']);
+select teste.ok('sem "perde a folga", a folga depois da falta paga',
+  exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-02'));
+select teste.como_dono();
+delete from public.funcionario_faltas where funcionario_id = 'e5800000-0000-4000-8000-000000000302' and data = '2026-09-01';
+select teste.como('cp.ger@teste.local');
 select public.comissao_definir_presenca((select id from fp where nome = 'v7'), '{}');
 select teste.ok('sem a opção, Bruno fica fora da folga de 02/09',
   not exists (select 1 from vri where funcionario_nome = 'Bruno Lima' and data = '2026-09-02'));
@@ -254,6 +270,15 @@ select teste.ok('trabalhou manual: Ana entra em 03/09 com origem manual',
   exists (select 1 from vri where funcionario_nome = 'Ana Souza' and data = '2026-09-03')
   and (select e ->> 'origem' from jsonb_array_elements(public.comissao_detalhe((select id from fp where nome = 'v7')) -> 'itens') i,
               jsonb_array_elements(i -> 'entrada') e where i ->> 'nome' = 'Ana Souza' and e ->> 'data' = '2026-09-03') = 'manual');
+select teste.como_dono();
+update public.funcionarios set pontos_comissao = 1 where id = 'e5800000-0000-4000-8000-000000000301';
+select teste.como('cp.ger@teste.local');
+create temp table _copiados on commit drop as select public.comissao_pontos_para_cadastro((select id from fp where nome = 'v7')) as n;
+select teste.ok('tornar pontos oficiais: copia os pontos do fechamento para o cadastro',
+  (select n from _copiados) >= 1
+  and public.pontos_vigentes('e5800000-0000-4000-8000-000000000301', '2026-12-01')
+      = (select it.pontos from public.comissao_itens it where it.fechamento_id = (select id from fp where nome = 'v7')
+           and it.funcionario_id = 'e5800000-0000-4000-8000-000000000301'));
 select teste.erro('dia fora do período', $$select public.comissao_definir_presenca_dia((select id from fp where nome = 'v7'), 'e5800000-0000-4000-8000-000000000301', '2026-10-01', true)$$,
   'Dia fora do período do fechamento', '22023');
 select public.comissao_definir_presenca_dia((select id from fp where nome = 'v7'), 'e5800000-0000-4000-8000-000000000301', '2026-09-01', null);

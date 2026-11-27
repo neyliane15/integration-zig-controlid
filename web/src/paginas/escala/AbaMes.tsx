@@ -500,6 +500,7 @@ export function AbaMes({
                       <LinhaMembro
                         key={x.funcionario_id}
                         membro={x}
+                        area={nomeArea(s, x.area)}
                         listrada={k % 2 === 1}
                         r={inicio + k}
                         totalLinhas={linhas.length}
@@ -565,8 +566,15 @@ export function AbaMes({
 
 // ------------------------------------------------------------------ linha / célula
 
+/** nome da área do caminho no mês (só quando o setor usa áreas: nomes definidos ou rodízio ligado) */
+function nomeArea(s: EscalaSetorMes, area: number | null | undefined): string | null {
+  if (area == null || (!(s.areas ?? []).some((n) => n.trim()) && !s.rodizio_areas_desde)) return null;
+  return s.areas?.[area - 1]?.trim() || `Área ${area}`;
+}
+
 function LinhaMembro({
   membro,
+  area,
   listrada,
   r,
   totalLinhas,
@@ -579,6 +587,8 @@ function LinhaMembro({
   tabela,
 }: {
   membro: EscalaMembroMes;
+  /** área do mês (rodízio de área) */
+  area?: string | null;
   /** linhas alternadas em dois tons (como "formatar como tabela" do Excel) */
   listrada: boolean;
   limite: { min: string; max: string };
@@ -598,12 +608,17 @@ function LinhaMembro({
           "sticky left-0 z-10 max-w-[190px] min-w-[118px] truncate border-b border-borda px-2 py-1 text-xs font-semibold text-creme",
           listrada ? "bg-linha-listrada" : "bg-cartao",
         )}
-        title={membro.nome}
+        title={area ? `${membro.nome} · ${area}` : membro.nome}
       >
         {membro.nome}
         {membro.chegada_padrao && (
           <small className="ml-1 text-[10px] font-semibold text-lavanda">
             {horaParaChegada(membro.chegada_padrao)}
+          </small>
+        )}
+        {area && (
+          <small className="ml-1 rounded bg-acento-suave px-1 text-[10px] font-semibold text-ouro-claro" data-teste="area">
+            {area}
           </small>
         )}
       </td>

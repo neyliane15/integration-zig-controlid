@@ -262,7 +262,8 @@ create or replace function public.comissao_presenca(p_empresa uuid, p_inicio dat
                                                     p_conta text[] default '{}', p_fechamento uuid default null)
 returns table (funcionario_id uuid, data date, presente boolean, fallback boolean, bloqueado boolean, motivo text, origem text)
 language sql stable security definer rows 200 set search_path = public, extensions, pg_temp set jit = off as $$
-  with dias as (select g::date as d from generate_series(p_inicio, p_fim, interval '1 day') g),
+  -- 7 dias antes do início: para saber se a folga do começo do período vem logo depois de uma falta injustificada
+  with dias as (select g::date as d from generate_series(p_inicio - 7, p_fim, interval '1 day') g),
   fu as (
     select f.id, f.data_admissao, f.data_desligamento,
            -- quem não bate ponto (dispensa_ponto) nunca fica "sem batida": vale a escala
@@ -275,10 +276,10 @@ language sql stable security definer rows 200 set search_path = public, extensio
   ),
   ponto_emp as (
     select distinct pd.data from public.ponto_dias pd
-     where pd.empresa_id = p_empresa and pd.data between p_inicio and p_fim and pd.batidas_validas > 0
+     where pd.empresa_id = p_empresa and pd.data between p_inicio - 7 and p_fim and pd.batidas_validas > 0
   ),
   esc as materialized (
-    select e.funcionario_id, e.data, e.status from public.escala_calcular(p_empresa, p_inicio, p_fim, p_funcionario) e
+    select e.funcionario_id, e.data, e.status from public.escala_calcular(p_empresa, p_inicio - 7, p_fim, p_funcionario) e
   ),
   m as (
     select fu.id, dd.d,
@@ -305,9 +306,18 @@ language sql stable security definer rows 200 set search_path = public, extensio
       left join esc on esc.funcionario_id = fu.id and esc.data = dd.d
       left join ponto_emp pe on pe.data = dd.d
   )
+  -- folga logo depois de falta injustificada (sequência de folgas seguida à falta): perde a folga paga
+  , g as (select m.*, count(*) filter (where m.motivo is distinct from 'folga_escala')
+                        over (partition by m.id order by m.d rows unbounded preceding) as grp
+            from m)
+  , m2 as (select g.id, g.d, g.origem_bruta,
+                  case when g.motivo = 'folga_escala' and 'perde_folga_apos_falta' = any (coalesce(p_conta, '{}'))
+                            and first_value(g.motivo) over (partition by g.id, g.grp order by g.d) = 'falta_injustificada'
+                       then 'folga_apos_falta' else g.motivo end as motivo
+             from g)
   , r as (select m.*, coalesce(m.motivo = any (coalesce(p_conta, '{}')), false) as conta,
                 case when m.motivo is distinct from 'fora_vinculo' then pm.presente end as manual
-             from m
+             from m2 m
              left join public.comissao_presenca_manual pm
                on pm.fechamento_id = p_fechamento and pm.funcionario_id = m.id and pm.data = m.d)
   select r.id, r.d,
@@ -315,11 +325,13 @@ language sql stable security definer rows 200 set search_path = public, extensio
          r.manual is null and coalesce(r.motivo = 'sem_registro', false),
          case when r.manual is not null then not r.manual
               else coalesce(not r.conta and r.motivo in ('fora_vinculo', 'falta_justificada', 'falta_injustificada', 'suspensao',
-                                                         'ferias', 'atestado', 'abono', 'banco_horas'), false) end,
+                                                         'ferias', 'atestado', 'abono', 'banco_horas', 'folga_apos_falta'),
+                                  false) end,
          case when r.manual then null when r.manual = false then 'folga_manual' else r.motivo end,
          case when r.manual then 'manual' when r.manual is not null then null
               when r.motivo is null then r.origem_bruta when r.conta then 'regra' end
     from r
+   where r.d >= p_inicio
 $$;
 comment on function public.comissao_presenca(uuid, date, date, uuid, text[], uuid) is
   '[interno] Presença de cada funcionário em cada dia para a comissão (adendo extras v3, §E.7.1); p_conta: ausências que contam; p_fechamento: dias marcados à mão.';
@@ -616,6 +628,28 @@ end $$;
 comment on function public.comissao_fechar(uuid) is '[api] Recalcula e fecha (administrador). Depois é imutável.';
 
 -- ================================================================ detalhe (adendo E.3.4 + v3 §E.7.7)
+-- ================================================================ pontos do fechamento → cadastro
+create or replace function public.comissao_pontos_para_cadastro(p_fechamento uuid)
+returns int language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare fc public.comissao_fechamentos; v_n int;
+begin
+  select * into fc from public.comissao_fechamentos where id = p_fechamento;
+  if not found then raise exception 'Fechamento não encontrado' using errcode = 'P0002'; end if;
+  if public.pode_operar(fc.empresa_id) is not true then raise exception 'Sem permissão' using errcode = '42501'; end if;
+  -- vale também para fechamento já fechado (copiar os pontos de uma comissão antiga); só funcionários ativos
+  with u as (
+    update public.funcionarios f set pontos_comissao = it.pontos
+      from public.comissao_itens it
+     where it.fechamento_id = fc.id and it.tipo = 'funcionario' and it.funcionario_id = f.id
+       and f.ativo and f.pontos_comissao is distinct from it.pontos
+    returning f.id
+  )
+  select count(*) into v_n from u;
+  return v_n;
+end $$;
+comment on function public.comissao_pontos_para_cadastro(uuid) is
+  '[api] Copia os pontos dos funcionários do fechamento para o cadastro (pontos oficiais a partir de hoje); devolve quantos mudaram.';
+
 -- ================================================================ dia marcado à mão (trabalhou / folga)
 create or replace function public.comissao_definir_presenca_dia(p_fechamento uuid, p_funcionario uuid, p_data date, p_presente boolean)
 returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -649,7 +683,8 @@ declare fc public.comissao_fechamentos; v text[];
 begin
   fc := public.comissao_rascunho_para_editar(p_fechamento);
   select coalesce(array_agg(distinct x order by x), '{}') into v from unnest(coalesce(p_conta, '{}')) x;
-  if not v <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias', 'folga_escala']::text[] then
+  if not v <@ array['falta_justificada', 'falta_injustificada', 'atestado', 'banco_horas', 'ferias', 'folga_escala',
+                    'perde_folga_apos_falta']::text[] then
     raise exception 'Opção de presença inválida' using errcode = '22023';
   end if;
   update public.comissao_fechamentos set conta_presenca = v where id = fc.id;
