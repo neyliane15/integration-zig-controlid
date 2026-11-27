@@ -189,6 +189,15 @@ export function useDefinirPresenca() {
   )
 }
 
+/** Copia os pontos dos funcionários do fechamento para o cadastro (pontos oficiais); devolve quantos mudaram. */
+export function useTornarPontosOficiais() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => chamarRpc('comissao_pontos_para_cadastro', { p_fechamento: id }),
+    onSuccess: () => invalidar(qc, 'funcionarios', 'funcionario', 'comissoes', 'fechamento'),
+  })
+}
+
 /** Marca à mão um dia do funcionário: true = trabalhou, false = folga, null = automático (recalcula). */
 export function useDefinirPresencaDia() {
   return useMutacaoComissao((a: { id: string; funcionarioId: string; data: string; presente: boolean | null }) =>

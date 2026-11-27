@@ -34,6 +34,7 @@ export const chaves = {
   ocorrenciasContagem: (empresaId: Id) => ['ocorrencias-contagem', empresaId ?? null] as const,
   consultaPonto: (empresaId: Id, inicio: string, fim: string) => ['consulta-ponto', empresaId ?? null, inicio, fim] as const,
   consultaEscala: (empresaId: Id, data: string) => ['consulta-escala', empresaId ?? null, data] as const,
+  consultaEscalaPeriodo: (empresaId: Id, inicio: string, fim: string) => ['consulta-escala', empresaId ?? null, inicio, fim] as const,
   ocorrenciasPonto: (empresaId: Id, funcionarioId: Id, inicio: string, fim: string) =>
     ['ocorrencias-ponto', empresaId ?? null, funcionarioId ?? null, inicio, fim] as const,
   extras: (empresaId: Id, incluirInativos: boolean) => ['extras', empresaId ?? null, incluirInativos] as const,

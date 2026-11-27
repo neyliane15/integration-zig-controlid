@@ -766,12 +766,21 @@ export interface ComissaoDetalheItem {
 }
 /** Motivo de não estar presente no dia (§E.7.1). */
 /** Ausências que o fechamento pode contar como presença (`comissao_definir_presenca`). */
-export type AusenciaQueConta = 'falta_justificada' | 'falta_injustificada' | 'atestado' | 'banco_horas' | 'ferias' | 'folga_escala'
+export type AusenciaQueConta =
+  | 'falta_justificada'
+  | 'falta_injustificada'
+  | 'atestado'
+  | 'banco_horas'
+  | 'ferias'
+  | 'folga_escala'
+  /** com folga_escala: a folga logo depois de falta injustificada não paga */
+  | 'perde_folga_apos_falta'
 
 export type MotivoPresenca =
   | 'fora_vinculo'
   | 'banco_horas'
   | 'folga_manual'
+  | 'folga_apos_falta'
   | 'falta_justificada'
   | 'falta_injustificada'
   | 'suspensao'
@@ -1157,6 +1166,17 @@ export interface LinhaConsultaEscala {
   ajustado: boolean
 }
 
+/** `consultas_escala_periodo`: escala do período por funcionário. */
+export interface LinhaConsultaEscalaPeriodo {
+  funcionario_id: Uuid
+  funcionario_nome: string
+  setor: string
+  trabalha: number
+  folgas: number
+  banco_horas: number
+  ferias: number
+}
+
 export interface PainelDoDia {
   empresa_id: Uuid
   dia_trabalho: DataISO
@@ -1233,6 +1253,8 @@ export interface EscalaDiaFuncionario extends EscalaDiaMembro {
 export interface EscalaCaminho {
   caminho: number
   funcionarios: Uuid[]
+  /** escala_semana: área (1..N) em que o caminho trabalha no mês da semana */
+  area?: number | null
 }
 export interface EscalaMembroMes {
   membro_id: Uuid
@@ -1244,6 +1266,8 @@ export interface EscalaMembroMes {
   caminho: number | null
   posicao: number | null
   folga_fixa: boolean
+  /** área (1..N) do caminho no mês (rodízio mensal de área); null = folga fixa */
+  area?: number | null
   trabalha: number
   folgas: number
   ferias: number
@@ -1258,6 +1282,10 @@ export interface EscalaSetorMes {
   nome: string
   ordem: number
   fase: number
+  /** nomes das áreas, na ordem dos caminhos */
+  areas?: string[]
+  /** mês de partida do rodízio mensal de área (null = desligado) */
+  rodizio_areas_desde?: DataISO | null
   caminhos: EscalaCaminho[]
   membros: EscalaMembroMes[]
   na_escala: number[]
@@ -1293,6 +1321,8 @@ export interface EscalaSetorSemana {
   ordem: number
   fase: number
   total: number
+  areas?: string[]
+  rodizio_areas_desde?: DataISO | null
   caminhos: (EscalaCaminho & { nomes: string[] })[]
   membros: EscalaMembroSemana[]
   na_escala_base: number[]
@@ -1454,6 +1484,7 @@ export interface Rpcs {
   }
   comissao_definir_extra: { args: { p_fechamento: Uuid; p_extra: Uuid; p_incluido: boolean }; retorno: null }
   comissao_definir_presenca: { args: { p_fechamento: Uuid; p_conta: AusenciaQueConta[] }; retorno: null }
+  comissao_pontos_para_cadastro: { args: { p_fechamento: Uuid }; retorno: number }
   comissao_definir_presenca_dia: { args: { p_fechamento: Uuid; p_funcionario: Uuid; p_data: DataISO; p_presente: boolean | null }; retorno: null }
   comissao_detalhe: { args: { p_fechamento: Uuid }; retorno: ComissaoDetalhe }
   comissao_remover_item: { args: { p_fechamento: Uuid; p_funcionario: Uuid }; retorno: null }
@@ -1495,6 +1526,7 @@ export interface Rpcs {
   ocorrencias_resumo: { args: { p_dias?: number; p_empresa?: Uuid | null }; retorno: ResumoOcorrencias }
   consultas_ponto_resumo: { args: { p_inicio: DataISO; p_fim: DataISO; p_empresa?: Uuid | null }; retorno: LinhaConsultaPonto[] }
   consultas_escala_dia: { args: { p_data: DataISO; p_empresa?: Uuid | null }; retorno: LinhaConsultaEscala[] }
+  consultas_escala_periodo: { args: { p_inicio: DataISO; p_fim: DataISO; p_empresa?: Uuid | null }; retorno: LinhaConsultaEscalaPeriodo[] }
   ocorrencias_ponto: {
     args: { p_inicio: DataISO; p_fim: DataISO; p_funcionario?: Uuid | null; p_empresa?: Uuid | null }
     retorno: OcorrenciaPonto[]
@@ -1619,6 +1651,7 @@ export interface Rpcs {
     args: { p_ancora: DataISO; p_fase?: number; p_empresa?: Uuid | null }
     retorno: { empresa_id: Uuid; ancora: DataISO; fase: number }
   }
+  escala_definir_areas: { args: { p_setor: Uuid; p_rodizio: boolean; p_areas?: string[] | null }; retorno: null }
   escala_salvar_setor: {
     args: { p_nome: string; p_ordem?: number | null; p_fase?: number; p_setor?: Uuid | null; p_empresa?: Uuid | null }
     retorno: Uuid

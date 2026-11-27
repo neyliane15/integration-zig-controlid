@@ -106,6 +106,9 @@ select teste.ok('escala_mes: cabeçalho e dias', (select (x ->> 'configurada', x
   = ('true', '2026-11-02', 30, '0', '-1', 'true') from public.escala_mes('2026-11') x));
 select teste.ok('escala_mes: caminho na ordem das posições', (select s -> 'caminhos' -> 0 -> 'funcionarios' ->> 3 from jsonb_array_elements(public.escala_mes('2026-11') -> 'setores') s where s ->> 'nome' = 'Salão')
   = 'e7600000-0000-4000-8000-000000000304');
+select teste.ok('consultas_escala_periodo: Chef em nov/2026 = 25 trabalhando, 4 folgas',
+  (select (trabalha, folgas, banco_horas, ferias) = (25, 4, 0, 0) from public.consultas_escala_periodo('2026-11-01', '2026-11-30')
+    where funcionario_id = 'e7600000-0000-4000-8000-000000000305'));
 select teste.ok('escala_mes: contagens do mês do Chef', (select (m ->> 'trabalha', m ->> 'folgas', m ->> 'folga_fixa') = ('25', '4', 'true')
   from jsonb_array_elements(public.escala_mes('2026-11') -> 'setores') s, jsonb_array_elements(s -> 'membros') m where s ->> 'nome' = 'Cozinha'));
 select teste.erro('mês inválido', $$select public.escala_mes('2026-13')$$, 'Mês inválido (use AAAA-MM)', '22023');
@@ -236,6 +239,23 @@ select teste.ok('caminho do Maître: Maître 2 → Maître 1 → Recepção → 
   and (select m ->> 'folga_fixa' from jsonb_array_elements(public.escala_semana('2026-11-02') -> 'setores') s, jsonb_array_elements(s -> 'membros') m
         where m ->> 'nome' = 'Gerente') = 'true');
 select teste.ok('dois caminhos na Cozinha e no Salão', (select count(*) from jsonb_array_elements(public.escala_semana() -> 'setores') s, jsonb_array_elements(s -> 'caminhos') c) = 8);
+-- rodízio mensal de área (Salão, 2 caminhos): nov (mês de partida) caminho 1 → área 1; dez caminho 1 → área 2; jan volta
+select public.escala_definir_areas((select id from public.escala_setores where nome = 'Salão'), true, array['Salão', 'Varanda']);
+select teste.ok('rodízio de área: nov caminho 1 na área 1, dez na área 2, jan na área 1; nomes guardados',
+  (select (s -> 'caminhos' -> 0 ->> 'area', s -> 'caminhos' -> 1 ->> 'area', s -> 'areas' ->> 1)
+     from jsonb_array_elements(public.escala_semana('2026-11-02') -> 'setores') s where s ->> 'nome' = 'Salão') = ('1'::text, '2'::text, 'Varanda'::text)
+  and (select array_agg(distinct (m ->> 'caminho') || '>' || (m ->> 'area'))
+         from jsonb_array_elements(public.escala_mes('2026-12') -> 'setores') s, jsonb_array_elements(s -> 'membros') m
+        where s ->> 'nome' = 'Salão' and m ->> 'caminho' is not null) = array['1>2', '2>1']
+  and (select array_agg(distinct (m ->> 'caminho') || '>' || (m ->> 'area'))
+         from jsonb_array_elements(public.escala_mes('2027-01') -> 'setores') s, jsonb_array_elements(s -> 'membros') m
+        where s ->> 'nome' = 'Salão' and m ->> 'caminho' is not null) = array['1>1', '2>2']);
+select public.escala_definir_areas((select id from public.escala_setores where nome = 'Salão'), false);
+select teste.ok('rodízio desligado: cada caminho na própria área (nomes mantidos)',
+  (select array_agg(distinct (m ->> 'caminho') || '>' || (m ->> 'area'))
+     from jsonb_array_elements(public.escala_mes('2026-12') -> 'setores') s, jsonb_array_elements(s -> 'membros') m
+    where s ->> 'nome' = 'Salão' and m ->> 'caminho' is not null) = array['1>1', '2>2']
+  and (select areas from public.escala_setores where nome = 'Salão') = array['Salão', 'Varanda']);
 select teste.ok('funcionário provisório: cargo = função, 0 pontos, sem jornada',
   (select (cargo, pontos_comissao) = ('Cumim'::text, 0::numeric) from public.funcionarios where nome = 'Cumim 2')
   and not exists (select 1 from public.funcionario_jornadas fj join public.funcionarios f on f.id = fj.funcionario_id where f.nome = 'Cumim 2'));

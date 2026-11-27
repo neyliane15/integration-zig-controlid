@@ -372,6 +372,17 @@ export function useSalvarSetor() {
   );
 }
 
+/** Nomes das áreas do setor (na ordem dos caminhos) e rodízio mensal de área. */
+export function useDefinirAreas() {
+  return useMutacaoEscala((a: { setorId: string; rodizio: boolean; areas: string[] }) =>
+    chamarRpc("escala_definir_areas", {
+      p_setor: a.setorId,
+      p_rodizio: a.rodizio,
+      p_areas: a.areas,
+    }),
+  );
+}
+
 export function useExcluirSetor() {
   return useMutacaoEscala((setorId: string) =>
     chamarRpc("escala_excluir_setor", { p_setor: setorId }),

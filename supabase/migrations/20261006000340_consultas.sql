@@ -62,3 +62,28 @@ begin
 end $$;
 comment on function public.consultas_escala_dia(date, uuid) is
   '[api] Consultas: escala de um dia (status trabalha/folga/ferias/banco_horas/fora e chegada) (G A M L).';
+
+-- Escala do período por funcionário: dias trabalhando, folgas, folgas de BH e férias (G A M L).
+create or replace function public.consultas_escala_periodo(p_inicio date, p_fim date, p_empresa uuid default null)
+returns table (funcionario_id uuid, funcionario_nome text, setor text, trabalha int, folgas int, banco_horas int, ferias int)
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_empresa uuid;
+begin
+  v_empresa := public.ponto_resolver_empresa(p_empresa, 'ler');
+  if p_inicio is null or p_fim is null or p_fim < p_inicio or p_fim - p_inicio > 92 then
+    raise exception 'Período inválido (máximo de 93 dias)' using errcode = '22023';
+  end if;
+  return query
+  select c.funcionario_id, f.nome, s.nome,
+         count(*) filter (where c.status = 'trabalha')::int,
+         count(*) filter (where c.status = 'folga')::int,
+         count(*) filter (where c.status = 'banco_horas')::int,
+         count(*) filter (where c.status = 'ferias')::int
+    from public.escala_calcular(v_empresa, p_inicio, p_fim) c
+    join public.funcionarios f on f.id = c.funcionario_id
+    join public.escala_setores s on s.id = c.setor_id
+   group by c.funcionario_id, f.nome, s.nome, s.ordem
+   order by s.ordem, s.nome, f.nome;
+end $$;
+comment on function public.consultas_escala_periodo(date, date, uuid) is
+  '[api] Consultas: escala do período por funcionário (dias trabalhando, folgas, folgas de BH, férias) (G A M L).';

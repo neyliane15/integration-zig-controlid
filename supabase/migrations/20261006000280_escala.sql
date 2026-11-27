@@ -29,6 +29,10 @@ create table if not exists public.escala_setores (
 create unique index if not exists escala_setores_nome_uk on public.escala_setores (empresa_id, lower(btrim(nome)));
 create index if not exists escala_setores_empresa_idx on public.escala_setores (empresa_id, ordem);
 comment on table public.escala_setores is '[api:leitura] Setores da escala (Salão, Bar, Cozinha...).';
+-- Rodízio mensal de área: cada caminho trabalha numa área (nomes em "areas", na ordem dos caminhos); com o rodízio
+-- ligado (desde o mês de rodizio_areas_desde), a cada mês a equipe de um caminho passa para a área seguinte.
+alter table public.escala_setores add column if not exists areas text[] not null default '{}';
+alter table public.escala_setores add column if not exists rodizio_areas_desde date;
 
 create table if not exists public.escala_membros (
   id              uuid primary key default gen_random_uuid(),
@@ -510,6 +514,40 @@ begin
 end $$;
 comment on function public.escala_configurar(date, int, uuid) is '[api] Define a data-âncora (segunda) e a fase da escala; reapura.';
 
+-- Área (1..N) do caminho no mês da data: N = caminhos do setor; sem rodízio, a área é a ordem do próprio caminho.
+create or replace function public.escala_area(p_setor uuid, p_caminho smallint, p_data date)
+returns smallint language sql stable security definer set search_path = public, extensions, pg_temp as $$
+  with cams as (select distinct m.caminho from public.escala_membros m where m.setor_id = p_setor and m.caminho is not null),
+  r as (select c.caminho, (row_number() over (order by c.caminho))::int as ordem, (count(*) over ())::int as n from cams c)
+  select case when p_caminho is null then null
+              when s.rodizio_areas_desde is null then r.ordem
+              else ((((r.ordem - 1
+                       + ((extract(year from p_data)::int * 12 + extract(month from p_data)::int)
+                          - (extract(year from s.rodizio_areas_desde)::int * 12 + extract(month from s.rodizio_areas_desde)::int)))
+                      % r.n) + r.n) % r.n) + 1 end::smallint
+    from public.escala_setores s join r on r.caminho = p_caminho
+   where s.id = p_setor
+$$;
+comment on function public.escala_area(uuid, smallint, date) is '[interno] Área (1..N) em que o caminho trabalha no mês da data (rodízio mensal).';
+
+create or replace function public.escala_definir_areas(p_setor uuid, p_rodizio boolean, p_areas text[] default null)
+returns void language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare s public.escala_setores; v_areas text[];
+begin
+  s := public.escala_setor_para_operar(p_setor);
+  select coalesce(array_agg(left(btrim(coalesce(x, '')), 40) order by i), '{}') into v_areas
+    from unnest(coalesce(p_areas, s.areas)) with ordinality t(x, i);
+  if cardinality(v_areas) > 20 then raise exception 'No máximo 20 áreas' using errcode = '22023'; end if;
+  update public.escala_setores
+     set areas = v_areas,
+         -- ligar: o mês atual é o mês de partida (caminho 1 na área 1); desligar: cada caminho volta à própria área
+         rodizio_areas_desde = case when not coalesce(p_rodizio, false) then null
+                                    else coalesce(s.rodizio_areas_desde, date_trunc('month', public.escala_hoje(s.empresa_id))::date) end
+   where id = s.id;
+end $$;
+comment on function public.escala_definir_areas(uuid, boolean, text[]) is
+  '[api] Nomes das áreas do setor (na ordem dos caminhos) e rodízio mensal de área ligado/desligado (G A M).';
+
 create or replace function public.escala_salvar_setor(p_nome text, p_ordem int default null, p_fase int default 0,
                                                       p_setor uuid default null, p_empresa uuid default null)
 returns uuid language plpgsql security definer set search_path = public, extensions, pg_temp as $$
@@ -889,6 +927,7 @@ begin
       'setores', coalesce((
         select jsonb_agg(jsonb_build_object(
                  'id', s.id, 'nome', s.nome, 'ordem', s.ordem, 'fase', s.fase,
+                 'areas', to_jsonb(s.areas), 'rodizio_areas_desde', s.rodizio_areas_desde,
                  'caminhos', coalesce((select jsonb_agg(jsonb_build_object('caminho', cm.caminho, 'funcionarios', cm.funcs) order by cm.caminho)
                                          from (select m.caminho, jsonb_agg(m.funcionario_id order by m.posicao, m.id) as funcs
                                                  from mem m where m.setor_id = s.id and m.caminho is not null group by m.caminho) cm), '[]'),
@@ -897,6 +936,7 @@ begin
                             'membro_id', m.id, 'funcionario_id', m.funcionario_id, 'nome', m.nome, 'cargo', m.cargo,
                             'chegada_padrao', public.escala_hora(m.chegada_padrao), 'folgas_base', to_jsonb(m.folgas_base),
                             'caminho', m.caminho, 'posicao', m.posicao, 'folga_fixa', m.caminho is null,
+                            'area', public.escala_area(s.id, m.caminho, v_ini),
                             'trabalha', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'trabalha'),
                             'folgas', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'folga'),
                             'ferias', (select count(*) from calc c where c.funcionario_id = m.funcionario_id and c.status = 'ferias'),
@@ -950,7 +990,9 @@ begin
         select jsonb_agg(jsonb_build_object(
                  'id', s.id, 'nome', s.nome, 'ordem', s.ordem, 'fase', s.fase,
                  'total', (select count(*) from mem m where m.setor_id = s.id),
-                 'caminhos', coalesce((select jsonb_agg(jsonb_build_object('caminho', cm.caminho, 'funcionarios', cm.funcs, 'nomes', cm.nomes)
+                 'areas', to_jsonb(s.areas), 'rodizio_areas_desde', s.rodizio_areas_desde,
+                 'caminhos', coalesce((select jsonb_agg(jsonb_build_object('caminho', cm.caminho, 'funcionarios', cm.funcs, 'nomes', cm.nomes,
+                                                                           'area', public.escala_area(s.id, cm.caminho, v_seg))
                                                         order by cm.caminho)
                                          from (select m.caminho, jsonb_agg(m.funcionario_id order by m.posicao, m.id) as funcs,
                                                       jsonb_agg(m.nome order by m.posicao, m.id) as nomes

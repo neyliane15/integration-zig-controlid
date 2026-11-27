@@ -16,6 +16,7 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react'
+import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Inbox, RotateCcw, X } from 'lucide-react'
 import { centavosParaTexto, hojeISO, somarDias, textoParaCentavos } from '@/lib/formato'
@@ -844,7 +845,9 @@ export function Modal({
   }, [aberto])
 
   if (!aberto) return null
-  return (
+  // no <body>: dentro de uma página com animação de entrada (transform), o "fixed" ficava preso à página e a janela
+  // abria deslocada (cortada no computador, fora da tela no celular)
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-6">
       <div aria-hidden className="modal-fundo absolute inset-0 bg-veu/60 backdrop-blur-[2px]" onClick={aoFechar} />
       <div
@@ -889,7 +892,8 @@ export function Modal({
           </footer>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

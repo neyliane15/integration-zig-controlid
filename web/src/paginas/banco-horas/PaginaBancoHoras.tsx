@@ -2,16 +2,28 @@ import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Download, Hourglass, Plus, Search } from 'lucide-react'
 import type { LinhaBancoHorasResumo } from '@/tipos/banco'
-import { Botao, CabecalhoPagina, Campo, Entrada, EntradaData, ErroCarga, Indicador, Tabela, Vazio, type Coluna } from '@/componentes/ui'
+import { Botao, CabecalhoPagina, Campo, Entrada, EntradaData, ErroCarga, Indicador, Selecao, Tabela, Vazio, type Coluna } from '@/componentes/ui'
 import { TextoSaldo } from '@/componentes/dominio/Selos'
 import { useContextoEmpresa } from '@/consultas/funcionarios'
 import { useBancoHorasResumo } from '@/consultas/bancoHoras'
+import { useEscalaMes } from '@/consultas/escala'
 import { usePerfil } from '@/lib/sessao'
 import { podeAdministrar, podeOperar } from '@/lib/permissoes'
 import { formatarData, formatarMinutos, normalizar, somarDias } from '@/lib/formato'
 import { baixarCsv, gerarCsv, minutosCsv, nomeArquivoCsv } from '@/lib/csv'
 import { dataValida } from '@/lib/ponto'
 import { ModalLancamento } from './ModalLancamento'
+
+type Ordem = 'nome' | 'maior' | 'menor' | 'maior_mes' | 'menor_mes'
+type Situacao = 'todos' | 'positivos' | 'negativos' | 'zerados'
+
+const ORDENS: { id: Ordem; rotulo: string }[] = [
+  { id: 'nome', rotulo: 'Nome (A a Z)' },
+  { id: 'maior', rotulo: 'Maior saldo' },
+  { id: 'menor', rotulo: 'Menor saldo' },
+  { id: 'maior_mes', rotulo: 'Maior no mês' },
+  { id: 'menor_mes', rotulo: 'Menor no mês' },
+]
 
 export function PaginaBancoHoras() {
   const perfil = usePerfil()
@@ -24,16 +36,40 @@ export function PaginaBancoHoras() {
   const ate = dataValida(ateParam) ? ateParam : null
   const referencia = ate ?? ontem
   const [busca, setBusca] = useState('')
+  const [ordem, setOrdem] = useState<Ordem>('nome')
+  const [situacao, setSituacao] = useState<Situacao>('todos')
+  const [setor, setSetor] = useState('')
+  // setor de cada funcionário pela escala do mês de referência
+  const escala = useEscalaMes(referencia.slice(0, 7))
+  const setorDe = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const s of escala.data?.setores ?? []) for (const x of s.membros) m.set(x.funcionario_id, s.nome)
+    return m
+  }, [escala.data])
+  const setores = useMemo(() => (escala.data?.setores ?? []).map((s) => s.nome), [escala.data])
   const [lancar, setLancar] = useState(false)
 
   const resumo = useBancoHorasResumo(ate)
 
   const linhas = useMemo(() => {
     const termo = normalizar(busca)
+    const porNome = (a: LinhaBancoHorasResumo, b: LinhaBancoHorasResumo) => a.funcionario_nome.localeCompare(b.funcionario_nome, 'pt-BR')
+    const comparar: Record<Ordem, (a: LinhaBancoHorasResumo, b: LinhaBancoHorasResumo) => number> = {
+      nome: porNome,
+      maior: (a, b) => b.saldo_minutos - a.saldo_minutos || porNome(a, b),
+      menor: (a, b) => a.saldo_minutos - b.saldo_minutos || porNome(a, b),
+      maior_mes: (a, b) => b.saldo_mes_minutos - a.saldo_mes_minutos || porNome(a, b),
+      menor_mes: (a, b) => a.saldo_mes_minutos - b.saldo_mes_minutos || porNome(a, b),
+    }
     return (resumo.data ?? [])
       .filter((l) => !termo || normalizar(`${l.funcionario_nome} ${l.cargo ?? ''}`).includes(termo))
-      .sort((a, b) => a.funcionario_nome.localeCompare(b.funcionario_nome, 'pt-BR'))
-  }, [resumo.data, busca])
+      .filter((l) =>
+        situacao === 'positivos' ? l.saldo_minutos > 0 : situacao === 'negativos' ? l.saldo_minutos < 0 : situacao === 'zerados' ? l.saldo_minutos === 0 : true,
+      )
+      .filter((l) => !setor || (setor === '__sem' ? !setorDe.has(l.funcionario_id) : setorDe.get(l.funcionario_id) === setor))
+      .sort(comparar[ordem])
+  }, [resumo.data, busca, situacao, setor, setorDe, ordem])
+  const filtrando = !!busca || situacao !== 'todos' || !!setor
 
   const totais = useMemo(() => {
     const t = { credito: 0, debito: 0, negativos: 0 }
@@ -62,7 +98,9 @@ export function PaginaBancoHoras() {
       render: (l) => (
         <div className="min-w-0">
           <p className="truncate font-semibold text-creme">{l.funcionario_nome}</p>
-          {l.cargo && <p className="text-xs text-lavanda">{l.cargo}</p>}
+          {(l.cargo || setorDe.get(l.funcionario_id)) && (
+            <p className="text-xs text-lavanda">{[...new Set([l.cargo, setorDe.get(l.funcionario_id)].filter(Boolean))].join(' · ')}</p>
+          )}
         </div>
       ),
     },
@@ -106,12 +144,40 @@ export function PaginaBancoHoras() {
         <Indicador rotulo="Funcionários negativos" valor={totais.negativos} tom={totais.negativos ? 'alerta' : undefined} />
       </div>
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_200px]">
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))_minmax(0,11rem)]">
         <Campo rotulo="Buscar" htmlFor="busca-bh">
           <div className="relative">
             <Search aria-hidden className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-lavanda" />
             <Entrada id="busca-bh" type="search" className="pl-9" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Nome ou cargo" />
           </div>
+        </Campo>
+        <Campo rotulo="Ordenar" htmlFor="bh-ordem">
+          <Selecao id="bh-ordem" value={ordem} onChange={(e) => setOrdem(e.target.value as Ordem)}>
+            {ORDENS.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.rotulo}
+              </option>
+            ))}
+          </Selecao>
+        </Campo>
+        <Campo rotulo="Saldo" htmlFor="bh-situacao">
+          <Selecao id="bh-situacao" value={situacao} onChange={(e) => setSituacao(e.target.value as Situacao)}>
+            <option value="todos">Todos</option>
+            <option value="positivos">Só positivos</option>
+            <option value="negativos">Só negativos</option>
+            <option value="zerados">Zerados</option>
+          </Selecao>
+        </Campo>
+        <Campo rotulo="Setor" htmlFor="bh-setor">
+          <Selecao id="bh-setor" value={setor} onChange={(e) => setSetor(e.target.value)}>
+            <option value="">Todos os setores</option>
+            {setores.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+            {setores.length > 0 && <option value="__sem">Fora da escala</option>}
+          </Selecao>
         </Campo>
         <Campo rotulo="Saldo até" htmlFor="bh-ate">
           <EntradaData
@@ -137,7 +203,7 @@ export function PaginaBancoHoras() {
           chave={(l) => l.funcionario_id}
           carregando={resumo.isLoading}
           aoClicarLinha={(l) => navegar(`/banco-de-horas/${l.funcionario_id}`)}
-          vazio={<Vazio icone={<Hourglass className="size-8" />} titulo={busca ? 'Ninguém encontrado' : 'Sem funcionários ativos'} />}
+          vazio={<Vazio icone={<Hourglass className="size-8" />} titulo={filtrando ? 'Ninguém encontrado com esses filtros' : 'Sem funcionários ativos'} />}
         />
       )}
 
